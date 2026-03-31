@@ -1,0 +1,200 @@
+openapi: 3.0.3
+info:
+  title: Internal App Deployment Platform API
+  version: 0.3.0
+  description: API specifications for the Internal App Deployment Platform. Updated for Vault secret injection integration.
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+paths:
+  /api/v1/me:
+    get:
+      summary: Get current authenticated user
+      responses:
+        '200':
+          description: User info
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id:
+                    type: string
+                  username:
+                    type: string
+
+  /api/v1/projects/{projectId}/applications:
+    post:
+      summary: Create a new application
+      parameters:
+        - name: projectId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+                - image
+              properties:
+                name:
+                  type: string
+                description:
+                  type: string
+                image:
+                  type: string
+                servicePort:
+                  type: integer
+                deploymentStrategy:
+                  type: string
+                  enum: [Standard, Canary]
+                secrets:
+                  type: array
+                  description: "Secrets are submitted directly to the backend here, which stores them in Vault."
+                  items:
+                    type: object
+                    properties:
+                      key:
+                        type: string
+                      value:
+                        type: string
+      responses:
+        '201':
+          description: Application Created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Application'
+
+  /api/v1/applications/{applicationId}:
+    patch:
+      summary: Update application configuration
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                image:
+                  type: string
+                servicePort:
+                  type: integer
+                secrets:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      key: 
+                        type: string
+                      value: 
+                        type: string
+      responses:
+        '200':
+          description: Application Updated
+
+  /api/v1/applications/{applicationId}/deployments:
+    post:
+      summary: Trigger a new deployment
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - imageTag
+              properties:
+                imageTag:
+                  type: string
+                strategy:
+                  type: string
+                  enum: [Standard, Canary]
+      responses:
+        '201':
+          description: Deployment Triggered
+
+  /api/v1/applications/{applicationId}/deployments/{deploymentId}/promote:
+    post:
+      summary: Manually promote an active rollout
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: deploymentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Rollout Promoted
+
+  /api/v1/applications/{applicationId}/deployments/{deploymentId}/abort:
+    post:
+      summary: Abort (Rollback) an active rollout
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema: { type: string }
+        - name: deploymentId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Rollout Aborted
+
+  /api/v1/applications/{applicationId}/metrics:
+    get:
+      summary: Get core Prometheus metrics for the application
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Metric snapshot
+
+  /api/v1/applications/{applicationId}/sync-status:
+    get:
+      summary: Check Flux GitOps sync status via K8s API Get
+      parameters:
+        - name: applicationId
+          in: path
+          required: true
+          schema: { type: string }
+      responses:
+        '200':
+          description: Sync Status
+
+components:
+  schemas:
+    Application:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        image:
+          type: string
+        deploymentStrategy:
+          type: string
