@@ -34,6 +34,13 @@
 *   **Read 흐름 (Actual State 조회)**: K8s `client-go`를 활용해 API Server에 접근, `Flux`의 `Kustomization` CRD 상태 정보(`status.conditions`)를 파싱하여 UI로 넘깁니다.
 *   **제어 흐름 (Promote/Abort)**: 롤아웃 조작 명령 시, GitOps를 통하지 않고 즉각 `client-go` 기반으로 해당 네임스페이스 내 해당 앱의 `Rollout` CRD 상태를 패치(Patch)합니다.
 
-## 4. 프론트엔드/백엔드 기본 컨벤션
-* 프론트: Vite + React + TailwindCSS 구조. API는 `openapi.yaml` 100% Mocking 선행 개발.
-* 백엔드: Go (Fiber/Stdlib). DB와 GitOps 로직(Kustomize 쓰기 계층), K8s/Vault 외부 통신 컴포넌트를 `internal(또는 pkg)` 패키지 하위에 엄격히 분리시킵니다.
+## 4. 프론트엔드/백엔드 기본 컨벤션 (ADR-001, ADR-002 참조)
+* 프론트엔드 (Vite + React + Zustand)
+  - **절대적 금지**: Tailwind CSS 및 인라인 스타일 사용을 원천 금지합니다.
+  - UI 렌더링은 무조건 **Mantine v7** 컴포넌트를 호출하여 조립하며, 커스텀 디자인은 오직 **CSS Modules**를 사용해야 합니다.
+  - API 통신은 `openapi.yaml` 100% Mocking 상태에서 먼저 컴포넌트를 뽑아내야 합니다.
+
+* 백엔드 (Go 1.22+ Standard Library)
+  - **절대적 금지**: Fiber, Gin, Echo와 같은 서드파티 웹 프레임워크 사용을 금지합니다.
+  - 라우팅은 오직 `net/http` 표준 라이브러리의 1.22버전 이상 Path Variable Mapping 방식을 사용합니다.
+  - AI 컨텍스트 유지를 위해 너무 깊은 레이어드 아키텍처 분리를 지양하고 `internal/application/`, `internal/project/` 처럼 **도메인 단위(Flat Domain Pattern)**로 비즈니스 로직과 Data Access(DB/Git) 기능을 폴더링하십시오.
