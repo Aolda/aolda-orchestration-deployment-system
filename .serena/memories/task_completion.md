@@ -1,0 +1,1 @@
+When finishing a task, prefer running `make check`. If frontend code changed, also consider `cd frontend && npm run build`. If backend implementation is added, ensure `make backend-run` still works and any relevant Go checks pass. Keep changes aligned with contracts in docs/ and AGENTS.md restrictions.

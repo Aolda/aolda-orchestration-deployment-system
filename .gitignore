@@ -1,0 +1,6 @@
+.DS_Store
+.direnv/
+.env
+.env.local
+.envrc
+config/mcporter.json

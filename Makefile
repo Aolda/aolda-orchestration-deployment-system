@@ -1,8 +1,8 @@
-.PHONY: backend-run frontend-run check setup
+.PHONY: backend-run frontend-run check setup doctor
 
 setup:
 	@echo "Setting up basic directories..."
-	mkdir -p backend/cmd/server backend/internal frontend scripts
+	mkdir -p backend/cmd/server backend/internal frontend scripts config
 
 backend-run:
 	@echo "Running backend server..."
@@ -16,3 +16,6 @@ check:
 	@echo "Running checks for frontend and backend..."
 	@cd backend && go vet ./... || true
 	@cd frontend && npm run lint || true
+
+doctor:
+	@bash scripts/doctor.sh

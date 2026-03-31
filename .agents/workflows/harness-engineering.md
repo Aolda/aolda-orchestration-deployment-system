@@ -1,34 +1,52 @@
 ---
-description: Harness engineering rules, tools, and automation flows for Agent processing
+description: Harness engineering intent, boundaries, and workflow guidance for agents
 ---
 
-# Harness Engineering Context & Workflows
+# Harness Engineering Strategy
 
-## 핵심 문서 & 계약 (Core Documents & Contracts)
-- `AGENTS.md`: Internal App Deployment Platform, domain rules, repo map, allowed/forbidden changes, `make backend-run`, `make frontend-run`, `make check` 등 명령 정리.
-- **Docs**: `docs/internal-platform/openapi.yaml`, `domain-rules.md`, `acceptance-criteria.md` → 계약 중심으로 프론트/백/QA가 따를 기준.
-- **Notion sync**: `scripts/sync_internals_notion.py` + Notion token in `config/mcporter.json` → playground page + "Harness Coordination" subpage.
+## Purpose
+- This document explains how agents should use harness engineering in this repository.
+- It is a strategy and operating note, not proof that every referenced tool or script is already installed in the current workspace.
+- For concrete bootstrap steps, use `docs/harness-setup.md`.
 
-## 툴/플러그인 (Tools & Plugins)
-- **gstack / gstack harness**: Claude Code slash commands (`/plan-ceo-review`, `/review`, `/qa`) + `agent-browser`/`gstack`/`gws` evidence.
-  - Primary repo: https://github.com/garrytan/gstack
-- **gstack flows**: ClawFlows repo cloned under `/workspace/clawflows`. Use it to define multi-agent DAG for release/QA automation.
-- **agent-browser**: `scripts/agent-browser-run.sh` + agent-browser CLI to capture snapshots, interact with UIs, replace Playwright.
-- **Google Calendar**: `gws` commands and helper scripts (`gworkspace_create_event.sh`) using `GCAL_CALENDAR_ID` to register deadlines.
-- **Notion**: Token stored in `config/mcporter.json` (`ntn…`). Scripts read it to sync docs and create Harness Coordination page.
+## Core Contracts
+- `AGENTS.md`
+- `docs/internal-platform/openapi.yaml`
+- `docs/internal-platform/prd.md`
+- `docs/domain-rules.md`
+- `docs/acceptance-criteria.md`
 
-## Channel + Role Mapping
-- `#front-qa`: Frontend React QA via agent-browser + Claude prompts.
-- `#back-qa`: Go backend QA via gstack + harness review.
-- `#harness-ops`: Release monitor / ClawFlows orchestration + Notion/Discord updates.
-- **Notion page**: `playground…/Harness Coordination` hosts overview for future agents.
+## Current Repository Baseline
+- The product code lives in `backend/` and `frontend/`.
+- Contract documents live in `docs/`.
+- Harness-specific directories such as `scripts/`, `config/`, or `memory/` may be added as the harness is bootstrapped.
+- Agents must verify that a path, script, or CLI exists before treating it as available.
 
-## Automation Flows
-- **Inputs**: PRD for internal deployment platform (Go backend / React frontend), OpenAPI/domain/acceptance docs, Makefile commands.
-- **Flow**: Submit PRD → agent-browser snapshot → Claude `/plan-ceo-review` → gstack/Playwright QA → ClawFlows release monitor → Notion + Discord summary + Google Calendar alerts.
-- **Post-update**: Notion sync script can be run after docs update to keep page fresh.
+## Harness Scope
+- Use harness engineering to accelerate MVP planning, QA, release coordination, and external sync work.
+- Keep harness concerns separate from product runtime concerns.
+- Do not make the core application depend on harness-only environment variables or operator-only local files.
 
-## Next Steps Ready
-- **Integration**: Harness integration now focused on “contract-first” loops: front/back QA, release monitor, Notion briefs.
-- **Automation Utilities**: Additional gluing (e.g., ClawFlows automation, agent-browser evidence, gws calendar events) is already scripted and can be triggered by future agents via provided scripts.
-- **Memory/Context**: `gstack`/`clawflows`/`docs` + Notion sync + calendar automations are recorded in `memory/2026-03-30.md` & `memory/2026-03-31.md` so subsequent agents know history.
+## Planned Harness Integrations
+- Notion sync:
+  Read tokens from `config/mcporter.json` once a sync script is added under `scripts/`.
+- Google Calendar:
+  Use `GCAL_CALENDAR_ID` once calendar helper scripts or `gws` wrappers are added.
+- Browser QA:
+  Prefer `agent-browser` when the team has it installed. Use another approved browser automation path only when needed.
+- Multi-agent orchestration:
+  Use `gstack` or ClawFlows only when those tools are available in the local environment.
+
+## Operating Rules For Agents
+- Treat `AGENTS.md` and the `docs/` contracts as source of truth for product behavior.
+- Treat missing harness tools as setup gaps, not as reasons to change product contracts.
+- Clearly distinguish between:
+  Required product setup, required harness setup, and optional operator tooling.
+- When adding harness automation, prefer small scripts in `scripts/` plus companion setup docs.
+- When a document mentions future automation, mark it as planned until the supporting files actually exist.
+
+## Long-Term Maintenance Rule
+- The repository is expected to outlive the initial harness-driven MVP phase.
+- Harness utilities should therefore remain removable or replaceable without forcing major changes to `backend/`, `frontend/`, or the API contracts.
+- Any future agent should be able to understand:
+  what is product code, what is operator tooling, and what is still planned work.

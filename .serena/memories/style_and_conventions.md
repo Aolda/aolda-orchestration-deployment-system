@@ -1,0 +1,1 @@
+Follow AGENTS.md first. Contracts in docs/ must be respected. Do not change GitOps structure or deviate from OpenAPI JSON response shapes. Frontend uses React 19 + Vite + TypeScript + ESLint; backend uses Go 1.24.6. Prefer concise, contract-driven changes aligned with docs/domain-rules.md and docs/openapi assets when implementing features.

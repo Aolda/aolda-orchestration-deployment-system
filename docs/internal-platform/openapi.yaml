@@ -1,8 +1,12 @@
 openapi: 3.0.3
 info:
   title: Internal App Deployment Platform API
-  version: 0.3.0
-  description: API specifications for the Internal App Deployment Platform. Updated for Vault secret injection integration.
+  version: 0.5.0
+  description: >
+    Phase 1 MVP API specification for the internal app deployment platform.
+    This contract covers project catalog discovery, GitHub-backed application
+    metadata, standard deployment, GitOps sync visibility, Vault-backed secret
+    submission, and basic metrics.
 servers:
   - url: http://localhost:8080
     description: Local development server
@@ -16,179 +20,309 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  id:
-                    type: string
-                  username:
-                    type: string
+                $ref: '#/components/schemas/CurrentUser'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/projects:
+    get:
+      summary: List projects available to the current user
+      responses:
+        '200':
+          description: Project list filtered by authorization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /api/v1/projects/{projectId}/applications:
+    get:
+      summary: List applications in a project
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Project application list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     post:
       summary: Create a new application
+      description: Phase 1 supports Standard deployment only.
       parameters:
-        - name: projectId
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/ProjectId'
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - name
-                - image
-              properties:
-                name:
-                  type: string
-                description:
-                  type: string
-                image:
-                  type: string
-                servicePort:
-                  type: integer
-                deploymentStrategy:
-                  type: string
-                  enum: [Standard, Canary]
-                secrets:
-                  type: array
-                  description: "Secrets are submitted directly to the backend here, which stores them in Vault."
-                  items:
-                    type: object
-                    properties:
-                      key:
-                        type: string
-                      value:
-                        type: string
+              $ref: '#/components/schemas/CreateApplicationRequest'
       responses:
         '201':
-          description: Application Created
+          description: Application created
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Application'
-
-  /api/v1/applications/{applicationId}:
-    patch:
-      summary: Update application configuration
-      parameters:
-        - name: applicationId
-          in: path
-          required: true
-          schema:
-            type: string
-      requestBody:
-        content:
-          application/json:
-            schema:
-              type: object
-              properties:
-                image:
-                  type: string
-                servicePort:
-                  type: integer
-                secrets:
-                  type: array
-                  items:
-                    type: object
-                    properties:
-                      key: 
-                        type: string
-                      value: 
-                        type: string
-      responses:
-        '200':
-          description: Application Updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /api/v1/applications/{applicationId}/deployments:
     post:
-      summary: Trigger a new deployment
+      summary: Trigger a new standard deployment
+      description: Phase 1 only supports redeploying with a new image tag.
       parameters:
-        - name: applicationId
-          in: path
-          required: true
-          schema:
-            type: string
+        - $ref: '#/components/parameters/ApplicationId'
       requestBody:
+        required: true
         content:
           application/json:
             schema:
-              type: object
-              required:
-                - imageTag
-              properties:
-                imageTag:
-                  type: string
-                strategy:
-                  type: string
-                  enum: [Standard, Canary]
+              $ref: '#/components/schemas/CreateDeploymentRequest'
       responses:
         '201':
-          description: Deployment Triggered
+          description: Deployment triggered
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
-  /api/v1/applications/{applicationId}/deployments/{deploymentId}/promote:
-    post:
-      summary: Manually promote an active rollout
+  /api/v1/applications/{applicationId}/sync-status:
+    get:
+      summary: Check Flux GitOps sync status via Kubernetes API
       parameters:
-        - name: applicationId
-          in: path
-          required: true
-          schema: { type: string }
-        - name: deploymentId
-          in: path
-          required: true
-          schema: { type: string }
+        - $ref: '#/components/parameters/ApplicationId'
       responses:
         '200':
-          description: Rollout Promoted
-
-  /api/v1/applications/{applicationId}/deployments/{deploymentId}/abort:
-    post:
-      summary: Abort (Rollback) an active rollout
-      parameters:
-        - name: applicationId
-          in: path
-          required: true
-          schema: { type: string }
-        - name: deploymentId
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: Rollout Aborted
+          description: Sync status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SyncStatusResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /api/v1/applications/{applicationId}/metrics:
     get:
       summary: Get core Prometheus metrics for the application
       parameters:
-        - name: applicationId
-          in: path
-          required: true
-          schema: { type: string }
+        - $ref: '#/components/parameters/ApplicationId'
       responses:
         '200':
           description: Metric snapshot
-
-  /api/v1/applications/{applicationId}/sync-status:
-    get:
-      summary: Check Flux GitOps sync status via K8s API Get
-      parameters:
-        - name: applicationId
-          in: path
-          required: true
-          schema: { type: string }
-      responses:
-        '200':
-          description: Sync Status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationMetricsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
 components:
+  parameters:
+    ProjectId:
+      name: projectId
+      in: path
+      required: true
+      description: Project identifier from the GitHub-backed project catalog.
+      schema:
+        type: string
+        pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+    ApplicationId:
+      name: applicationId
+      in: path
+      required: true
+      description: Deterministic application ID derived from GitHub path, e.g. project-a__my-app.
+      schema:
+        type: string
+
   schemas:
+    CurrentUser:
+      type: object
+      required:
+        - id
+        - username
+      properties:
+        id:
+          type: string
+        username:
+          type: string
+        displayName:
+          type: string
+        groups:
+          type: array
+          items:
+            type: string
+
+    ProjectRole:
+      type: string
+      enum:
+        - viewer
+        - deployer
+        - admin
+
+    ProjectSummary:
+      type: object
+      required:
+        - id
+        - name
+        - namespace
+        - role
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        name:
+          type: string
+        description:
+          type: string
+        namespace:
+          type: string
+        role:
+          $ref: '#/components/schemas/ProjectRole'
+
+    ProjectListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectSummary'
+
+    SecretEntry:
+      type: object
+      required:
+        - key
+        - value
+      properties:
+        key:
+          type: string
+        value:
+          type: string
+
+    CreateApplicationRequest:
+      type: object
+      required:
+        - name
+        - image
+        - servicePort
+        - deploymentStrategy
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        description:
+          type: string
+        image:
+          type: string
+        servicePort:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        deploymentStrategy:
+          type: string
+          enum:
+            - Standard
+        secrets:
+          type: array
+          description: Secrets are submitted directly to the backend and stored in Vault KV v2.
+          items:
+            $ref: '#/components/schemas/SecretEntry'
+
     Application:
       type: object
+      required:
+        - id
+        - projectId
+        - name
+        - image
+        - servicePort
+        - deploymentStrategy
+      properties:
+        id:
+          type: string
+          description: Deterministic ID derived from GitHub path, e.g. project-a__my-app.
+        projectId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        image:
+          type: string
+        servicePort:
+          type: integer
+        deploymentStrategy:
+          type: string
+          enum:
+            - Standard
+        syncStatus:
+          $ref: '#/components/schemas/SyncStatus'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    ApplicationSummary:
+      type: object
+      required:
+        - id
+        - name
+        - image
+        - deploymentStrategy
+        - syncStatus
       properties:
         id:
           type: string
@@ -198,3 +332,184 @@ components:
           type: string
         deploymentStrategy:
           type: string
+          enum:
+            - Standard
+        syncStatus:
+          $ref: '#/components/schemas/SyncStatus'
+
+    ApplicationListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApplicationSummary'
+
+    CreateDeploymentRequest:
+      type: object
+      required:
+        - imageTag
+      properties:
+        imageTag:
+          type: string
+
+    DeploymentResponse:
+      type: object
+      required:
+        - deploymentId
+        - applicationId
+        - imageTag
+        - status
+      properties:
+        deploymentId:
+          type: string
+        applicationId:
+          type: string
+        imageTag:
+          type: string
+        status:
+          type: string
+          enum:
+            - Pending
+            - Syncing
+
+    SyncStatus:
+      type: string
+      enum:
+        - Unknown
+        - Syncing
+        - Synced
+        - Degraded
+
+    SyncStatusResponse:
+      type: object
+      required:
+        - applicationId
+        - status
+      properties:
+        applicationId:
+          type: string
+        status:
+          $ref: '#/components/schemas/SyncStatus'
+        message:
+          type: string
+        observedAt:
+          type: string
+          format: date-time
+
+    MetricPoint:
+      type: object
+      required:
+        - timestamp
+        - value
+      properties:
+        timestamp:
+          type: string
+          format: date-time
+        value:
+          type: number
+          nullable: true
+
+    MetricSeries:
+      type: object
+      required:
+        - key
+        - label
+        - unit
+        - points
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        unit:
+          type: string
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricPoint'
+
+    ApplicationMetricsResponse:
+      type: object
+      required:
+        - applicationId
+        - metrics
+      properties:
+        applicationId:
+          type: string
+        metrics:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricSeries'
+
+    ErrorBody:
+      type: object
+      required:
+        - code
+        - message
+        - requestId
+      properties:
+        code:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        requestId:
+          type: string
+        retryable:
+          type: boolean
+
+    ErrorResponse:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorBody'
+
+  responses:
+    BadRequest:
+      description: Invalid request payload or unsupported input
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Unauthorized:
+      description: Missing or invalid authentication
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Forbidden:
+      description: Authenticated, but not allowed to perform this action
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    NotFound:
+      description: Referenced project, application, deployment, or backing resource was not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: Resource state conflict, duplicate application, or operation already in progress
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalServerError:
+      description: Unexpected server or integration failure
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+
+# Phase 2 deferred endpoints:
+# - PATCH /api/v1/applications/{applicationId}
+# - POST /api/v1/applications/{applicationId}/deployments/{deploymentId}/promote
+# - POST /api/v1/applications/{applicationId}/deployments/{deploymentId}/abort
