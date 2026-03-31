@@ -8,9 +8,10 @@
 2. `docs/domain-rules.md`
 3. `docs/phase1-decisions.md`
 4. `docs/future-phases-roadmap.md`
-5. `docs/internal-platform/openapi.yaml`
-6. `docs/acceptance-criteria.md`
-7. `AGENTS.md`
+5. `docs/codex-phase1-runbook.md`
+6. `docs/internal-platform/openapi.yaml`
+7. `docs/acceptance-criteria.md`
+8. `AGENTS.md`
 
 ## Current Default
 

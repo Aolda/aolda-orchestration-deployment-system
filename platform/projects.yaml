@@ -1,0 +1,34 @@
+projects:
+  - id: project-a
+    name: Project A
+    description: Core internal APIs and shared platform services.
+    namespace: project-a
+    access:
+      viewerGroups:
+        - aods:project-a:view
+      deployerGroups:
+        - aods:project-a:deploy
+      adminGroups:
+        - aods:platform:admin
+  - id: project-b
+    name: Project B
+    description: Finance automation and scheduled batch jobs.
+    namespace: project-b
+    access:
+      viewerGroups:
+        - aods:project-b:view
+      deployerGroups:
+        - aods:project-b:deploy
+      adminGroups:
+        - aods:platform:admin
+  - id: project-c
+    name: Project C
+    description: Internal analytics workloads for growth reporting.
+    namespace: project-c
+    access:
+      viewerGroups:
+        - aods:project-c:view
+      deployerGroups:
+        - aods:project-c:deploy
+      adminGroups:
+        - aods:platform:admin

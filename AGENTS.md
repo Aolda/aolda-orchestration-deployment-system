@@ -15,8 +15,9 @@
 2. `docs/domain-rules.md`
 3. `docs/phase1-decisions.md`
 4. `docs/future-phases-roadmap.md`
-5. `docs/internal-platform/openapi.yaml`
-6. `docs/acceptance-criteria.md`
+5. `docs/codex-phase1-runbook.md`
+6. `docs/internal-platform/openapi.yaml`
+7. `docs/acceptance-criteria.md`
 
 현재 기준 구현 대상은 **Phase 1 MVP**입니다.
 Phase 2, 3, 4는 `docs/future-phases-roadmap.md`를 설계 기준으로만 참고하고, 사용자가 명시적으로 요청하지 않는 한 Phase 1 계약을 깨면서 선반영하지 마세요.
