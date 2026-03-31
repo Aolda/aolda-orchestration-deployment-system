@@ -447,12 +447,13 @@ function App() {
                         label="App name"
                         placeholder="my-app"
                         value={createForm.name}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          const value = event.currentTarget.value
                           setCreateForm((current) => ({
                             ...current,
-                            name: event.currentTarget.value,
+                            name: value,
                           }))
-                        }
+                        }}
                       />
                       <Textarea
                         label="Description"
@@ -460,23 +461,25 @@ function App() {
                         autosize
                         minRows={2}
                         value={createForm.description}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          const value = event.currentTarget.value
                           setCreateForm((current) => ({
                             ...current,
-                            description: event.currentTarget.value,
+                            description: value,
                           }))
-                        }
+                        }}
                       />
                       <TextInput
                         label="Container image"
                         placeholder="repo/my-app:v1"
                         value={createForm.image}
-                        onChange={(event) =>
+                        onChange={(event) => {
+                          const value = event.currentTarget.value
                           setCreateForm((current) => ({
                             ...current,
-                            image: event.currentTarget.value,
+                            image: value,
                           }))
-                        }
+                        }}
                       />
                       <NumberInput
                         label="Service port"

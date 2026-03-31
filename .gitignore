@@ -4,3 +4,4 @@
 .env.local
 .envrc
 config/mcporter.json
+.gstack/
