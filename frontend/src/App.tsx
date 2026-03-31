@@ -189,9 +189,10 @@ function App() {
   const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null
   const selectedApplication =
     applications.find((application) => application.id === selectedApplicationId) ?? null
+  const canMutateSelectedProject = canMutateProject(selectedProject?.role)
 
   async function handleCreateApplication() {
-    if (!selectedProjectId) {
+    if (!selectedProjectId || !canMutateSelectedProject) {
       return
     }
 
@@ -226,7 +227,7 @@ function App() {
   }
 
   async function handleRedeploy() {
-    if (!selectedApplicationId) {
+    if (!selectedApplicationId || !canMutateSelectedProject) {
       return
     }
 
@@ -443,10 +444,17 @@ function App() {
 
                   <Paper className={classes.formPanel} radius="lg">
                     <Stack gap="md">
+                      {!canMutateSelectedProject && selectedProject ? (
+                        <Alert color="sand" variant="light" title="Read-only project">
+                          {selectedProject.role} role users can inspect apps, but only deployers
+                          and admins can create or redeploy them.
+                        </Alert>
+                      ) : null}
                       <TextInput
                         label="App name"
                         placeholder="my-app"
                         value={createForm.name}
+                        disabled={!canMutateSelectedProject}
                         onChange={(event) => {
                           const value = event.currentTarget.value
                           setCreateForm((current) => ({
@@ -461,6 +469,7 @@ function App() {
                         autosize
                         minRows={2}
                         value={createForm.description}
+                        disabled={!canMutateSelectedProject}
                         onChange={(event) => {
                           const value = event.currentTarget.value
                           setCreateForm((current) => ({
@@ -473,6 +482,7 @@ function App() {
                         label="Container image"
                         placeholder="repo/my-app:v1"
                         value={createForm.image}
+                        disabled={!canMutateSelectedProject}
                         onChange={(event) => {
                           const value = event.currentTarget.value
                           setCreateForm((current) => ({
@@ -486,6 +496,7 @@ function App() {
                         min={1}
                         max={65535}
                         value={createForm.servicePort}
+                        disabled={!canMutateSelectedProject}
                         onChange={(value) =>
                           setCreateForm((current) => ({
                             ...current,
@@ -501,6 +512,7 @@ function App() {
                             size="xs"
                             variant="subtle"
                             color="lagoon.6"
+                            disabled={!canMutateSelectedProject}
                             onClick={addSecretRow}
                           >
                             Add secret
@@ -514,6 +526,7 @@ function App() {
                                 label="Key"
                                 placeholder="DATABASE_URL"
                                 value={secret.key}
+                                disabled={!canMutateSelectedProject}
                                 onChange={(event) =>
                                   updateSecret(index, 'key', event.currentTarget.value)
                                 }
@@ -524,6 +537,7 @@ function App() {
                                 autosize
                                 minRows={1}
                                 value={secret.value}
+                                disabled={!canMutateSelectedProject}
                                 onChange={(event) =>
                                   updateSecret(index, 'value', event.currentTarget.value)
                                 }
@@ -532,7 +546,10 @@ function App() {
                                 variant="light"
                                 color="red"
                                 onClick={() => removeSecretRow(index)}
-                                disabled={createForm.secrets.length === 1}
+                                disabled={
+                                  !canMutateSelectedProject ||
+                                  createForm.secrets.length === 1
+                                }
                               >
                                 Remove
                               </Button>
@@ -545,7 +562,7 @@ function App() {
                         color="lagoon.6"
                         radius="md"
                         loading={submittingCreate}
-                        disabled={!selectedProjectId}
+                        disabled={!selectedProjectId || !canMutateSelectedProject}
                         onClick={handleCreateApplication}
                       >
                         Create application
@@ -619,6 +636,7 @@ function App() {
                               label="New image tag"
                               placeholder="v2"
                               value={imageTag}
+                              disabled={!canMutateSelectedProject || !selectedApplication}
                               onChange={(event) => setImageTag(event.currentTarget.value)}
                               className={classes.deployInput}
                             />
@@ -626,6 +644,7 @@ function App() {
                               color="lagoon.6"
                               radius="md"
                               loading={submittingDeploy}
+                              disabled={!canMutateSelectedProject || !selectedApplication}
                               onClick={handleRedeploy}
                             >
                               Trigger redeploy
@@ -692,6 +711,10 @@ function roleColor(role: ProjectSummary['role']) {
     default:
       return 'sand.6'
   }
+}
+
+function canMutateProject(role: ProjectSummary['role'] | undefined) {
+  return role === 'deployer' || role === 'admin'
 }
 
 function syncStatusColor(status: SyncStatus) {
