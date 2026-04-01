@@ -21,7 +21,7 @@ func (LocalSyncStatusReader) Read(ctx context.Context, record application.Record
 
 	return application.SyncInfo{
 		Status:     application.SyncStatusSynced,
-		Message:    "Local adapter assumes the workspace desired state is already synced.",
+		Message:    "로컬 어댑터 기준으로 현재 워크스페이스 상태가 이미 반영된 것으로 판단했습니다.",
 		ObservedAt: observedAt,
 	}, nil
 }

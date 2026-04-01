@@ -1,0 +1,126 @@
+package vault
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+)
+
+func TestRealStoreStageAndFinalizeUsesKVv2Endpoints(t *testing.T) {
+	t.Helper()
+
+	var requests []struct {
+		Method string
+		Path   string
+		Token  string
+		Body   map[string]any
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		if r.Body != nil {
+			_ = json.NewDecoder(r.Body).Decode(&body)
+		}
+
+		requests = append(requests, struct {
+			Method string
+			Path   string
+			Token  string
+			Body   map[string]any
+		}{
+			Method: r.Method,
+			Path:   r.URL.Path,
+			Token:  r.Header.Get("X-Vault-Token"),
+			Body:   body,
+		})
+
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	store := RealStore{
+		Address: server.URL,
+		Token:   "test-token",
+		Client:  server.Client(),
+	}
+
+	staged, err := store.Stage(
+		context.Background(),
+		"req_123",
+		"project-a",
+		"my-app",
+		"deployer",
+		map[string]string{"DATABASE_URL": "postgres://db"},
+	)
+	if err != nil {
+		t.Fatalf("stage secret: %v", err)
+	}
+
+	if staged.StagingPath != "secret/aods/staging/req_123" {
+		t.Fatalf("unexpected staging path: %s", staged.StagingPath)
+	}
+	if staged.FinalPath != "secret/aods/apps/project-a/my-app/prod" {
+		t.Fatalf("unexpected final path: %s", staged.FinalPath)
+	}
+
+	if err := store.Finalize(context.Background(), staged, map[string]string{"DATABASE_URL": "postgres://db"}); err != nil {
+		t.Fatalf("finalize secret: %v", err)
+	}
+
+	if len(requests) != 4 {
+		t.Fatalf("expected 4 vault requests, got %d", len(requests))
+	}
+
+	if requests[0].Method != http.MethodPost || requests[0].Path != "/v1/secret/data/aods/staging/req_123" {
+		t.Fatalf("unexpected stage write request: %+v", requests[0])
+	}
+	if requests[0].Token != "test-token" {
+		t.Fatalf("expected vault token header")
+	}
+
+	if requests[1].Method != http.MethodPost || requests[1].Path != "/v1/secret/metadata/aods/staging/req_123" {
+		t.Fatalf("unexpected stage metadata request: %+v", requests[1])
+	}
+	customMetadata, ok := requests[1].Body["custom_metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected custom_metadata payload, got %#v", requests[1].Body)
+	}
+	if customMetadata["status"] != "pending_commit" {
+		t.Fatalf("expected pending_commit metadata, got %#v", customMetadata["status"])
+	}
+
+	if requests[2].Method != http.MethodPost || requests[2].Path != "/v1/secret/data/aods/apps/project-a/my-app/prod" {
+		t.Fatalf("unexpected final write request: %+v", requests[2])
+	}
+	if requests[3].Method != http.MethodDelete || requests[3].Path != "/v1/secret/metadata/aods/staging/req_123" {
+		t.Fatalf("unexpected cleanup request: %+v", requests[3])
+	}
+}
+
+func TestRealStoreAddsNamespaceHeader(t *testing.T) {
+	t.Helper()
+
+	var namespace string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		namespace = r.Header.Get("X-Vault-Namespace")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	store := RealStore{
+		Address:   server.URL,
+		Token:     "test-token",
+		Namespace: "team-a",
+		Client:    server.Client(),
+	}
+
+	if _, err := store.Stage(context.Background(), "req_123", "project-a", "my-app", "deployer", map[string]string{"X": "Y"}); err != nil {
+		t.Fatalf("stage secret: %v", err)
+	}
+
+	if namespace != "team-a" {
+		t.Fatalf("expected vault namespace header, got %q", namespace)
+	}
+}

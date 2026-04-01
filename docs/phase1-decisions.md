@@ -65,6 +65,24 @@ Phase 2 이후:
 * diff 검토 UI
 * rollback 히스토리 고도화
 
+### 4.1 개발 환경 실연동 순서
+
+Phase 1 제품 계약은 GitHub + Vault + Kubernetes + Prometheus 연동을 포함한다.
+하지만 **개발 환경에서의 실연동 순서**는 아래처럼 가져간다.
+
+1. GitHub 기본 브랜치 direct push를 먼저 실연동한다.
+2. Vault는 인터페이스와 경로 계약을 유지한 채 local adapter를 당분간 사용한다.
+3. GitHub write/read 경로가 안정화된 뒤 Vault KV v2 adapter를 붙인다.
+
+이 결정은 **제품 범위 축소가 아니다.**
+개발 단계에서 실패 원인을 분리하고 vertical slice 를 빠르게 검증하기 위한 순서 조정이다.
+
+주의:
+
+* Secret 평문이 Git에 기록되면 안 된다는 계약은 그대로 유지한다.
+* Vault 최종 경로 규칙 `secret/aods/apps/{projectId}/{appName}/prod` 는 지금부터 고정한다.
+* local secret adapter는 dev fallback 일 뿐이며, 운영 연결 전에는 Vault real adapter로 교체해야 한다.
+
 ## 5. Vault 경로 규칙
 
 Vault는 KV v2 기준으로 잡는다.

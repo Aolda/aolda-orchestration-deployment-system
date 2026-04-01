@@ -97,13 +97,15 @@ func (s LocalManifestStore) CreateApplication(
 	}
 
 	files := map[string]string{
-		filepath.Join(applicationDir, "base", "kustomization.yaml"):             renderBaseKustomization(),
+		filepath.Join(applicationDir, "base", "kustomization.yaml"):             renderBaseKustomization(record.SecretPath != ""),
 		filepath.Join(applicationDir, "base", "deployment.yaml"):                renderDeployment(record),
 		filepath.Join(applicationDir, "base", "service.yaml"):                   renderService(record),
 		filepath.Join(applicationDir, "base", "virtualservice.yaml"):            renderVirtualService(record),
 		filepath.Join(applicationDir, "base", "destinationrule.yaml"):           renderDestinationRule(record),
-		filepath.Join(applicationDir, "base", "externalsecret.yaml"):            renderExternalSecret(record),
 		filepath.Join(applicationDir, "overlays", "prod", "kustomization.yaml"): renderOverlayKustomization(),
+	}
+	if record.SecretPath != "" {
+		files[filepath.Join(applicationDir, "base", "externalsecret.yaml")] = renderExternalSecret(record)
 	}
 
 	for path, content := range files {
@@ -157,11 +159,6 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 		return Record{}, fmt.Errorf("read service manifest: %w", err)
 	}
 
-	externalSecretData, err := os.ReadFile(externalSecretPath)
-	if err != nil {
-		return Record{}, fmt.Errorf("read externalsecret manifest: %w", err)
-	}
-
 	var deployment deploymentManifest
 	if err := yaml.Unmarshal(deploymentData, &deployment); err != nil {
 		return Record{}, fmt.Errorf("decode deployment manifest: %w", err)
@@ -172,9 +169,15 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 		return Record{}, fmt.Errorf("decode service manifest: %w", err)
 	}
 
-	var externalSecret externalSecretManifest
-	if err := yaml.Unmarshal(externalSecretData, &externalSecret); err != nil {
-		return Record{}, fmt.Errorf("decode externalsecret manifest: %w", err)
+	secretPath := ""
+	if externalSecretData, err := os.ReadFile(externalSecretPath); err == nil {
+		var externalSecret externalSecretManifest
+		if err := yaml.Unmarshal(externalSecretData, &externalSecret); err != nil {
+			return Record{}, fmt.Errorf("decode externalsecret manifest: %w", err)
+		}
+		secretPath = externalSecret.Metadata.Annotations["aods.io/vault-path"]
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return Record{}, fmt.Errorf("read externalsecret manifest: %w", err)
 	}
 
 	annotations := deployment.Metadata.Annotations
@@ -202,7 +205,7 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 		DeploymentStrategy: DeploymentStrategy(annotations["aods.io/deployment-strategy"]),
 		CreatedAt:          createdAt,
 		UpdatedAt:          updatedAt,
-		SecretPath:         externalSecret.Metadata.Annotations["aods.io/vault-path"],
+		SecretPath:         secretPath,
 	}, nil
 }
 
@@ -237,16 +240,28 @@ type externalSecretManifest struct {
 	} `yaml:"metadata"`
 }
 
-func renderBaseKustomization() string {
-	return `apiVersion: kustomize.config.k8s.io/v1beta1
+func renderBaseKustomization(includeExternalSecret bool) string {
+	resources := []string{
+		"deployment.yaml",
+		"service.yaml",
+		"virtualservice.yaml",
+		"destinationrule.yaml",
+	}
+	if includeExternalSecret {
+		resources = append(resources, "externalsecret.yaml")
+	}
+
+	var builder strings.Builder
+	builder.WriteString(`apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - deployment.yaml
-  - service.yaml
-  - virtualservice.yaml
-  - destinationrule.yaml
-  - externalsecret.yaml
-`
+`)
+	for _, resource := range resources {
+		builder.WriteString("  - ")
+		builder.WriteString(resource)
+		builder.WriteByte('\n')
+	}
+	return builder.String()
 }
 
 func renderOverlayKustomization() string {
@@ -258,6 +273,14 @@ resources:
 }
 
 func renderDeployment(record Record) string {
+	envFromBlock := ""
+	if record.SecretPath != "" {
+		envFromBlock = fmt.Sprintf(`
+          envFrom:
+            - secretRef:
+                name: %s-secrets`, record.Name)
+	}
+
 	return fmt.Sprintf(`apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -290,9 +313,7 @@ spec:
           ports:
             - name: http
               containerPort: %d
-          envFrom:
-            - secretRef:
-                name: %s-secrets
+%s
 `,
 		record.Name,
 		record.Namespace,
@@ -310,7 +331,7 @@ spec:
 		record.Name,
 		record.Image,
 		record.ServicePort,
-		record.Name,
+		envFromBlock,
 	)
 }
 
@@ -381,7 +402,7 @@ spec:
 }
 
 func renderExternalSecret(record Record) string {
-	return fmt.Sprintf(`apiVersion: external-secrets.io/v1beta1
+	return fmt.Sprintf(`apiVersion: external-secrets.io/v1
 kind: ExternalSecret
 metadata:
   name: %s

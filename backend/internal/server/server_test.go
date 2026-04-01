@@ -206,6 +206,56 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 	}
 }
 
+func TestCreateApplicationWithoutSecretsSkipsSecretArtifacts(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	createPayload := map[string]any{
+		"name":               "stateless-app",
+		"description":        "No secrets required",
+		"image":              "repo/stateless-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+	}
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", createPayload, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	appDir := filepath.Join(env.repoRoot, "apps", "project-a", "stateless-app", "base")
+	if _, err := os.Stat(filepath.Join(appDir, "externalsecret.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected externalsecret.yaml to be skipped, got %v", err)
+	}
+
+	deploymentManifest, err := os.ReadFile(filepath.Join(appDir, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("read deployment manifest: %v", err)
+	}
+	if strings.Contains(string(deploymentManifest), "envFrom:") {
+		t.Fatal("expected deployment manifest to omit envFrom when no secrets are provided")
+	}
+
+	kustomizationManifest, err := os.ReadFile(filepath.Join(appDir, "kustomization.yaml"))
+	if err != nil {
+		t.Fatalf("read kustomization manifest: %v", err)
+	}
+	if strings.Contains(string(kustomizationManifest), "externalsecret.yaml") {
+		t.Fatal("expected kustomization to omit externalsecret.yaml")
+	}
+
+	stagingMatches, err := filepath.Glob(filepath.Join(env.vaultRoot, "aods", "staging", "*.json"))
+	if err != nil {
+		t.Fatalf("glob staging files: %v", err)
+	}
+	if len(stagingMatches) != 0 {
+		t.Fatalf("expected no staged vault files, found %d", len(stagingMatches))
+	}
+}
+
 type testEnvironment struct {
 	server    *httptest.Server
 	repoRoot  string

@@ -111,9 +111,10 @@ func (s Service) CreateApplication(
 		return Application{}, err
 	}
 
-	secretPath := core.BuildVaultFinalPath(projectID, input.Name)
+	secretPath := ""
 	var staged StagedSecret
 	if len(secretData) > 0 && s.Secrets != nil {
+		secretPath = core.BuildVaultFinalPath(projectID, input.Name)
 		staged, err = s.Secrets.Stage(ctx, requestID, projectID, input.Name, user.Username, secretData)
 		if err != nil {
 			return Application{}, err

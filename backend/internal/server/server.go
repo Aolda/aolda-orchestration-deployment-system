@@ -3,9 +3,11 @@ package server
 import (
 	"net/http"
 	"path/filepath"
+	"time"
 
 	"github.com/aolda/aods-backend/internal/application"
 	"github.com/aolda/aods-backend/internal/core"
+	"github.com/aolda/aods-backend/internal/gitops"
 	"github.com/aolda/aods-backend/internal/kubernetes"
 	"github.com/aolda/aods-backend/internal/project"
 	"github.com/aolda/aods-backend/internal/vault"
@@ -17,18 +19,54 @@ func New(cfg core.Config) http.Handler {
 		DevUser:          cfg.DevUser,
 	}
 
+	projectSource := project.CatalogSource(project.LocalCatalogSource{
+		Path: filepath.Join(cfg.RepoRoot, "platform", "projects.yaml"),
+	})
+	applicationStore := application.Store(application.LocalManifestStore{RepoRoot: cfg.RepoRoot})
+
+	if cfg.UseGitRepo() {
+		repository := &gitops.Repository{
+			Dir:         cfg.GitRepoDir,
+			Remote:      cfg.GitRemote,
+			Branch:      cfg.GitBranch,
+			AuthorName:  cfg.GitAuthorName,
+			AuthorEmail: cfg.GitAuthorEmail,
+		}
+
+		projectSource = project.GitCatalogSource{Repository: repository}
+		applicationStore = application.GitManifestStore{Repository: repository}
+	}
+
 	projectService := &project.Service{
-		Source: project.LocalCatalogSource{
-			Path: filepath.Join(cfg.RepoRoot, "platform", "projects.yaml"),
-		},
+		Source: projectSource,
+	}
+
+	metricsReader := application.MetricsReader(application.LocalMetricsReader{})
+	if cfg.UsePrometheusAPI() {
+		metricsReader = application.PrometheusMetricsReader{
+			BaseURL: cfg.PrometheusURL,
+			Client:  &http.Client{Timeout: maxDuration(cfg.PrometheusRequestTimeout, 5*time.Second)},
+			Range:   cfg.PrometheusRange,
+			Step:    cfg.PrometheusStep,
+		}
+	}
+
+	secretStore := application.SecretsStager(vault.LocalStore{RootDir: cfg.LocalVaultDir})
+	if cfg.UseVaultAPI() {
+		secretStore = vault.RealStore{
+			Address:   cfg.VaultAddress,
+			Token:     cfg.VaultToken,
+			Namespace: cfg.VaultNamespace,
+			Client:    &http.Client{Timeout: maxDuration(cfg.VaultRequestTimeout, 5*time.Second)},
+		}
 	}
 
 	applicationService := &application.Service{
 		Projects:      projectService,
-		Store:         application.LocalManifestStore{RepoRoot: cfg.RepoRoot},
-		StatusReader:  kubernetes.LocalSyncStatusReader{},
-		MetricsReader: application.LocalMetricsReader{},
-		Secrets:       vault.LocalStore{RootDir: cfg.LocalVaultDir},
+		Store:         applicationStore,
+		StatusReader:  kubernetes.NewSyncStatusReader(cfg),
+		MetricsReader: metricsReader,
+		Secrets:       secretStore,
 	}
 
 	projectHandler := project.Handler{
@@ -62,4 +100,11 @@ func New(cfg core.Config) http.Handler {
 	})
 
 	return core.WithRequestID(core.WithCORS(mux, cfg.AllowedOrigin))
+}
+
+func maxDuration(value time.Duration, fallback time.Duration) time.Duration {
+	if value <= 0 {
+		return fallback
+	}
+	return value
 }

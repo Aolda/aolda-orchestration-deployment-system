@@ -26,13 +26,30 @@ func (h Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 
 	projects, err := h.Service.ListAuthorized(r.Context(), user)
 	if err != nil {
+		var catalogMissing CatalogNotFoundError
+		if errors.As(err, &catalogMissing) {
+			core.WriteError(
+				w,
+				r,
+				http.StatusInternalServerError,
+				"PROJECT_CATALOG_NOT_BOOTSTRAPPED",
+				"Project catalog is missing from the GitOps repository.",
+				map[string]any{
+					"path": catalogMissing.Path,
+					"hint": "Seed platform/projects.yaml in the GitOps repository before enabling git mode.",
+				},
+				false,
+			)
+			return
+		}
+
 		core.WriteError(
 			w,
 			r,
 			http.StatusInternalServerError,
 			"PROJECT_CATALOG_READ_FAILED",
 			"Could not read the project catalog.",
-			nil,
+			map[string]any{"error": err.Error()},
 			true,
 		)
 		return
