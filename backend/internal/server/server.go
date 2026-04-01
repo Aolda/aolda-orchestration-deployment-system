@@ -31,6 +31,7 @@ func New(cfg core.Config) http.Handler {
 			Branch:      cfg.GitBranch,
 			AuthorName:  cfg.GitAuthorName,
 			AuthorEmail: cfg.GitAuthorEmail,
+			Timeout:     maxDuration(cfg.GitCommandTimeout, 15*time.Second),
 		}
 
 		projectSource = project.GitCatalogSource{Repository: repository}

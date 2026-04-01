@@ -25,3 +25,15 @@ func (LocalSyncStatusReader) Read(ctx context.Context, record application.Record
 		ObservedAt: observedAt,
 	}, nil
 }
+
+func (r LocalSyncStatusReader) ReadMany(ctx context.Context, records []application.Record) (map[string]application.SyncInfo, error) {
+	items := make(map[string]application.SyncInfo, len(records))
+	for _, record := range records {
+		info, err := r.Read(ctx, record)
+		if err != nil {
+			return nil, err
+		}
+		items[record.ID] = info
+	}
+	return items, nil
+}

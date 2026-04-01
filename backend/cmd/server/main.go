@@ -26,6 +26,7 @@ func main() {
 			Branch:      cfg.GitBranch,
 			AuthorName:  cfg.GitAuthorName,
 			AuthorEmail: cfg.GitAuthorEmail,
+			Timeout:     cfg.GitCommandTimeout,
 		}
 
 		if err := repository.EnsureFile(context.Background(), "platform/projects.yaml"); err != nil {

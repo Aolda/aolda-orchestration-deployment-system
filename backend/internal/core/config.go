@@ -18,6 +18,7 @@ type Config struct {
 	GitBranch                  string
 	GitAuthorName              string
 	GitAuthorEmail             string
+	GitCommandTimeout          time.Duration
 	KubernetesMode             string
 	KubernetesAPIURL           string
 	KubernetesBearerToken      string
@@ -59,6 +60,11 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	gitCommandTimeout, err := envDuration("AODS_GIT_COMMAND_TIMEOUT", 15*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
 	prometheusRequestTimeout, err := envDuration("AODS_PROMETHEUS_REQUEST_TIMEOUT", 5*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -88,6 +94,7 @@ func LoadConfig() (Config, error) {
 		GitBranch:                  envOrDefault("AODS_GIT_BRANCH", "main"),
 		GitAuthorName:              envOrDefault("AODS_GIT_AUTHOR_NAME", "AODS Bot"),
 		GitAuthorEmail:             envOrDefault("AODS_GIT_AUTHOR_EMAIL", "aods-bot@local"),
+		GitCommandTimeout:          gitCommandTimeout,
 		KubernetesMode:             envOrDefault("AODS_K8S_MODE", "local"),
 		KubernetesAPIURL:           envOrDefault("AODS_K8S_API_URL", ""),
 		KubernetesBearerToken:      envOrDefault("AODS_K8S_BEARER_TOKEN", ""),

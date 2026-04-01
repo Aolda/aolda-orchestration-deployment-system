@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -183,12 +184,82 @@ func TestKubeUserResolveClientCertificateFromData(t *testing.T) {
 		ClientKeyData:         base64.StdEncoding.EncodeToString(keyPEM),
 	}
 
-	certificate, err := user.resolveClientCertificate()
+	certificate, err := user.resolveClientCertificate("")
 	if err != nil {
 		t.Fatalf("resolve client certificate: %v", err)
 	}
 	if certificate == nil {
 		t.Fatal("expected client certificate")
+	}
+}
+
+func TestFluxSyncStatusReaderKubeconfigResolvesRelativeTokenFile(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer relative-token" {
+			t.Fatalf("expected bearer token from relative token-file, got %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"items":[]}`))
+	}))
+	defer server.Close()
+
+	originalWD, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	otherDir := t.TempDir()
+	if err := os.Chdir(otherDir); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(originalWD)
+	}()
+
+	configDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(configDir, "token.txt"), []byte("relative-token\n"), 0o644); err != nil {
+		t.Fatalf("write token file: %v", err)
+	}
+
+	kubeconfigPath := filepath.Join(configDir, "config.yaml")
+	kubeconfig := strings.Join([]string{
+		"apiVersion: v1",
+		"kind: Config",
+		"current-context: test-context",
+		"contexts:",
+		"- name: test-context",
+		"  context:",
+		"    cluster: test-cluster",
+		"    user: test-user",
+		"clusters:",
+		"- name: test-cluster",
+		"  cluster:",
+		"    server: " + server.URL,
+		"users:",
+		"- name: test-user",
+		"  user:",
+		"    token-file: token.txt",
+	}, "\n") + "\n"
+	if err := os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o644); err != nil {
+		t.Fatalf("write kubeconfig: %v", err)
+	}
+
+	reader, err := NewFluxSyncStatusReader(core.Config{
+		KubernetesMode:             "kubeconfig",
+		KubernetesKubeconfigPath:   kubeconfigPath,
+		KubernetesRequestTimeout:   2 * time.Second,
+		FluxKustomizationNamespace: "flux-system",
+	})
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+
+	if _, err := reader.Read(context.Background(), application.Record{
+		ID:        "project-a__relative-app",
+		ProjectID: "project-a",
+		Name:      "relative-app",
+		Namespace: "project-a",
+	}); err != nil {
+		t.Fatalf("read sync status: %v", err)
 	}
 }
 

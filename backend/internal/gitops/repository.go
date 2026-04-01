@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 type Repository struct {
@@ -19,6 +20,7 @@ type Repository struct {
 	Branch      string
 	AuthorName  string
 	AuthorEmail string
+	Timeout     time.Duration
 
 	mu sync.Mutex
 }
@@ -172,7 +174,11 @@ func (r *Repository) runOutput(
 	stderr *bytes.Buffer,
 	args ...string,
 ) error {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	execCtx, cancel := r.commandContext(ctx)
+	defer cancel()
+
+	cmd := exec.CommandContext(execCtx, "git", args...)
+	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
 
 	var stdoutBuffer bytes.Buffer
 	var stderrBuffer bytes.Buffer
@@ -194,6 +200,9 @@ func (r *Repository) runOutput(
 			message = strings.TrimSpace(stdoutBuffer.String())
 		}
 		redactedArgs := redactArgs(args)
+		if errors.Is(execCtx.Err(), context.DeadlineExceeded) {
+			return fmt.Errorf("git %s timed out after %s", redactedArgs, r.effectiveTimeout())
+		}
 		if message != "" {
 			return fmt.Errorf("git %s: %s", redactedArgs, message)
 		}
@@ -201,6 +210,20 @@ func (r *Repository) runOutput(
 	}
 
 	return nil
+}
+
+func (r *Repository) commandContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if _, ok := ctx.Deadline(); ok || r.effectiveTimeout() <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, r.effectiveTimeout())
+}
+
+func (r *Repository) effectiveTimeout() time.Duration {
+	if r.Timeout <= 0 {
+		return 15 * time.Second
+	}
+	return r.Timeout
 }
 
 func redactArgs(args []string) string {

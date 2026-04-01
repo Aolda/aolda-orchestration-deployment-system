@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -35,6 +36,16 @@ func (r ErrorSyncStatusReader) Read(ctx context.Context, record application.Reco
 		return application.SyncInfo{}, nil
 	}
 	return application.SyncInfo{}, r.Err
+}
+
+func (r ErrorSyncStatusReader) ReadMany(ctx context.Context, records []application.Record) (map[string]application.SyncInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.Err == nil {
+		return map[string]application.SyncInfo{}, nil
+	}
+	return nil, r.Err
 }
 
 type FluxSyncStatusReader struct {
@@ -91,6 +102,40 @@ func (r FluxSyncStatusReader) Read(ctx context.Context, record application.Recor
 	}
 
 	return mapSyncInfo(item), nil
+}
+
+func (r FluxSyncStatusReader) ReadMany(ctx context.Context, records []application.Record) (map[string]application.SyncInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return map[string]application.SyncInfo{}, nil
+	}
+	if r.Client == nil {
+		return nil, fmt.Errorf("kubernetes api client is not configured")
+	}
+
+	response, err := r.listKustomizations(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make(map[string]application.SyncInfo, len(records))
+	for _, record := range records {
+		item, ok := selectKustomization(response.Items, record)
+		if !ok {
+			now := time.Now().UTC()
+			items[record.ID] = application.SyncInfo{
+				Status:     application.SyncStatusUnknown,
+				Message:    fmt.Sprintf("Flux Kustomization for %s was not found.", desiredFluxPath(record)),
+				ObservedAt: now,
+			}
+			continue
+		}
+		items[record.ID] = mapSyncInfo(item)
+	}
+
+	return items, nil
 }
 
 func (r FluxSyncStatusReader) listKustomizations(ctx context.Context) (kustomizationListResponse, error) {
@@ -156,6 +201,8 @@ func newKubeconfigAPIClient(cfg core.Config) (*apiClient, error) {
 	if configPath == "" {
 		return nil, fmt.Errorf("AODS_K8S_KUBECONFIG is required when AODS_K8S_MODE=kubeconfig")
 	}
+	configPath = filepath.Clean(configPath)
+	configDir := filepath.Dir(configPath)
 
 	data, err := os.ReadFile(configPath)
 	if err != nil {
@@ -188,18 +235,18 @@ func newKubeconfigAPIClient(cfg core.Config) (*apiClient, error) {
 		return nil, err
 	}
 
-	clientCertificate, err := selectedUser.User.resolveClientCertificate()
+	clientCertificate, err := selectedUser.User.resolveClientCertificate(configDir)
 	if err != nil {
 		return nil, err
 	}
-	bearerTokenProvider := selectedUser.User.resolveBearerTokenProvider()
+	bearerTokenProvider := selectedUser.User.resolveBearerTokenProvider(configDir)
 	if bearerTokenProvider == nil && clientCertificate == nil {
 		return nil, fmt.Errorf("kubeconfig user does not provide exec, token, token-file, or client certificate credentials")
 	}
 
 	httpClient, err := newHTTPClient(
 		cfg.KubernetesRequestTimeout,
-		selectedCluster.Cluster.CertificateAuthority,
+		resolveKubeconfigPath(configDir, selectedCluster.Cluster.CertificateAuthority),
 		selectedCluster.Cluster.CertificateAuthorityData,
 		selectedCluster.Cluster.InsecureSkipTLSVerify,
 		clientCertificate,
@@ -400,7 +447,7 @@ func (c kubeconfigDocument) userByName(name string) (namedKubeUserEntry, error) 
 	return namedKubeUserEntry{}, fmt.Errorf("kubeconfig user %q was not found", name)
 }
 
-func (u kubeUser) resolveBearerTokenProvider() func(context.Context) (string, error) {
+func (u kubeUser) resolveBearerTokenProvider(baseDir string) func(context.Context) (string, error) {
 	if strings.TrimSpace(u.Token) != "" {
 		token := strings.TrimSpace(u.Token)
 		return func(context.Context) (string, error) {
@@ -409,7 +456,7 @@ func (u kubeUser) resolveBearerTokenProvider() func(context.Context) (string, er
 	}
 
 	if strings.TrimSpace(u.TokenFile) != "" {
-		tokenFile := strings.TrimSpace(u.TokenFile)
+		tokenFile := resolveKubeconfigPath(baseDir, u.TokenFile)
 		return func(context.Context) (string, error) {
 			data, err := os.ReadFile(tokenFile)
 			if err != nil {
@@ -421,19 +468,19 @@ func (u kubeUser) resolveBearerTokenProvider() func(context.Context) (string, er
 
 	if u.Exec != nil {
 		return func(ctx context.Context) (string, error) {
-			return u.Exec.resolveToken(ctx)
+			return u.Exec.resolveToken(ctx, baseDir)
 		}
 	}
 
 	return nil
 }
 
-func (u kubeUser) resolveClientCertificate() (*tls.Certificate, error) {
-	certPEM, err := u.readClientCertificatePEM()
+func (u kubeUser) resolveClientCertificate(baseDir string) (*tls.Certificate, error) {
+	certPEM, err := u.readClientCertificatePEM(baseDir)
 	if err != nil {
 		return nil, err
 	}
-	keyPEM, err := u.readClientKeyPEM()
+	keyPEM, err := u.readClientKeyPEM(baseDir)
 	if err != nil {
 		return nil, err
 	}
@@ -449,7 +496,7 @@ func (u kubeUser) resolveClientCertificate() (*tls.Certificate, error) {
 	return &certificate, nil
 }
 
-func (u kubeUser) readClientCertificatePEM() ([]byte, error) {
+func (u kubeUser) readClientCertificatePEM(baseDir string) ([]byte, error) {
 	if strings.TrimSpace(u.ClientCertificateData) != "" {
 		pem, err := base64.StdEncoding.DecodeString(strings.TrimSpace(u.ClientCertificateData))
 		if err != nil {
@@ -459,7 +506,7 @@ func (u kubeUser) readClientCertificatePEM() ([]byte, error) {
 	}
 
 	if strings.TrimSpace(u.ClientCertificate) != "" {
-		pem, err := os.ReadFile(strings.TrimSpace(u.ClientCertificate))
+		pem, err := os.ReadFile(resolveKubeconfigPath(baseDir, u.ClientCertificate))
 		if err != nil {
 			return nil, fmt.Errorf("read kubeconfig client-certificate: %w", err)
 		}
@@ -469,7 +516,7 @@ func (u kubeUser) readClientCertificatePEM() ([]byte, error) {
 	return nil, nil
 }
 
-func (u kubeUser) readClientKeyPEM() ([]byte, error) {
+func (u kubeUser) readClientKeyPEM(baseDir string) ([]byte, error) {
 	if strings.TrimSpace(u.ClientKeyData) != "" {
 		pem, err := base64.StdEncoding.DecodeString(strings.TrimSpace(u.ClientKeyData))
 		if err != nil {
@@ -479,7 +526,7 @@ func (u kubeUser) readClientKeyPEM() ([]byte, error) {
 	}
 
 	if strings.TrimSpace(u.ClientKey) != "" {
-		pem, err := os.ReadFile(strings.TrimSpace(u.ClientKey))
+		pem, err := os.ReadFile(resolveKubeconfigPath(baseDir, u.ClientKey))
 		if err != nil {
 			return nil, fmt.Errorf("read kubeconfig client-key: %w", err)
 		}
@@ -489,12 +536,12 @@ func (u kubeUser) readClientKeyPEM() ([]byte, error) {
 	return nil, nil
 }
 
-func (e kubeExecCommand) resolveToken(ctx context.Context) (string, error) {
+func (e kubeExecCommand) resolveToken(ctx context.Context, baseDir string) (string, error) {
 	if strings.TrimSpace(e.Command) == "" {
 		return "", fmt.Errorf("kubeconfig exec command is empty")
 	}
 
-	cmd := exec.CommandContext(ctx, e.Command, e.Args...)
+	cmd := exec.CommandContext(ctx, resolveExecCommand(baseDir, e.Command), e.Args...)
 	cmd.Env = append(os.Environ(), renderExecEnv(e.Env)...)
 
 	output, err := cmd.CombinedOutput()
@@ -522,6 +569,22 @@ func renderExecEnv(values []kubeExecEnv) []string {
 		rendered = append(rendered, item.Name+"="+item.Value)
 	}
 	return rendered
+}
+
+func resolveKubeconfigPath(baseDir string, value string) string {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" || filepath.IsAbs(trimmed) || strings.HasPrefix(trimmed, "~") {
+		return trimmed
+	}
+	return filepath.Join(baseDir, trimmed)
+}
+
+func resolveExecCommand(baseDir string, command string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" || filepath.IsAbs(trimmed) || !strings.ContainsRune(trimmed, filepath.Separator) {
+		return trimmed
+	}
+	return filepath.Join(baseDir, trimmed)
 }
 
 type kustomizationListResponse struct {
