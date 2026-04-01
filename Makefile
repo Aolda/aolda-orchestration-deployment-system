@@ -14,8 +14,8 @@ frontend-run:
 
 check:
 	@echo "Running checks for frontend and backend..."
-	@cd backend && go vet ./... || true
-	@cd frontend && npm run lint || true
+	@cd backend && go vet ./...
+	@cd frontend && npm run lint
 
 doctor:
 	@bash scripts/doctor.sh
