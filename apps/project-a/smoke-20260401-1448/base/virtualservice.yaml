@@ -1,0 +1,13 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: smoke-20260401-1448
+  namespace: project-a
+spec:
+  hosts:
+    - smoke-20260401-1448.project-a.svc.cluster.local
+  http:
+    - route:
+        - destination:
+            host: smoke-20260401-1448.project-a.svc.cluster.local
+            subset: stable
