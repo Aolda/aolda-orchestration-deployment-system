@@ -10,6 +10,34 @@ projects:
         - aods:project-a:deploy
       adminGroups:
         - aods:platform:admin
+    environments:
+      - id: dev
+        name: Development
+        clusterId: default
+        writeMode: direct
+      - id: staging
+        name: Staging
+        clusterId: default
+        writeMode: direct
+      - id: prod
+        name: Production
+        clusterId: default
+        writeMode: pull_request
+        default: true
+    policies:
+      minReplicas: 2
+      allowedEnvironments:
+        - dev
+        - staging
+        - prod
+      allowedDeploymentStrategies:
+        - Standard
+        - Canary
+      allowedClusterTargets:
+        - default
+      prodPRRequired: true
+      autoRollbackEnabled: true
+      requiredProbes: true
   - id: project-b
     name: Project B
     description: Finance automation and scheduled batch jobs.
@@ -21,6 +49,28 @@ projects:
         - aods:project-b:deploy
       adminGroups:
         - aods:platform:admin
+    environments:
+      - id: dev
+        name: Development
+        clusterId: default
+        writeMode: direct
+      - id: prod
+        name: Production
+        clusterId: default
+        writeMode: direct
+        default: true
+    policies:
+      minReplicas: 1
+      allowedEnvironments:
+        - dev
+        - prod
+      allowedDeploymentStrategies:
+        - Standard
+      allowedClusterTargets:
+        - default
+      prodPRRequired: false
+      autoRollbackEnabled: false
+      requiredProbes: true
   - id: project-c
     name: Project C
     description: Internal analytics workloads for growth reporting.
@@ -32,3 +82,26 @@ projects:
         - aods:project-c:deploy
       adminGroups:
         - aods:platform:admin
+    environments:
+      - id: staging
+        name: Staging
+        clusterId: analytics
+        writeMode: direct
+      - id: prod
+        name: Production
+        clusterId: analytics
+        writeMode: pull_request
+        default: true
+    policies:
+      minReplicas: 2
+      allowedEnvironments:
+        - staging
+        - prod
+      allowedDeploymentStrategies:
+        - Standard
+        - Canary
+      allowedClusterTargets:
+        - analytics
+      prodPRRequired: true
+      autoRollbackEnabled: true
+      requiredProbes: true

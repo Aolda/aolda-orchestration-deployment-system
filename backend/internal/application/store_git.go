@@ -87,6 +87,7 @@ func (s GitManifestStore) UpdateApplicationImage(
 	ctx context.Context,
 	applicationID string,
 	imageTag string,
+	deploymentID string,
 ) (Record, error) {
 	if s.Repository == nil {
 		return Record{}, fmt.Errorf("git manifest repository is not configured")
@@ -97,7 +98,7 @@ func (s GitManifestStore) UpdateApplicationImage(
 		ctx,
 		fmt.Sprintf("feat: redeploy %s with image tag %s", applicationID, imageTag),
 		func(repoDir string) error {
-			item, err := LocalManifestStore{RepoRoot: repoDir}.UpdateApplicationImage(ctx, applicationID, imageTag)
+			item, err := LocalManifestStore{RepoRoot: repoDir}.UpdateApplicationImage(ctx, applicationID, imageTag, deploymentID)
 			if err != nil {
 				return err
 			}
@@ -110,4 +111,147 @@ func (s GitManifestStore) UpdateApplicationImage(
 	}
 
 	return record, nil
+}
+
+func (s GitManifestStore) PatchApplication(ctx context.Context, applicationID string, input UpdateApplicationRequest) (Record, error) {
+	if s.Repository == nil {
+		return Record{}, fmt.Errorf("git manifest repository is not configured")
+	}
+
+	var record Record
+	err := s.Repository.WithWrite(ctx, fmt.Sprintf("feat: update application %s", applicationID), func(repoDir string) error {
+		item, err := LocalManifestStore{RepoRoot: repoDir}.PatchApplication(ctx, applicationID, input)
+		if err != nil {
+			return err
+		}
+		record = item
+		return nil
+	})
+	if err != nil {
+		return Record{}, err
+	}
+	return record, nil
+}
+
+func (s GitManifestStore) ListDeployments(ctx context.Context, applicationID string) ([]DeploymentRecord, error) {
+	if s.Repository == nil {
+		return nil, fmt.Errorf("git manifest repository is not configured")
+	}
+	var items []DeploymentRecord
+	err := s.Repository.WithRead(ctx, func(repoDir string) error {
+		deployments, err := LocalManifestStore{RepoRoot: repoDir}.ListDeployments(ctx, applicationID)
+		if err != nil {
+			return err
+		}
+		items = deployments
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s GitManifestStore) GetDeployment(ctx context.Context, applicationID string, deploymentID string) (DeploymentRecord, error) {
+	if s.Repository == nil {
+		return DeploymentRecord{}, fmt.Errorf("git manifest repository is not configured")
+	}
+	var deployment DeploymentRecord
+	err := s.Repository.WithRead(ctx, func(repoDir string) error {
+		item, err := LocalManifestStore{RepoRoot: repoDir}.GetDeployment(ctx, applicationID, deploymentID)
+		if err != nil {
+			return err
+		}
+		deployment = item
+		return nil
+	})
+	if err != nil {
+		return DeploymentRecord{}, err
+	}
+	return deployment, nil
+}
+
+func (s GitManifestStore) UpdateDeployment(ctx context.Context, applicationID string, deployment DeploymentRecord) (DeploymentRecord, error) {
+	if s.Repository == nil {
+		return DeploymentRecord{}, fmt.Errorf("git manifest repository is not configured")
+	}
+	var updated DeploymentRecord
+	err := s.Repository.WithWrite(ctx, fmt.Sprintf("feat: update deployment %s", deployment.DeploymentID), func(repoDir string) error {
+		item, err := LocalManifestStore{RepoRoot: repoDir}.UpdateDeployment(ctx, applicationID, deployment)
+		if err != nil {
+			return err
+		}
+		updated = item
+		return nil
+	})
+	if err != nil {
+		return DeploymentRecord{}, err
+	}
+	return updated, nil
+}
+
+func (s GitManifestStore) GetRollbackPolicy(ctx context.Context, applicationID string) (RollbackPolicy, error) {
+	if s.Repository == nil {
+		return RollbackPolicy{}, fmt.Errorf("git manifest repository is not configured")
+	}
+	var policy RollbackPolicy
+	err := s.Repository.WithRead(ctx, func(repoDir string) error {
+		item, err := LocalManifestStore{RepoRoot: repoDir}.GetRollbackPolicy(ctx, applicationID)
+		if err != nil {
+			return err
+		}
+		policy = item
+		return nil
+	})
+	if err != nil {
+		return RollbackPolicy{}, err
+	}
+	return policy, nil
+}
+
+func (s GitManifestStore) SaveRollbackPolicy(ctx context.Context, applicationID string, policy RollbackPolicy) (RollbackPolicy, error) {
+	if s.Repository == nil {
+		return RollbackPolicy{}, fmt.Errorf("git manifest repository is not configured")
+	}
+	var saved RollbackPolicy
+	err := s.Repository.WithWrite(ctx, fmt.Sprintf("feat: update rollback policy for %s", applicationID), func(repoDir string) error {
+		item, err := LocalManifestStore{RepoRoot: repoDir}.SaveRollbackPolicy(ctx, applicationID, policy)
+		if err != nil {
+			return err
+		}
+		saved = item
+		return nil
+	})
+	if err != nil {
+		return RollbackPolicy{}, err
+	}
+	return saved, nil
+}
+
+func (s GitManifestStore) ListEvents(ctx context.Context, applicationID string) ([]Event, error) {
+	if s.Repository == nil {
+		return nil, fmt.Errorf("git manifest repository is not configured")
+	}
+	var items []Event
+	err := s.Repository.WithRead(ctx, func(repoDir string) error {
+		events, err := LocalManifestStore{RepoRoot: repoDir}.ListEvents(ctx, applicationID)
+		if err != nil {
+			return err
+		}
+		items = events
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func (s GitManifestStore) AppendEvent(ctx context.Context, applicationID string, event Event) error {
+	if s.Repository == nil {
+		return fmt.Errorf("git manifest repository is not configured")
+	}
+	return s.Repository.WithWrite(ctx, fmt.Sprintf("feat: append application event %s", event.ID), func(repoDir string) error {
+		return LocalManifestStore{RepoRoot: repoDir}.AppendEvent(ctx, applicationID, event)
+	})
 }

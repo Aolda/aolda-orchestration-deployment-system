@@ -2,12 +2,22 @@ import type {
   Application,
   ApplicationListResponse,
   ApplicationMetricsResponse,
+  ChangeRecord,
+  ClusterListResponse,
   CreateApplicationRequest,
+  CreateChangeRequest,
   CreateDeploymentRequest,
   CurrentUser,
+  DeploymentRecord,
+  DeploymentListResponse,
+  EnvironmentListResponse,
   ErrorResponse,
+  EventListResponse,
   ProjectListResponse,
+  ProjectPolicy,
+  RollbackPolicy,
   SyncStatusResponse,
+  UpdateApplicationRequest,
 } from '../types/api'
 import {
   clearOIDCSession,
@@ -78,12 +88,75 @@ export const api = {
       body: JSON.stringify(body),
     })
   },
-  createDeployment(applicationId: string, imageTag: string) {
-    const body: CreateDeploymentRequest = { imageTag }
+  getProjectEnvironments(projectId: string) {
+    return request<EnvironmentListResponse>(`/api/v1/projects/${projectId}/environments`)
+  },
+  getProjectPolicies(projectId: string) {
+    return request<ProjectPolicy>(`/api/v1/projects/${projectId}/policies`)
+  },
+  updateProjectPolicies(projectId: string, body: ProjectPolicy) {
+    return request<ProjectPolicy>(`/api/v1/projects/${projectId}/policies`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+  },
+  getClusters() {
+    return request<ClusterListResponse>('/api/v1/clusters')
+  },
+  createChange(projectId: string, body: CreateChangeRequest) {
+    return request<ChangeRecord>(`/api/v1/projects/${projectId}/changes`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
+  getChange(changeId: string) {
+    return request<ChangeRecord>(`/api/v1/changes/${changeId}`)
+  },
+  submitChange(changeId: string) {
+    return request<ChangeRecord>(`/api/v1/changes/${changeId}/submit`, {
+      method: 'POST',
+    })
+  },
+  approveChange(changeId: string) {
+    return request<ChangeRecord>(`/api/v1/changes/${changeId}/approve`, {
+      method: 'POST',
+    })
+  },
+  mergeChange(changeId: string) {
+    return request<ChangeRecord>(`/api/v1/changes/${changeId}/merge`, {
+      method: 'POST',
+    })
+  },
+  patchApplication(applicationId: string, body: UpdateApplicationRequest) {
+    return request<Application>(`/api/v1/applications/${applicationId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(body),
+    })
+  },
+  createDeployment(applicationId: string, imageTag: string, environment?: string) {
+    const body: CreateDeploymentRequest = { imageTag, environment }
     return request(`/api/v1/applications/${applicationId}/deployments`, {
       method: 'POST',
       body: JSON.stringify(body),
     })
+  },
+  getDeployments(applicationId: string) {
+    return request<DeploymentListResponse>(`/api/v1/applications/${applicationId}/deployments`)
+  },
+  getDeployment(applicationId: string, deploymentId: string) {
+    return request<DeploymentRecord>(`/api/v1/applications/${applicationId}/deployments/${deploymentId}`)
+  },
+  promoteDeployment(applicationId: string, deploymentId: string) {
+    return request<DeploymentRecord>(
+      `/api/v1/applications/${applicationId}/deployments/${deploymentId}/promote`,
+      { method: 'POST' },
+    )
+  },
+  abortDeployment(applicationId: string, deploymentId: string) {
+    return request<DeploymentRecord>(
+      `/api/v1/applications/${applicationId}/deployments/${deploymentId}/abort`,
+      { method: 'POST' },
+    )
   },
   getSyncStatus(applicationId: string) {
     return request<SyncStatusResponse>(`/api/v1/applications/${applicationId}/sync-status`)
@@ -92,5 +165,17 @@ export const api = {
     return request<ApplicationMetricsResponse>(
       `/api/v1/applications/${applicationId}/metrics`,
     )
+  },
+  getRollbackPolicy(applicationId: string) {
+    return request<RollbackPolicy>(`/api/v1/applications/${applicationId}/rollback-policies`)
+  },
+  saveRollbackPolicy(applicationId: string, body: RollbackPolicy) {
+    return request<RollbackPolicy>(`/api/v1/applications/${applicationId}/rollback-policies`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
+  getEvents(applicationId: string) {
+    return request<EventListResponse>(`/api/v1/applications/${applicationId}/events`)
   },
 }
