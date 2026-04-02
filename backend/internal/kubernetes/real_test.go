@@ -163,14 +163,42 @@ func TestSelectKustomizationMatchesDesiredPath(t *testing.T) {
 			},
 		},
 	}, application.Record{
-		ProjectID: "project-a",
-		Name:      "my-app",
-		Namespace: "project-a",
+		ProjectID:          "project-a",
+		Name:               "my-app",
+		Namespace:          "project-a",
+		DefaultEnvironment: "prod",
 	})
 	if !ok {
 		t.Fatal("expected matching kustomization")
 	}
 	if got := normalizeFluxPath(item.Spec.Path); got != "apps/project-a/my-app/overlays/prod" {
+		t.Fatalf("unexpected normalized path %q", got)
+	}
+}
+
+func TestSelectKustomizationMatchesDefaultEnvironmentPath(t *testing.T) {
+	t.Parallel()
+
+	item, ok := selectKustomization([]fluxKustomization{
+		{
+			Spec: struct {
+				Path            string `json:"path"`
+				TargetNamespace string `json:"targetNamespace"`
+			}{
+				Path:            "./apps/project-a/my-app/overlays/dev",
+				TargetNamespace: "project-a",
+			},
+		},
+	}, application.Record{
+		ProjectID:          "project-a",
+		Name:               "my-app",
+		Namespace:          "project-a",
+		DefaultEnvironment: "dev",
+	})
+	if !ok {
+		t.Fatal("expected matching kustomization")
+	}
+	if got := normalizeFluxPath(item.Spec.Path); got != "apps/project-a/my-app/overlays/dev" {
 		t.Fatalf("unexpected normalized path %q", got)
 	}
 }
