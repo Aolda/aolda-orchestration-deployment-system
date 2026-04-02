@@ -103,12 +103,18 @@ func (h Handler) writeDomainError(w http.ResponseWriter, r *http.Request, err er
 	switch {
 	case errors.Is(err, project.ErrForbidden), errors.Is(err, application.ErrRequiresDeployer), errors.Is(err, application.ErrRequiresAdmin):
 		core.WriteError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have permission to perform this action.", nil, false)
+	case errors.Is(err, ErrInvalidOperation):
+		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Change request is invalid.", map[string]any{"error": err.Error()}, false)
 	case errors.Is(err, project.ErrNotFound):
 		core.WriteError(w, r, http.StatusNotFound, "PROJECT_NOT_FOUND", "Project was not found.", map[string]any{"projectId": r.PathValue("projectId")}, false)
 	case errors.Is(err, ErrNotFound):
 		core.WriteError(w, r, http.StatusNotFound, "CHANGE_NOT_FOUND", "Change was not found.", map[string]any{"changeId": r.PathValue("changeId")}, false)
+	case errors.Is(err, ErrSubmissionRequired):
+		core.WriteError(w, r, http.StatusConflict, "CHANGE_SUBMISSION_REQUIRED", "This change must be submitted before continuing.", map[string]any{"changeId": r.PathValue("changeId")}, false)
 	case errors.Is(err, ErrApprovalRequired):
 		core.WriteError(w, r, http.StatusConflict, "CHANGE_APPROVAL_REQUIRED", "This change must be approved before merge.", map[string]any{"changeId": r.PathValue("changeId")}, false)
+	case errors.Is(err, ErrStateConflict):
+		core.WriteError(w, r, http.StatusConflict, "CHANGE_STATE_CONFLICT", "This change cannot perform that transition in its current state.", map[string]any{"changeId": r.PathValue("changeId")}, false)
 	default:
 		core.WriteError(w, r, http.StatusInternalServerError, "CHANGE_PROCESSING_FAILED", "Could not process the change.", map[string]any{"error": err.Error()}, true)
 	}

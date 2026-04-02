@@ -13,9 +13,11 @@ import (
 )
 
 var (
-	ErrNotFound         = errors.New("change not found")
-	ErrInvalidOperation = errors.New("change operation is invalid")
-	ErrApprovalRequired = errors.New("approved change is required before merge")
+	ErrNotFound           = errors.New("change not found")
+	ErrInvalidOperation   = errors.New("change operation is invalid")
+	ErrApprovalRequired   = errors.New("approved change is required before merge")
+	ErrSubmissionRequired = errors.New("submitted change is required before this transition")
+	ErrStateConflict      = errors.New("change state transition is invalid")
 )
 
 type Store interface {
@@ -86,6 +88,9 @@ func (s Service) Submit(ctx context.Context, user core.User, changeID string) (R
 	if !authorized.Role.CanDeploy() {
 		return Record{}, application.ErrRequiresDeployer
 	}
+	if record.Status != StatusDraft {
+		return Record{}, ErrStateConflict
+	}
 	record.Status = StatusSubmitted
 	record.UpdatedAt = time.Now().UTC()
 	return s.Store.Update(ctx, record)
@@ -102,6 +107,14 @@ func (s Service) Approve(ctx context.Context, user core.User, changeID string) (
 	}
 	if !authorized.Role.CanAdmin() {
 		return Record{}, application.ErrRequiresAdmin
+	}
+	switch record.Status {
+	case StatusDraft:
+		return Record{}, ErrSubmissionRequired
+	case StatusSubmitted:
+		// valid
+	default:
+		return Record{}, ErrStateConflict
 	}
 	record.Status = StatusApproved
 	record.ApprovedBy = user.Username
@@ -121,8 +134,21 @@ func (s Service) Merge(ctx context.Context, user core.User, changeID string) (Re
 	if !authorized.Role.CanDeploy() {
 		return Record{}, application.ErrRequiresDeployer
 	}
-	if record.WriteMode == project.WriteModePullRequest && record.Status != StatusApproved {
-		return Record{}, ErrApprovalRequired
+	switch record.WriteMode {
+	case project.WriteModePullRequest:
+		if record.Status != StatusApproved {
+			if record.Status == StatusMerged {
+				return Record{}, ErrStateConflict
+			}
+			return Record{}, ErrApprovalRequired
+		}
+	default:
+		if record.Status == StatusDraft {
+			return Record{}, ErrSubmissionRequired
+		}
+		if record.Status != StatusSubmitted && record.Status != StatusApproved {
+			return Record{}, ErrStateConflict
+		}
 	}
 
 	applyCtx := application.WithChangeGuardBypass(ctx)

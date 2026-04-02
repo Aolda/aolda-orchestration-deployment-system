@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/aolda/aods-backend/internal/core"
@@ -87,6 +88,47 @@ func (s staticCatalogSource) ListProjects(ctx context.Context) ([]project.Catalo
 	return s.items, nil
 }
 
+type createSpyStore struct {
+	stubStore
+	createErr    error
+	createRecord Record
+	createCalls  int
+	secretPaths  []string
+}
+
+func (s *createSpyStore) CreateApplication(ctx context.Context, project ProjectContext, input CreateRequest, secretPath string) (Record, error) {
+	s.createCalls++
+	s.secretPaths = append(s.secretPaths, secretPath)
+	if s.createErr != nil {
+		return Record{}, s.createErr
+	}
+	return s.createRecord, nil
+}
+
+type secretsSpy struct {
+	stageCalls    int
+	finalizeCalls int
+	staged        StagedSecret
+	finalizedPath string
+}
+
+func (s *secretsSpy) Stage(ctx context.Context, requestID string, projectID string, appName string, createdBy string, data map[string]string) (StagedSecret, error) {
+	s.stageCalls++
+	if s.staged == (StagedSecret{}) {
+		s.staged = StagedSecret{
+			StagingPath: "secret/aods/staging/" + requestID,
+			FinalPath:   "secret/aods/apps/" + projectID + "/" + appName + "/prod",
+		}
+	}
+	return s.staged, nil
+}
+
+func (s *secretsSpy) Finalize(ctx context.Context, staged StagedSecret, data map[string]string) error {
+	s.finalizeCalls++
+	s.finalizedPath = staged.FinalPath
+	return nil
+}
+
 func TestServiceListApplicationsUsesBatchStatusReaderWhenAvailable(t *testing.T) {
 	t.Parallel()
 
@@ -130,5 +172,79 @@ func TestServiceListApplicationsUsesBatchStatusReaderWhenAvailable(t *testing.T)
 	}
 	if reader.readCalls != 0 {
 		t.Fatalf("expected single-item Read not to be used, got %d", reader.readCalls)
+	}
+}
+
+func TestCreateApplicationDoesNotFinalizeSecretsWhenStoreWriteFails(t *testing.T) {
+	t.Parallel()
+
+	store := &createSpyStore{
+		createErr: errors.New("manifest write failed"),
+	}
+	secrets := &secretsSpy{}
+	service := Service{
+		Projects: &project.Service{
+			Source: staticCatalogSource{
+				items: []project.CatalogProject{
+					{
+						ID:        "project-a",
+						Name:      "Project A",
+						Namespace: "project-a",
+						Access: project.Access{
+							DeployerGroups: []string{"aods:project-a:deploy"},
+						},
+						Environments: []project.Environment{
+							{
+								ID:        "prod",
+								Name:      "Production",
+								ClusterID: "default",
+								WriteMode: project.WriteModeDirect,
+								Default:   true,
+							},
+						},
+						Policies: project.PolicySet{
+							MinReplicas:                 1,
+							AllowedEnvironments:         []string{"prod"},
+							AllowedDeploymentStrategies: []string{"Standard"},
+							AllowedClusterTargets:       []string{"default"},
+							RequiredProbes:              true,
+						},
+					},
+				},
+			},
+		},
+		Store:        store,
+		Secrets:      secrets,
+		StatusReader: &batchStatusReaderStub{},
+	}
+
+	_, err := service.CreateApplication(context.Background(), core.User{
+		Username: "deployer",
+		Groups:   []string{"aods:project-a:deploy"},
+	}, "project-a", CreateRequest{
+		Name:               "secret-app",
+		Image:              "repo/secret-app:v1",
+		ServicePort:        8080,
+		DeploymentStrategy: DeploymentStrategyStandard,
+		Environment:        "prod",
+		Secrets: []SecretEntry{
+			{Key: "DATABASE_URL", Value: "postgres://db"},
+		},
+	}, "req_1")
+	if err == nil {
+		t.Fatal("expected create application to fail when manifest store write fails")
+	}
+
+	if secrets.stageCalls != 1 {
+		t.Fatalf("expected secrets to be staged once, got %d", secrets.stageCalls)
+	}
+	if secrets.finalizeCalls != 0 {
+		t.Fatalf("expected secrets not to be finalized on store failure, got %d", secrets.finalizeCalls)
+	}
+	if store.createCalls != 1 {
+		t.Fatalf("expected manifest store create to be attempted once, got %d", store.createCalls)
+	}
+	if len(store.secretPaths) != 1 || store.secretPaths[0] != "secret/aods/apps/project-a/secret-app/prod" {
+		t.Fatalf("expected final vault path to be passed to manifest store, got %#v", store.secretPaths)
 	}
 }

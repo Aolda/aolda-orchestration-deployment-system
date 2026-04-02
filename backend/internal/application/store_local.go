@@ -178,9 +178,6 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 		if record.Replicas <= 0 {
 			record.Replicas = 1
 		}
-		if !record.RequiredProbes {
-			record.RequiredProbes = true
-		}
 		if record.DefaultEnvironment == "" {
 			record.DefaultEnvironment = "prod"
 		}
@@ -243,8 +240,10 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 	}
 
 	image := ""
+	requiredProbes := true
 	if len(deployment.Spec.Template.Spec.Containers) > 0 {
 		image = deployment.Spec.Template.Spec.Containers[0].Image
+		requiredProbes = containerHasProbes(deployment.Spec.Template.Spec.Containers[0])
 	}
 
 	return Record{
@@ -256,7 +255,7 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 		Image:              image,
 		ServicePort:        servicePort,
 		Replicas:           maxInt(deployment.Spec.Replicas, 1),
-		RequiredProbes:     true,
+		RequiredProbes:     requiredProbes,
 		DeploymentStrategy: inferStrategy(useRollout, annotations["aods.io/deployment-strategy"]),
 		DefaultEnvironment: "prod",
 		CreatedAt:          createdAt,
@@ -404,7 +403,9 @@ type deploymentManifest struct {
 		Template struct {
 			Spec struct {
 				Containers []struct {
-					Image string `yaml:"image"`
+					Image          string         `yaml:"image"`
+					ReadinessProbe map[string]any `yaml:"readinessProbe"`
+					LivenessProbe  map[string]any `yaml:"livenessProbe"`
 				} `yaml:"containers"`
 			} `yaml:"spec"`
 		} `yaml:"template"`
@@ -838,6 +839,14 @@ func yamlScalar(value string) string {
 	return strings.TrimSpace(string(data))
 }
 
+func containerHasProbes(container struct {
+	Image          string         `yaml:"image"`
+	ReadinessProbe map[string]any `yaml:"readinessProbe"`
+	LivenessProbe  map[string]any `yaml:"livenessProbe"`
+}) bool {
+	return len(container.ReadinessProbe) > 0 || len(container.LivenessProbe) > 0
+}
+
 func inferStrategy(useRollout bool, annotation string) DeploymentStrategy {
 	if useRollout {
 		return DeploymentStrategyCanary
@@ -885,11 +894,11 @@ func containsEnvironment(items []string, target string) bool {
 func (s LocalManifestStore) writeApplicationFiles(record Record, environments []string) error {
 	applicationDir := filepath.Join(s.RepoRoot, "apps", record.ProjectID, record.Name)
 	files := map[string]string{
-		filepath.Join(applicationDir, "base", "kustomization.yaml"):  renderBaseKustomization(record),
+		filepath.Join(applicationDir, "base", "kustomization.yaml"):     renderBaseKustomization(record),
 		filepath.Join(applicationDir, "base", workloadFileName(record)): renderWorkload(record),
-		filepath.Join(applicationDir, "base", "service.yaml"):        renderService(record),
-		filepath.Join(applicationDir, "base", "virtualservice.yaml"): renderVirtualService(record),
-		filepath.Join(applicationDir, "base", "destinationrule.yaml"): renderDestinationRule(record),
+		filepath.Join(applicationDir, "base", "service.yaml"):           renderService(record),
+		filepath.Join(applicationDir, "base", "virtualservice.yaml"):    renderVirtualService(record),
+		filepath.Join(applicationDir, "base", "destinationrule.yaml"):   renderDestinationRule(record),
 	}
 	if record.DeploymentStrategy == DeploymentStrategyCanary {
 		files[filepath.Join(applicationDir, "base", "canary-service.yaml")] = renderCanaryService(record)

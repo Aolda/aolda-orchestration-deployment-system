@@ -512,6 +512,309 @@ func TestViewerCannotSubmitOrMergeChange(t *testing.T) {
 	}
 }
 
+func TestInvalidChangeOperationReturnsBadRequest(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	changeResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/changes", map[string]any{
+		"operation":     "DestroyEverything",
+		"applicationId": "project-a__guarded-app",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if changeResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from invalid change operation, got %d", changeResponse.StatusCode)
+	}
+
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeBody(t, changeResponse, &body)
+	if body.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected INVALID_REQUEST, got %s", body.Error.Code)
+	}
+}
+
+func TestDeployerCannotApproveChange(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	changeResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/changes", map[string]any{
+		"operation":          "CreateApplication",
+		"name":               "approval-guard-app",
+		"description":        "Needs admin approval",
+		"image":              "repo/approval-guard-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"environment":        "dev",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if changeResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 from create change, got %d", changeResponse.StatusCode)
+	}
+
+	var changeBody struct {
+		ID string `json:"id"`
+	}
+	decodeBody(t, changeResponse, &changeBody)
+
+	approveResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/changes/"+changeBody.ID+"/approve", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if approveResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403 from approve, got %d", approveResponse.StatusCode)
+	}
+}
+
+func TestApproveRequiresSubmittedChange(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	changeResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/changes", map[string]any{
+		"operation":          "CreateApplication",
+		"name":               "approval-state-app",
+		"description":        "Must be submitted before approval",
+		"image":              "repo/approval-state-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"environment":        "dev",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if changeResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 from create change, got %d", changeResponse.StatusCode)
+	}
+
+	var changeBody struct {
+		ID string `json:"id"`
+	}
+	decodeBody(t, changeResponse, &changeBody)
+
+	approveResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/changes/"+changeBody.ID+"/approve", nil, map[string]string{
+		"X-AODS-User-Id":  "admin-1",
+		"X-AODS-Username": "admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if approveResponse.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 from approve before submit, got %d", approveResponse.StatusCode)
+	}
+
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeBody(t, approveResponse, &body)
+	if body.Error.Code != "CHANGE_SUBMISSION_REQUIRED" {
+		t.Fatalf("expected CHANGE_SUBMISSION_REQUIRED, got %s", body.Error.Code)
+	}
+}
+
+func TestMergeRequiresApprovalForPRManagedChange(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	projectsYAML := `projects:
+  - id: project-a
+    name: Project A
+    description: Test project
+    namespace: project-a
+    access:
+      viewerGroups:
+        - aods:project-a:view
+      deployerGroups:
+        - aods:project-a:deploy
+      adminGroups:
+        - aods:platform:admin
+    environments:
+      - id: prod
+        name: Production
+        clusterId: default
+        writeMode: pull_request
+        default: true
+    policies:
+      minReplicas: 1
+      allowedEnvironments:
+        - prod
+      allowedDeploymentStrategies:
+        - Standard
+        - Canary
+      allowedClusterTargets:
+        - default
+      prodPRRequired: true
+      autoRollbackEnabled: false
+      requiredProbes: true
+`
+	if err := os.WriteFile(filepath.Join(env.repoRoot, "platform", "projects.yaml"), []byte(projectsYAML), 0o644); err != nil {
+		t.Fatalf("rewrite projects.yaml: %v", err)
+	}
+
+	changeResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/changes", map[string]any{
+		"operation":          "CreateApplication",
+		"name":               "approval-required-app",
+		"description":        "Must be approved before merge",
+		"image":              "repo/approval-required-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"environment":        "prod",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if changeResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 from create change, got %d", changeResponse.StatusCode)
+	}
+
+	var changeBody struct {
+		ID string `json:"id"`
+	}
+	decodeBody(t, changeResponse, &changeBody)
+
+	submitResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/changes/"+changeBody.ID+"/submit", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if submitResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from submit, got %d", submitResponse.StatusCode)
+	}
+
+	mergeResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/changes/"+changeBody.ID+"/merge", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if mergeResponse.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 from merge without approval, got %d", mergeResponse.StatusCode)
+	}
+
+	var mergeBody struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeBody(t, mergeResponse, &mergeBody)
+	if mergeBody.Error.Code != "CHANGE_APPROVAL_REQUIRED" {
+		t.Fatalf("expected CHANGE_APPROVAL_REQUIRED, got %s", mergeBody.Error.Code)
+	}
+}
+
+func TestDirectChangeMergeRequiresSubmit(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	changeResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/changes", map[string]any{
+		"operation":          "CreateApplication",
+		"name":               "direct-merge-state-app",
+		"description":        "Must be submitted before merge",
+		"image":              "repo/direct-merge-state-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"environment":        "dev",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if changeResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 from create change, got %d", changeResponse.StatusCode)
+	}
+
+	var changeBody struct {
+		ID string `json:"id"`
+	}
+	decodeBody(t, changeResponse, &changeBody)
+
+	mergeResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/changes/"+changeBody.ID+"/merge", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if mergeResponse.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409 from merge before submit, got %d", mergeResponse.StatusCode)
+	}
+
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeBody(t, mergeResponse, &body)
+	if body.Error.Code != "CHANGE_SUBMISSION_REQUIRED" {
+		t.Fatalf("expected CHANGE_SUBMISSION_REQUIRED, got %s", body.Error.Code)
+	}
+}
+
+func TestSubmittedDirectChangeCanMerge(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	changeResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/changes", map[string]any{
+		"operation":          "CreateApplication",
+		"name":               "direct-merge-success-app",
+		"description":        "Direct change should merge after submit",
+		"image":              "repo/direct-merge-success-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"environment":        "dev",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if changeResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 from create change, got %d", changeResponse.StatusCode)
+	}
+
+	var changeBody struct {
+		ID string `json:"id"`
+	}
+	decodeBody(t, changeResponse, &changeBody)
+
+	submitResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/changes/"+changeBody.ID+"/submit", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if submitResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from submit, got %d", submitResponse.StatusCode)
+	}
+
+	mergeResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/changes/"+changeBody.ID+"/merge", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if mergeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from merge after submit, got %d", mergeResponse.StatusCode)
+	}
+
+	listResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/projects/project-a/applications", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if listResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from list applications, got %d", listResponse.StatusCode)
+	}
+
+	var listBody struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	decodeBody(t, listResponse, &listBody)
+	if len(listBody.Items) != 1 || listBody.Items[0].ID != "project-a__direct-merge-success-app" {
+		t.Fatalf("expected direct change merge to create application, got %#v", listBody.Items)
+	}
+}
+
 func TestRedeployCanSwitchEnvironment(t *testing.T) {
 	env := newTestEnvironment(t)
 
@@ -558,6 +861,208 @@ func TestRedeployCanSwitchEnvironment(t *testing.T) {
 	}
 	if !strings.Contains(string(metadata), "defaultEnvironment: dev") {
 		t.Fatal("expected default environment to switch to dev")
+	}
+}
+
+func TestCreateApplicationRejectsDisallowedEnvironment(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	projectsYAML := `projects:
+  - id: project-a
+    name: Project A
+    description: Test project
+    namespace: project-a
+    access:
+      viewerGroups:
+        - aods:project-a:view
+      deployerGroups:
+        - aods:project-a:deploy
+      adminGroups:
+        - aods:platform:admin
+    environments:
+      - id: dev
+        name: Development
+        clusterId: default
+        writeMode: direct
+      - id: prod
+        name: Production
+        clusterId: default
+        writeMode: direct
+        default: true
+    policies:
+      minReplicas: 1
+      allowedEnvironments:
+        - prod
+      allowedDeploymentStrategies:
+        - Standard
+      allowedClusterTargets:
+        - default
+      prodPRRequired: false
+      autoRollbackEnabled: false
+      requiredProbes: true
+`
+	if err := os.WriteFile(filepath.Join(env.repoRoot, "platform", "projects.yaml"), []byte(projectsYAML), 0o644); err != nil {
+		t.Fatalf("rewrite projects.yaml: %v", err)
+	}
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "forbidden-env-app",
+		"description":        "Environment guardrail",
+		"image":              "repo/forbidden-env-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"environment":        "dev",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from disallowed environment, got %d", createResponse.StatusCode)
+	}
+
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeBody(t, createResponse, &body)
+	if body.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected INVALID_REQUEST, got %s", body.Error.Code)
+	}
+}
+
+func TestCreateApplicationRejectsDisallowedDeploymentStrategy(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	projectsYAML := `projects:
+  - id: project-a
+    name: Project A
+    description: Test project
+    namespace: project-a
+    access:
+      viewerGroups:
+        - aods:project-a:view
+      deployerGroups:
+        - aods:project-a:deploy
+      adminGroups:
+        - aods:platform:admin
+    environments:
+      - id: prod
+        name: Production
+        clusterId: default
+        writeMode: direct
+        default: true
+    policies:
+      minReplicas: 1
+      allowedEnvironments:
+        - prod
+      allowedDeploymentStrategies:
+        - Standard
+      allowedClusterTargets:
+        - default
+      prodPRRequired: false
+      autoRollbackEnabled: false
+      requiredProbes: true
+`
+	if err := os.WriteFile(filepath.Join(env.repoRoot, "platform", "projects.yaml"), []byte(projectsYAML), 0o644); err != nil {
+		t.Fatalf("rewrite projects.yaml: %v", err)
+	}
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "forbidden-strategy-app",
+		"description":        "Strategy guardrail",
+		"image":              "repo/forbidden-strategy-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Canary",
+		"environment":        "prod",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from disallowed strategy, got %d", createResponse.StatusCode)
+	}
+
+	var body struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	decodeBody(t, createResponse, &body)
+	if body.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected INVALID_REQUEST, got %s", body.Error.Code)
+	}
+}
+
+func TestProjectPoliciesCanDisableRequiredProbes(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	response := performJSONRequest(t, env, http.MethodPatch, "/api/v1/projects/project-a/policies", map[string]any{
+		"minReplicas":                 2,
+		"allowedEnvironments":         []string{"dev", "prod"},
+		"allowedDeploymentStrategies": []string{"Standard", "Canary"},
+		"allowedClusterTargets":       []string{"default"},
+		"prodPRRequired":              false,
+		"autoRollbackEnabled":         false,
+		"requiredProbes":              false,
+	}, map[string]string{
+		"X-AODS-User-Id":  "admin-1",
+		"X-AODS-Username": "admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+
+	getResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/projects/project-a/policies", nil, map[string]string{
+		"X-AODS-User-Id":  "admin-1",
+		"X-AODS-Username": "admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if getResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from get policies, got %d", getResponse.StatusCode)
+	}
+
+	var body struct {
+		RequiredProbes bool `json:"requiredProbes"`
+	}
+	decodeBody(t, getResponse, &body)
+	if body.RequiredProbes {
+		t.Fatal("expected requiredProbes=false to be preserved")
+	}
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "probe-optional-app",
+		"description":        "Disabled probes",
+		"image":              "repo/probe-optional-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"environment":        "prod",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201 from create, got %d", createResponse.StatusCode)
+	}
+
+	deploymentManifest, err := os.ReadFile(filepath.Join(env.repoRoot, "apps", "project-a", "probe-optional-app", "base", "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("read deployment manifest: %v", err)
+	}
+	if strings.Contains(string(deploymentManifest), "readinessProbe:") || strings.Contains(string(deploymentManifest), "livenessProbe:") {
+		t.Fatal("expected deployment manifest to omit probes when requiredProbes=false")
+	}
+
+	metadata, err := os.ReadFile(filepath.Join(env.repoRoot, "apps", "project-a", "probe-optional-app", ".aods", "metadata.yaml"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if !strings.Contains(string(metadata), "requiredProbes: false") {
+		t.Fatal("expected metadata to preserve requiredProbes=false")
 	}
 }
 

@@ -298,6 +298,7 @@ func applyEnvironmentDefaults(environments []Environment) []Environment {
 }
 
 func applyPolicyDefaults(policy PolicySet, environments []Environment) PolicySet {
+	defaultRequiredProbes := shouldDefaultRequiredProbes(policy)
 	if policy.MinReplicas <= 0 {
 		policy.MinReplicas = 1
 	}
@@ -322,7 +323,7 @@ func applyPolicyDefaults(policy PolicySet, environments []Environment) PolicySet
 	if len(policy.AllowedClusterTargets) == 0 {
 		policy.AllowedClusterTargets = []string{"default"}
 	}
-	if !policy.RequiredProbes {
+	if defaultRequiredProbes {
 		policy.RequiredProbes = true
 	}
 	return policy
@@ -347,4 +348,14 @@ func containsString(values []string, target string) bool {
 		}
 	}
 	return false
+}
+
+func shouldDefaultRequiredProbes(policy PolicySet) bool {
+	return !policy.RequiredProbes &&
+		policy.MinReplicas <= 0 &&
+		len(policy.AllowedEnvironments) == 0 &&
+		len(policy.AllowedDeploymentStrategies) == 0 &&
+		len(policy.AllowedClusterTargets) == 0 &&
+		!policy.ProdPRRequired &&
+		!policy.AutoRollbackEnabled
 }
