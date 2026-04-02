@@ -20,10 +20,35 @@ const (
 	RoleAdmin    Role = "admin"
 )
 
+type WriteMode string
+
+const (
+	WriteModeDirect      WriteMode = "direct"
+	WriteModePullRequest WriteMode = "pull_request"
+)
+
 type Access struct {
 	ViewerGroups   []string
 	DeployerGroups []string
 	AdminGroups    []string
+}
+
+type Environment struct {
+	ID        string
+	Name      string
+	ClusterID string
+	WriteMode WriteMode
+	Default   bool
+}
+
+type PolicySet struct {
+	MinReplicas                int
+	AllowedEnvironments        []string
+	AllowedDeploymentStrategies []string
+	AllowedClusterTargets      []string
+	ProdPRRequired             bool
+	AutoRollbackEnabled        bool
+	RequiredProbes             bool
 }
 
 type CatalogProject struct {
@@ -32,6 +57,8 @@ type CatalogProject struct {
 	Description string
 	Namespace   string
 	Access      Access
+	Environments []Environment
+	Policies    PolicySet
 }
 
 type Summary struct {
@@ -42,6 +69,24 @@ type Summary struct {
 	Role        Role   `json:"role"`
 }
 
+type EnvironmentSummary struct {
+	ID        string    `json:"id"`
+	Name      string    `json:"name"`
+	ClusterID string    `json:"clusterId"`
+	WriteMode WriteMode `json:"writeMode"`
+	Default   bool      `json:"default"`
+}
+
+type PolicySummary struct {
+	MinReplicas                 int      `json:"minReplicas"`
+	AllowedEnvironments         []string `json:"allowedEnvironments"`
+	AllowedDeploymentStrategies []string `json:"allowedDeploymentStrategies"`
+	AllowedClusterTargets       []string `json:"allowedClusterTargets"`
+	ProdPRRequired              bool     `json:"prodPRRequired"`
+	AutoRollbackEnabled         bool     `json:"autoRollbackEnabled"`
+	RequiredProbes              bool     `json:"requiredProbes"`
+}
+
 type AuthorizedProject struct {
 	Project CatalogProject
 	Role    Role
@@ -49,6 +94,11 @@ type AuthorizedProject struct {
 
 type CatalogSource interface {
 	ListProjects(ctx context.Context) ([]CatalogProject, error)
+}
+
+type CatalogStore interface {
+	CatalogSource
+	UpdatePolicies(ctx context.Context, projectID string, policies PolicySet) (CatalogProject, error)
 }
 
 type Service struct {
@@ -111,6 +161,59 @@ func (r Role) CanDeploy() bool {
 	return r == RoleDeployer || r == RoleAdmin
 }
 
+func (r Role) CanAdmin() bool {
+	return r == RoleAdmin
+}
+
+func (s Service) ListEnvironments(ctx context.Context, user core.User, projectID string) ([]EnvironmentSummary, error) {
+	authorized, err := s.GetAuthorized(ctx, user, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]EnvironmentSummary, 0, len(authorized.Project.Environments))
+	for _, environment := range authorized.Project.Environments {
+		items = append(items, EnvironmentSummary{
+			ID:        environment.ID,
+			Name:      environment.Name,
+			ClusterID: environment.ClusterID,
+			WriteMode: environment.WriteMode,
+			Default:   environment.Default,
+		})
+	}
+	return items, nil
+}
+
+func (s Service) GetPolicies(ctx context.Context, user core.User, projectID string) (PolicySummary, error) {
+	authorized, err := s.GetAuthorized(ctx, user, projectID)
+	if err != nil {
+		return PolicySummary{}, err
+	}
+	return toPolicySummary(authorized.Project.Policies), nil
+}
+
+func (s Service) UpdatePolicies(ctx context.Context, user core.User, projectID string, policies PolicySet) (PolicySummary, error) {
+	authorized, err := s.GetAuthorized(ctx, user, projectID)
+	if err != nil {
+		return PolicySummary{}, err
+	}
+	if !authorized.Role.CanAdmin() {
+		return PolicySummary{}, ErrForbidden
+	}
+
+	store, ok := s.Source.(CatalogStore)
+	if !ok {
+		return PolicySummary{}, errors.New("project catalog is not writable")
+	}
+
+	policies = applyPolicyDefaults(policies, authorized.Project.Environments)
+	updated, err := store.UpdatePolicies(ctx, projectID, policies)
+	if err != nil {
+		return PolicySummary{}, err
+	}
+	return toPolicySummary(updated.Policies), nil
+}
+
 func resolveRole(groupSet map[string]struct{}, access Access) (Role, bool) {
 	if hasAnyGroup(groupSet, access.AdminGroups) {
 		return RoleAdmin, true
@@ -135,6 +238,108 @@ func makeGroupSet(groups []string) map[string]struct{} {
 func hasAnyGroup(groupSet map[string]struct{}, required []string) bool {
 	for _, group := range required {
 		if _, ok := groupSet[group]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func applyProjectDefaults(project CatalogProject) CatalogProject {
+	project.Environments = applyEnvironmentDefaults(project.Environments)
+	project.Policies = applyPolicyDefaults(project.Policies, project.Environments)
+	return project
+}
+
+func applyEnvironmentDefaults(environments []Environment) []Environment {
+	if len(environments) == 0 {
+		return []Environment{{
+			ID:        "prod",
+			Name:      "Production",
+			ClusterID: "default",
+			WriteMode: WriteModeDirect,
+			Default:   true,
+		}}
+	}
+
+	items := make([]Environment, 0, len(environments))
+	hasDefault := false
+	for index, environment := range environments {
+		item := environment
+		if item.ID == "" {
+			continue
+		}
+		if item.Name == "" {
+			item.Name = item.ID
+		}
+		if item.ClusterID == "" {
+			item.ClusterID = "default"
+		}
+		if item.WriteMode == "" {
+			item.WriteMode = WriteModeDirect
+		}
+		if item.Default {
+			hasDefault = true
+		}
+		if index == 0 && !hasDefault {
+			item.Default = true
+			hasDefault = true
+		}
+		items = append(items, item)
+	}
+
+	if !hasDefault && len(items) > 0 {
+		items[0].Default = true
+	}
+
+	return items
+}
+
+func applyPolicyDefaults(policy PolicySet, environments []Environment) PolicySet {
+	if policy.MinReplicas <= 0 {
+		policy.MinReplicas = 1
+	}
+	if len(policy.AllowedEnvironments) == 0 {
+		for _, environment := range environments {
+			policy.AllowedEnvironments = append(policy.AllowedEnvironments, environment.ID)
+		}
+	}
+	if len(policy.AllowedDeploymentStrategies) == 0 {
+		policy.AllowedDeploymentStrategies = []string{"Standard", "Canary"}
+	}
+	if len(policy.AllowedClusterTargets) == 0 {
+		for _, environment := range environments {
+			if environment.ClusterID == "" {
+				continue
+			}
+			if !containsString(policy.AllowedClusterTargets, environment.ClusterID) {
+				policy.AllowedClusterTargets = append(policy.AllowedClusterTargets, environment.ClusterID)
+			}
+		}
+	}
+	if len(policy.AllowedClusterTargets) == 0 {
+		policy.AllowedClusterTargets = []string{"default"}
+	}
+	if !policy.RequiredProbes {
+		policy.RequiredProbes = true
+	}
+	return policy
+}
+
+func toPolicySummary(policy PolicySet) PolicySummary {
+	return PolicySummary{
+		MinReplicas:                 policy.MinReplicas,
+		AllowedEnvironments:         append([]string(nil), policy.AllowedEnvironments...),
+		AllowedDeploymentStrategies: append([]string(nil), policy.AllowedDeploymentStrategies...),
+		AllowedClusterTargets:       append([]string(nil), policy.AllowedClusterTargets...),
+		ProdPRRequired:              policy.ProdPRRequired,
+		AutoRollbackEnabled:         policy.AutoRollbackEnabled,
+		RequiredProbes:              policy.RequiredProbes,
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
 			return true
 		}
 	}

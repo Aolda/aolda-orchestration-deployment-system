@@ -6,19 +6,26 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/aolda/aods-backend/internal/core"
 	"github.com/aolda/aods-backend/internal/project"
 )
 
 var (
-	ErrNotFound         = errors.New("application not found")
-	ErrConflict         = errors.New("application conflict")
-	ErrInvalidID        = errors.New("application id is invalid")
-	ErrRequiresDeployer = errors.New("deployer permissions are required")
+	ErrNotFound           = errors.New("application not found")
+	ErrConflict           = errors.New("application conflict")
+	ErrInvalidID          = errors.New("application id is invalid")
+	ErrRequiresDeployer   = errors.New("deployer permissions are required")
+	ErrRequiresAdmin      = errors.New("admin permissions are required")
+	ErrChangeRequired     = errors.New("change review is required for this environment")
+	ErrInvalidPolicy      = errors.New("application request violates project policy")
+	ErrDeploymentNotFound = errors.New("deployment not found")
 )
 
 var slugPattern = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`)
+
+type changeGuardBypassKey struct{}
 
 type ValidationError struct {
 	Message string
@@ -33,7 +40,15 @@ type Store interface {
 	ListApplications(ctx context.Context, projectID string) ([]Record, error)
 	GetApplication(ctx context.Context, applicationID string) (Record, error)
 	CreateApplication(ctx context.Context, project ProjectContext, input CreateRequest, secretPath string) (Record, error)
-	UpdateApplicationImage(ctx context.Context, applicationID string, imageTag string) (Record, error)
+	UpdateApplicationImage(ctx context.Context, applicationID string, imageTag string, deploymentID string) (Record, error)
+	PatchApplication(ctx context.Context, applicationID string, input UpdateApplicationRequest) (Record, error)
+	ListDeployments(ctx context.Context, applicationID string) ([]DeploymentRecord, error)
+	GetDeployment(ctx context.Context, applicationID string, deploymentID string) (DeploymentRecord, error)
+	UpdateDeployment(ctx context.Context, applicationID string, deployment DeploymentRecord) (DeploymentRecord, error)
+	GetRollbackPolicy(ctx context.Context, applicationID string) (RollbackPolicy, error)
+	SaveRollbackPolicy(ctx context.Context, applicationID string, policy RollbackPolicy) (RollbackPolicy, error)
+	ListEvents(ctx context.Context, applicationID string) ([]Event, error)
+	AppendEvent(ctx context.Context, applicationID string, event Event) error
 }
 
 type StatusReader interface {
@@ -48,6 +63,12 @@ type MetricsReader interface {
 	Read(ctx context.Context, record Record) ([]MetricSeries, error)
 }
 
+type RolloutController interface {
+	GetRollout(ctx context.Context, record Record) (RolloutInfo, error)
+	Promote(ctx context.Context, record Record, full bool) (RolloutInfo, error)
+	Abort(ctx context.Context, record Record) (RolloutInfo, error)
+}
+
 type SecretsStager interface {
 	Stage(ctx context.Context, requestID string, projectID string, appName string, createdBy string, data map[string]string) (StagedSecret, error)
 	Finalize(ctx context.Context, staged StagedSecret, data map[string]string) error
@@ -59,6 +80,7 @@ type Service struct {
 	StatusReader  StatusReader
 	MetricsReader MetricsReader
 	Secrets       SecretsStager
+	Rollouts      RolloutController
 }
 
 func (s Service) ListApplications(ctx context.Context, user core.User, projectID string) ([]Summary, error) {
@@ -120,6 +142,13 @@ func (s Service) CreateApplication(
 	if err := validateCreateRequest(input); err != nil {
 		return Application{}, err
 	}
+	input.Environment = resolveEnvironment(authorizedProject.Project, input.Environment)
+	if err := validateProjectPolicies(authorizedProject.Project, input.Environment, input.DeploymentStrategy); err != nil {
+		return Application{}, err
+	}
+	if !changeGuardBypassed(ctx) && requiresChangeFlow(authorizedProject.Project, input.Environment) {
+		return Application{}, ErrChangeRequired
+	}
 
 	secretData, err := normalizeSecrets(input.Secrets)
 	if err != nil {
@@ -138,8 +167,18 @@ func (s Service) CreateApplication(
 	}
 
 	record, err := s.Store.CreateApplication(ctx, ProjectContext{
-		ID:        authorizedProject.Project.ID,
-		Namespace: authorizedProject.Project.Namespace,
+		ID:           authorizedProject.Project.ID,
+		Namespace:    authorizedProject.Project.Namespace,
+		Environments: environmentIDs(authorizedProject.Project.Environments),
+		Policies: projectPolicy{
+			MinReplicas:                 authorizedProject.Project.Policies.MinReplicas,
+			AllowedEnvironments:         append([]string(nil), authorizedProject.Project.Policies.AllowedEnvironments...),
+			AllowedDeploymentStrategies: append([]string(nil), authorizedProject.Project.Policies.AllowedDeploymentStrategies...),
+			AllowedClusterTargets:       append([]string(nil), authorizedProject.Project.Policies.AllowedClusterTargets...),
+			ProdPRRequired:              authorizedProject.Project.Policies.ProdPRRequired,
+			AutoRollbackEnabled:         authorizedProject.Project.Policies.AutoRollbackEnabled,
+			RequiredProbes:              authorizedProject.Project.Policies.RequiredProbes,
+		},
 	}, input, secretPath)
 	if err != nil {
 		return Application{}, err
@@ -155,6 +194,10 @@ func (s Service) CreateApplication(
 	if err != nil {
 		return Application{}, err
 	}
+	_ = s.appendEvent(ctx, record.ID, "ApplicationCreated", fmt.Sprintf("애플리케이션 %s 생성", record.Name), map[string]any{
+		"environment": record.DefaultEnvironment,
+		"strategy":    record.DeploymentStrategy,
+	})
 
 	return toApplication(record, syncInfo), nil
 }
@@ -164,9 +207,14 @@ func (s Service) CreateDeployment(
 	user core.User,
 	applicationID string,
 	imageTag string,
+	environment string,
 	requestID string,
 ) (DeploymentResponse, error) {
 	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return DeploymentResponse{}, err
+	}
+	projectInfo, err := s.Projects.GetAuthorized(ctx, user, record.ProjectID)
 	if err != nil {
 		return DeploymentResponse{}, err
 	}
@@ -178,17 +226,85 @@ func (s Service) CreateDeployment(
 		}
 	}
 
-	updatedRecord, err := s.Store.UpdateApplicationImage(ctx, record.ID, imageTag)
+	targetEnvironment := record.DefaultEnvironment
+	if strings.TrimSpace(environment) != "" {
+		targetEnvironment = resolveEnvironment(projectInfo.Project, environment)
+	}
+	if err := validateProjectPolicies(projectInfo.Project, targetEnvironment, record.DeploymentStrategy); err != nil {
+		return DeploymentResponse{}, err
+	}
+	if !changeGuardBypassed(ctx) && requiresChangeFlow(projectInfo.Project, targetEnvironment) {
+		return DeploymentResponse{}, ErrChangeRequired
+	}
+
+	if targetEnvironment != record.DefaultEnvironment {
+		updatedRecord, err := s.Store.PatchApplication(ctx, record.ID, UpdateApplicationRequest{
+			Environment: &targetEnvironment,
+		})
+		if err != nil {
+			return DeploymentResponse{}, err
+		}
+		record = updatedRecord
+	}
+
+	deploymentID := strings.Replace(requestID, "req_", "dep_", 1)
+	updatedRecord, err := s.Store.UpdateApplicationImage(ctx, record.ID, imageTag, deploymentID)
 	if err != nil {
 		return DeploymentResponse{}, err
 	}
+	_ = s.appendEvent(ctx, record.ID, "DeploymentTriggered", fmt.Sprintf("새 이미지 태그 %s 재배포", imageTag), map[string]any{
+		"environment": updatedRecord.DefaultEnvironment,
+		"imageTag":    imageTag,
+	})
 
 	return DeploymentResponse{
-		DeploymentID:  strings.Replace(requestID, "req_", "dep_", 1),
+		DeploymentID:  deploymentID,
 		ApplicationID: updatedRecord.ID,
 		ImageTag:      imageTag,
+		Environment:   targetEnvironment,
 		Status:        "Syncing",
 	}, nil
+}
+
+func (s Service) PatchApplication(ctx context.Context, user core.User, applicationID string, input UpdateApplicationRequest) (Application, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return Application{}, err
+	}
+
+	projectInfo, err := s.Projects.GetAuthorized(ctx, user, record.ProjectID)
+	if err != nil {
+		return Application{}, err
+	}
+
+	environment := record.DefaultEnvironment
+	if input.Environment != nil {
+		environment = resolveEnvironment(projectInfo.Project, *input.Environment)
+	}
+	strategy := record.DeploymentStrategy
+	if input.DeploymentStrategy != nil {
+		strategy = *input.DeploymentStrategy
+	}
+	if err := validateProjectPolicies(projectInfo.Project, environment, strategy); err != nil {
+		return Application{}, err
+	}
+	if !changeGuardBypassed(ctx) && requiresChangeFlow(projectInfo.Project, environment) {
+		return Application{}, ErrChangeRequired
+	}
+
+	updatedRecord, err := s.Store.PatchApplication(ctx, applicationID, input)
+	if err != nil {
+		return Application{}, err
+	}
+	syncInfo, err := s.StatusReader.Read(ctx, updatedRecord)
+	if err != nil {
+		return Application{}, err
+	}
+	_ = s.appendEvent(ctx, updatedRecord.ID, "ApplicationUpdated", "애플리케이션 설정 갱신", map[string]any{
+		"environment": updatedRecord.DefaultEnvironment,
+		"strategy":    updatedRecord.DeploymentStrategy,
+	})
+	return toApplication(updatedRecord, syncInfo), nil
 }
 
 func (s Service) GetSyncStatus(ctx context.Context, user core.User, applicationID string) (SyncStatusResponse, error) {
@@ -224,6 +340,160 @@ func (s Service) GetMetrics(ctx context.Context, user core.User, applicationID s
 	return MetricsResponse{
 		ApplicationID: record.ID,
 		Metrics:       metrics,
+	}, nil
+}
+
+func (s Service) ListDeployments(ctx context.Context, user core.User, applicationID string) (DeploymentListResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, false)
+	if err != nil {
+		return DeploymentListResponse{}, err
+	}
+
+	items, err := s.Store.ListDeployments(ctx, applicationID)
+	if err != nil {
+		return DeploymentListResponse{}, err
+	}
+	return DeploymentListResponse{
+		ApplicationID: record.ID,
+		Items:         items,
+	}, nil
+}
+
+func (s Service) GetDeployment(ctx context.Context, user core.User, applicationID string, deploymentID string) (DeploymentRecord, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, false)
+	if err != nil {
+		return DeploymentRecord{}, err
+	}
+
+	deployment, err := s.Store.GetDeployment(ctx, applicationID, deploymentID)
+	if err != nil {
+		return DeploymentRecord{}, err
+	}
+
+	if s.Rollouts != nil && record.DeploymentStrategy == DeploymentStrategyCanary {
+		rollout, err := s.Rollouts.GetRollout(ctx, record)
+		if err == nil {
+			deployment.RolloutPhase = rollout.Phase
+			deployment.CurrentStep = rollout.CurrentStep
+			deployment.CanaryWeight = rollout.CanaryWeight
+			deployment.StableRevision = rollout.StableRevision
+			deployment.CanaryRevision = rollout.CanaryRevision
+			if rollout.Message != "" {
+				deployment.Message = rollout.Message
+			}
+		}
+	}
+	return deployment, nil
+}
+
+func (s Service) PromoteDeployment(ctx context.Context, user core.User, applicationID string, deploymentID string) (DeploymentRecord, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return DeploymentRecord{}, err
+	}
+
+	deployment, err := s.Store.GetDeployment(ctx, applicationID, deploymentID)
+	if err != nil {
+		return DeploymentRecord{}, err
+	}
+	if record.DeploymentStrategy != DeploymentStrategyCanary {
+		return DeploymentRecord{}, ValidationError{
+			Message: "only Canary deployments can be promoted",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+
+	if s.Rollouts != nil {
+		rollout, err := s.Rollouts.Promote(ctx, record, false)
+		if err != nil {
+			return DeploymentRecord{}, err
+		}
+		deployment.Status = "Promoted"
+		deployment.RolloutPhase = rollout.Phase
+		deployment.CurrentStep = rollout.CurrentStep
+		deployment.CanaryWeight = rollout.CanaryWeight
+		deployment.StableRevision = rollout.StableRevision
+		deployment.CanaryRevision = rollout.CanaryRevision
+		deployment.Message = rollout.Message
+		deployment.UpdatedAt = timeNowUTC()
+		if deployment, err = s.Store.UpdateDeployment(ctx, applicationID, deployment); err != nil {
+			return DeploymentRecord{}, err
+		}
+	}
+
+	_ = s.appendEvent(ctx, applicationID, "RolloutPromoted", fmt.Sprintf("배포 %s 승격", deploymentID), nil)
+	return deployment, nil
+}
+
+func (s Service) AbortDeployment(ctx context.Context, user core.User, applicationID string, deploymentID string) (DeploymentRecord, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return DeploymentRecord{}, err
+	}
+
+	deployment, err := s.Store.GetDeployment(ctx, applicationID, deploymentID)
+	if err != nil {
+		return DeploymentRecord{}, err
+	}
+	if record.DeploymentStrategy != DeploymentStrategyCanary {
+		return DeploymentRecord{}, ValidationError{
+			Message: "only Canary deployments can be aborted",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+
+	if s.Rollouts != nil {
+		rollout, err := s.Rollouts.Abort(ctx, record)
+		if err != nil {
+			return DeploymentRecord{}, err
+		}
+		deployment.Status = "Aborted"
+		deployment.RolloutPhase = rollout.Phase
+		deployment.CurrentStep = rollout.CurrentStep
+		deployment.CanaryWeight = rollout.CanaryWeight
+		deployment.StableRevision = rollout.StableRevision
+		deployment.CanaryRevision = rollout.CanaryRevision
+		deployment.Message = rollout.Message
+		deployment.UpdatedAt = timeNowUTC()
+		if deployment, err = s.Store.UpdateDeployment(ctx, applicationID, deployment); err != nil {
+			return DeploymentRecord{}, err
+		}
+	}
+
+	_ = s.appendEvent(ctx, applicationID, "RolloutAborted", fmt.Sprintf("배포 %s 중단", deploymentID), nil)
+	return deployment, nil
+}
+
+func (s Service) GetRollbackPolicy(ctx context.Context, user core.User, applicationID string) (RollbackPolicy, error) {
+	if _, err := s.requireApplication(ctx, user, applicationID, false); err != nil {
+		return RollbackPolicy{}, err
+	}
+	return s.Store.GetRollbackPolicy(ctx, applicationID)
+}
+
+func (s Service) SaveRollbackPolicy(ctx context.Context, user core.User, applicationID string, policy RollbackPolicy) (RollbackPolicy, error) {
+	if _, err := s.requireApplication(ctx, user, applicationID, true); err != nil {
+		return RollbackPolicy{}, err
+	}
+	saved, err := s.Store.SaveRollbackPolicy(ctx, applicationID, policy)
+	if err != nil {
+		return RollbackPolicy{}, err
+	}
+	_ = s.appendEvent(ctx, applicationID, "RollbackPolicyUpdated", "자동 롤백 정책 갱신", nil)
+	return saved, nil
+}
+
+func (s Service) GetEvents(ctx context.Context, user core.User, applicationID string) (EventListResponse, error) {
+	if _, err := s.requireApplication(ctx, user, applicationID, false); err != nil {
+		return EventListResponse{}, err
+	}
+	items, err := s.Store.ListEvents(ctx, applicationID)
+	if err != nil {
+		return EventListResponse{}, err
+	}
+	return EventListResponse{
+		ApplicationID: applicationID,
+		Items:         items,
 	}, nil
 }
 
@@ -284,9 +554,11 @@ func validateCreateRequest(input CreateRequest) error {
 		}
 	}
 
-	if input.DeploymentStrategy != DeploymentStrategyStandard {
+	switch input.DeploymentStrategy {
+	case DeploymentStrategyStandard, DeploymentStrategyCanary:
+	default:
 		return ValidationError{
-			Message: "Phase 1 only supports Standard deployment strategy",
+			Message: "deploymentStrategy must be Standard or Canary",
 			Details: map[string]any{"field": "deploymentStrategy"},
 		}
 	}
@@ -322,6 +594,74 @@ func normalizeSecrets(entries []SecretEntry) (map[string]string, error) {
 	return values, nil
 }
 
+func resolveEnvironment(project project.CatalogProject, requested string) string {
+	requested = strings.TrimSpace(requested)
+	if requested != "" {
+		return requested
+	}
+	for _, environment := range project.Environments {
+		if environment.Default {
+			return environment.ID
+		}
+	}
+	return "prod"
+}
+
+func validateProjectPolicies(projectInfo project.CatalogProject, environment string, strategy DeploymentStrategy) error {
+	if !containsValue(projectInfo.Policies.AllowedEnvironments, environment) {
+		return ValidationError{
+			Message: "environment is not allowed by project policy",
+			Details: map[string]any{"field": "environment", "environment": environment},
+		}
+	}
+	if !containsValue(projectInfo.Policies.AllowedDeploymentStrategies, string(strategy)) {
+		return ValidationError{
+			Message: "deploymentStrategy is not allowed by project policy",
+			Details: map[string]any{"field": "deploymentStrategy", "deploymentStrategy": strategy},
+		}
+	}
+	return nil
+}
+
+func requiresChangeFlow(projectInfo project.CatalogProject, environment string) bool {
+	for _, item := range projectInfo.Environments {
+		if item.ID == environment && item.WriteMode == project.WriteModePullRequest {
+			return true
+		}
+	}
+	return environment == "prod" && projectInfo.Policies.ProdPRRequired
+}
+
+func containsValue(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func environmentIDs(items []project.Environment) []string {
+	values := make([]string, 0, len(items))
+	for _, item := range items {
+		values = append(values, item.ID)
+	}
+	return values
+}
+
+func (s Service) appendEvent(ctx context.Context, applicationID string, eventType string, message string, metadata map[string]any) error {
+	if s.Store == nil {
+		return nil
+	}
+	return s.Store.AppendEvent(ctx, applicationID, Event{
+		ID:        strings.Replace(fmt.Sprintf("evt_%d", timeNowUTC().UnixNano()), "-", "", -1),
+		Type:      eventType,
+		Message:   message,
+		CreatedAt: timeNowUTC(),
+		Metadata:  metadata,
+	})
+}
+
 func toApplication(record Record, syncInfo SyncInfo) Application {
 	return Application{
 		ID:                 record.ID,
@@ -331,8 +671,22 @@ func toApplication(record Record, syncInfo SyncInfo) Application {
 		Image:              record.Image,
 		ServicePort:        record.ServicePort,
 		DeploymentStrategy: string(record.DeploymentStrategy),
+		DefaultEnvironment: record.DefaultEnvironment,
 		SyncStatus:         syncInfo.Status,
 		CreatedAt:          record.CreatedAt,
 		UpdatedAt:          record.UpdatedAt,
 	}
+}
+
+func timeNowUTC() time.Time {
+	return time.Now().UTC()
+}
+
+func WithChangeGuardBypass(ctx context.Context) context.Context {
+	return context.WithValue(ctx, changeGuardBypassKey{}, true)
+}
+
+func changeGuardBypassed(ctx context.Context) bool {
+	value, _ := ctx.Value(changeGuardBypassKey{}).(bool)
+	return value
 }

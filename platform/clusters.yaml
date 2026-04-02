@@ -1,0 +1,9 @@
+clusters:
+  - id: default
+    name: Default Cluster
+    description: Primary cluster target for dev, staging, and prod.
+    default: true
+  - id: analytics
+    name: Analytics Cluster
+    description: Dedicated cluster target for analytics workloads.
+    default: false

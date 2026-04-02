@@ -24,8 +24,40 @@ func (s stubStore) CreateApplication(ctx context.Context, project ProjectContext
 	return Record{}, nil
 }
 
-func (s stubStore) UpdateApplicationImage(ctx context.Context, applicationID string, imageTag string) (Record, error) {
+func (s stubStore) UpdateApplicationImage(ctx context.Context, applicationID string, imageTag string, deploymentID string) (Record, error) {
 	return Record{}, nil
+}
+
+func (s stubStore) PatchApplication(ctx context.Context, applicationID string, input UpdateApplicationRequest) (Record, error) {
+	return Record{}, nil
+}
+
+func (s stubStore) ListDeployments(ctx context.Context, applicationID string) ([]DeploymentRecord, error) {
+	return nil, nil
+}
+
+func (s stubStore) GetDeployment(ctx context.Context, applicationID string, deploymentID string) (DeploymentRecord, error) {
+	return DeploymentRecord{}, nil
+}
+
+func (s stubStore) UpdateDeployment(ctx context.Context, applicationID string, deployment DeploymentRecord) (DeploymentRecord, error) {
+	return deployment, nil
+}
+
+func (s stubStore) GetRollbackPolicy(ctx context.Context, applicationID string) (RollbackPolicy, error) {
+	return RollbackPolicy{}, nil
+}
+
+func (s stubStore) SaveRollbackPolicy(ctx context.Context, applicationID string, policy RollbackPolicy) (RollbackPolicy, error) {
+	return policy, nil
+}
+
+func (s stubStore) ListEvents(ctx context.Context, applicationID string) ([]Event, error) {
+	return nil, nil
+}
+
+func (s stubStore) AppendEvent(ctx context.Context, applicationID string, event Event) error {
+	return nil
 }
 
 type batchStatusReaderStub struct {

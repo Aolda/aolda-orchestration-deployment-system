@@ -195,6 +195,22 @@
   flex: 1;
 }
 
+.wrapRow,
+.actionRow {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.monoLine {
+  padding: 10px 12px;
+  border-radius: 14px;
+  background: rgba(243, 238, 230, 0.72);
+  color: #31403d;
+  font-family: 'SFMono-Regular', ui-monospace, monospace;
+  font-size: 0.92rem;
+}
+
 .emptyState {
   padding: 28px;
   border-radius: 20px;

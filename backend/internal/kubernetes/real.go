@@ -6,6 +6,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -23,8 +24,13 @@ import (
 )
 
 const fluxKustomizationResourcePath = "/apis/kustomize.toolkit.fluxcd.io/v1"
+const argoRolloutResourcePath = "/apis/argoproj.io/v1alpha1"
 
 type ErrorSyncStatusReader struct {
+	Err error
+}
+
+type ErrorRolloutController struct {
 	Err error
 }
 
@@ -48,9 +54,31 @@ func (r ErrorSyncStatusReader) ReadMany(ctx context.Context, records []applicati
 	return nil, r.Err
 }
 
+func (r ErrorRolloutController) GetRollout(ctx context.Context, record application.Record) (application.RolloutInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return application.RolloutInfo{}, err
+	}
+	if r.Err == nil {
+		return application.RolloutInfo{}, nil
+	}
+	return application.RolloutInfo{}, r.Err
+}
+
+func (r ErrorRolloutController) Promote(ctx context.Context, record application.Record, full bool) (application.RolloutInfo, error) {
+	return r.GetRollout(ctx, record)
+}
+
+func (r ErrorRolloutController) Abort(ctx context.Context, record application.Record) (application.RolloutInfo, error) {
+	return r.GetRollout(ctx, record)
+}
+
 type FluxSyncStatusReader struct {
 	Client                 *apiClient
 	KustomizationNamespace string
+}
+
+type ArgoRolloutController struct {
+	Client *apiClient
 }
 
 func NewSyncStatusReader(cfg core.Config) application.StatusReader {
@@ -76,6 +104,14 @@ func NewFluxSyncStatusReader(cfg core.Config) (FluxSyncStatusReader, error) {
 		Client:                 client,
 		KustomizationNamespace: strings.TrimSpace(cfg.FluxKustomizationNamespace),
 	}, nil
+}
+
+func NewArgoRolloutController(cfg core.Config) (ArgoRolloutController, error) {
+	client, err := newAPIClient(cfg)
+	if err != nil {
+		return ArgoRolloutController{}, err
+	}
+	return ArgoRolloutController{Client: client}, nil
 }
 
 func (r FluxSyncStatusReader) Read(ctx context.Context, record application.Record) (application.SyncInfo, error) {
@@ -157,6 +193,16 @@ type apiClient struct {
 	BaseURL             string
 	BearerTokenProvider func(context.Context) (string, error)
 	HTTPClient          *http.Client
+}
+
+type apiRequestError struct {
+	ResourcePath string
+	StatusCode   int
+	Message      string
+}
+
+func (e apiRequestError) Error() string {
+	return fmt.Sprintf("kubernetes api %s failed with status %d: %s", e.ResourcePath, e.StatusCode, e.Message)
 }
 
 func newAPIClient(cfg core.Config) (*apiClient, error) {
@@ -314,15 +360,26 @@ func newHTTPClient(
 }
 
 func (c *apiClient) GetJSON(ctx context.Context, resourcePath string, target any) error {
+	return c.doJSON(ctx, http.MethodGet, resourcePath, nil, "", target)
+}
+
+func (c *apiClient) PatchJSON(ctx context.Context, resourcePath string, body []byte, target any) error {
+	return c.doJSON(ctx, http.MethodPatch, resourcePath, body, "application/merge-patch+json", target)
+}
+
+func (c *apiClient) doJSON(ctx context.Context, method string, resourcePath string, body []byte, contentType string, target any) error {
 	if c == nil {
 		return fmt.Errorf("kubernetes api client is not configured")
 	}
 
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+resourcePath, nil)
+	request, err := http.NewRequestWithContext(ctx, method, c.BaseURL+resourcePath, strings.NewReader(string(body)))
 	if err != nil {
 		return fmt.Errorf("create kubernetes api request: %w", err)
 	}
 	request.Header.Set("Accept", "application/json")
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
 	if c.BearerTokenProvider != nil {
 		token, err := c.BearerTokenProvider(ctx)
 		if err != nil {
@@ -339,20 +396,23 @@ func (c *apiClient) GetJSON(ctx context.Context, resourcePath string, target any
 	}
 	defer response.Body.Close()
 
-	body, err := io.ReadAll(response.Body)
+	responseBody, err := io.ReadAll(response.Body)
 	if err != nil {
 		return fmt.Errorf("read kubernetes api response: %w", err)
 	}
 
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		message := strings.TrimSpace(string(body))
+		message := strings.TrimSpace(string(responseBody))
 		if message == "" {
 			message = response.Status
 		}
-		return fmt.Errorf("kubernetes api %s failed with status %d: %s", resourcePath, response.StatusCode, message)
+		return apiRequestError{ResourcePath: resourcePath, StatusCode: response.StatusCode, Message: message}
 	}
 
-	if err := json.Unmarshal(body, target); err != nil {
+	if target == nil || len(responseBody) == 0 {
+		return nil
+	}
+	if err := json.Unmarshal(responseBody, target); err != nil {
 		return fmt.Errorf("decode kubernetes api response: %w", err)
 	}
 
@@ -700,6 +760,201 @@ func buildSyncInfo(status application.SyncStatus, condition fluxCondition) appli
 		Status:     status,
 		Message:    message,
 		ObservedAt: observedAt,
+	}
+}
+
+func (c ArgoRolloutController) GetRollout(ctx context.Context, record application.Record) (application.RolloutInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return application.RolloutInfo{}, err
+	}
+	rollout, err := c.fetchRollout(ctx, record)
+	if err != nil {
+		return application.RolloutInfo{}, err
+	}
+	return mapRolloutInfo(rollout), nil
+}
+
+func (c ArgoRolloutController) Promote(ctx context.Context, record application.Record, full bool) (application.RolloutInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return application.RolloutInfo{}, err
+	}
+	rollout, err := c.fetchRollout(ctx, record)
+	if err != nil {
+		return application.RolloutInfo{}, err
+	}
+
+	specPatch, statusPatch, unifiedPatch := buildPromotePatches(rollout, full)
+	resourcePath := rolloutResourcePath(record)
+	if statusPatch != nil {
+		if err := c.Client.PatchJSON(ctx, resourcePath+"/status", statusPatch, nil); err != nil {
+			var apiErr apiRequestError
+			if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+				return application.RolloutInfo{}, err
+			}
+			specPatch = unifiedPatch
+		}
+	}
+	if specPatch != nil {
+		if err := c.Client.PatchJSON(ctx, resourcePath, specPatch, nil); err != nil {
+			return application.RolloutInfo{}, err
+		}
+	}
+
+	updated, err := c.fetchRollout(ctx, record)
+	if err != nil {
+		return application.RolloutInfo{}, err
+	}
+	return mapRolloutInfo(updated), nil
+}
+
+func (c ArgoRolloutController) Abort(ctx context.Context, record application.Record) (application.RolloutInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return application.RolloutInfo{}, err
+	}
+	resourcePath := rolloutResourcePath(record)
+	abortPatch := []byte(`{"status":{"abort":true}}`)
+	if err := c.Client.PatchJSON(ctx, resourcePath+"/status", abortPatch, nil); err != nil {
+		var apiErr apiRequestError
+		if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+			return application.RolloutInfo{}, err
+		}
+		if err := c.Client.PatchJSON(ctx, resourcePath, abortPatch, nil); err != nil {
+			return application.RolloutInfo{}, err
+		}
+	}
+
+	updated, err := c.fetchRollout(ctx, record)
+	if err != nil {
+		return application.RolloutInfo{}, err
+	}
+	return mapRolloutInfo(updated), nil
+}
+
+func (c ArgoRolloutController) fetchRollout(ctx context.Context, record application.Record) (rolloutResponse, error) {
+	if c.Client == nil {
+		return rolloutResponse{}, fmt.Errorf("kubernetes api client is not configured")
+	}
+	var rollout rolloutResponse
+	if err := c.Client.GetJSON(ctx, rolloutResourcePath(record), &rollout); err != nil {
+		return rolloutResponse{}, err
+	}
+	return rollout, nil
+}
+
+func rolloutResourcePath(record application.Record) string {
+	return argoRolloutResourcePath + "/namespaces/" + url.PathEscape(record.Namespace) + "/rollouts/" + url.PathEscape(record.Name)
+}
+
+func buildPromotePatches(rollout rolloutResponse, full bool) ([]byte, []byte, []byte) {
+	const (
+		unpausePatch                       = `{"spec":{"paused":false}}`
+		clearPauseConditionsPatch         = `{"status":{"pauseConditions":null}}`
+		unpauseAndClearPauseConditions    = `{"spec":{"paused":false},"status":{"pauseConditions":null}}`
+		promoteFullPatch                  = `{"status":{"promoteFull":true}}`
+		unpauseAndPromoteFullPatch        = `{"spec":{"paused":false},"status":{"promoteFull":true}}`
+		clearPauseConditionsPatchWithStep = `{"status":{"pauseConditions":null, "currentStepIndex":%d}}`
+		unpauseAndClearWithStepPatch      = `{"spec":{"paused":false},"status":{"pauseConditions":null, "currentStepIndex":%d}}`
+	)
+
+	var specPatch []byte
+	var statusPatch []byte
+	var unifiedPatch []byte
+
+	if full {
+		if rollout.Spec.Paused {
+			specPatch = []byte(unpausePatch)
+		}
+		if rollout.Status.CurrentPodHash != rollout.Status.StableRS {
+			statusPatch = []byte(promoteFullPatch)
+		}
+		return specPatch, statusPatch, []byte(unpauseAndPromoteFullPatch)
+	}
+
+	unifiedPatch = []byte(unpauseAndClearPauseConditions)
+	if rollout.Spec.Paused {
+		specPatch = []byte(unpausePatch)
+	}
+	if len(rollout.Status.PauseConditions) > 0 {
+		statusPatch = []byte(clearPauseConditionsPatch)
+		return specPatch, statusPatch, unifiedPatch
+	}
+
+	if rollout.Spec.Strategy.Canary != nil && len(rollout.Spec.Strategy.Canary.Steps) > 0 {
+		current := 0
+		if rollout.Status.CurrentStepIndex != nil {
+			current = *rollout.Status.CurrentStepIndex
+		}
+		if current < len(rollout.Spec.Strategy.Canary.Steps) {
+			current++
+		}
+		statusPatch = []byte(fmt.Sprintf(clearPauseConditionsPatchWithStep, current))
+		unifiedPatch = []byte(fmt.Sprintf(unpauseAndClearWithStepPatch, current))
+	}
+
+	return specPatch, statusPatch, unifiedPatch
+}
+
+type rolloutResponse struct {
+	Spec struct {
+		Paused   bool `json:"paused"`
+		Strategy struct {
+			Canary *struct {
+				Steps []map[string]any `json:"steps"`
+			} `json:"canary,omitempty"`
+		} `json:"strategy"`
+	} `json:"spec"`
+	Status struct {
+		Phase            string `json:"phase"`
+		Message          string `json:"message"`
+		CurrentStepIndex *int   `json:"currentStepIndex"`
+		CurrentPodHash   string `json:"currentPodHash"`
+		StableRS         string `json:"stableRS"`
+		PauseConditions  []struct {
+			Reason string `json:"reason"`
+		} `json:"pauseConditions"`
+		Canary struct {
+			Weights *struct {
+				Canary struct {
+					Weight int `json:"weight"`
+				} `json:"canary"`
+			} `json:"weights,omitempty"`
+		} `json:"canary"`
+	} `json:"status"`
+}
+
+func mapRolloutInfo(rollout rolloutResponse) application.RolloutInfo {
+	var currentStep *int
+	if rollout.Status.CurrentStepIndex != nil {
+		step := *rollout.Status.CurrentStepIndex + 1
+		currentStep = &step
+	}
+
+	var canaryWeight *int
+	if rollout.Status.Canary.Weights != nil {
+		weight := rollout.Status.Canary.Weights.Canary.Weight
+		canaryWeight = &weight
+	}
+
+	message := strings.TrimSpace(rollout.Status.Message)
+	if message == "" && len(rollout.Status.PauseConditions) > 0 {
+		message = rollout.Status.PauseConditions[0].Reason
+	}
+	if message == "" {
+		message = "Argo Rollout 상태를 조회했습니다."
+	}
+
+	phase := strings.TrimSpace(rollout.Status.Phase)
+	if phase == "" {
+		phase = "Unknown"
+	}
+
+	return application.RolloutInfo{
+		Phase:          phase,
+		CurrentStep:    currentStep,
+		CanaryWeight:   canaryWeight,
+		StableRevision: rollout.Status.StableRS,
+		CanaryRevision: rollout.Status.CurrentPodHash,
+		Message:        message,
 	}
 }
 

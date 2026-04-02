@@ -4,7 +4,10 @@ import "time"
 
 type DeploymentStrategy string
 
-const DeploymentStrategyStandard DeploymentStrategy = "Standard"
+const (
+	DeploymentStrategyStandard DeploymentStrategy = "Standard"
+	DeploymentStrategyCanary   DeploymentStrategy = "Canary"
+)
 
 type SyncStatus string
 
@@ -26,11 +29,20 @@ type CreateRequest struct {
 	Image              string             `json:"image"`
 	ServicePort        int                `json:"servicePort"`
 	DeploymentStrategy DeploymentStrategy `json:"deploymentStrategy"`
+	Environment        string             `json:"environment,omitempty"`
 	Secrets            []SecretEntry      `json:"secrets,omitempty"`
 }
 
 type CreateDeploymentRequest struct {
-	ImageTag string `json:"imageTag"`
+	ImageTag    string `json:"imageTag"`
+	Environment string `json:"environment,omitempty"`
+}
+
+type UpdateApplicationRequest struct {
+	Description        *string             `json:"description,omitempty"`
+	ServicePort        *int                `json:"servicePort,omitempty"`
+	DeploymentStrategy *DeploymentStrategy `json:"deploymentStrategy,omitempty"`
+	Environment        *string             `json:"environment,omitempty"`
 }
 
 type Record struct {
@@ -41,15 +53,30 @@ type Record struct {
 	Description        string
 	Image              string
 	ServicePort        int
+	Replicas           int
+	RequiredProbes     bool
 	DeploymentStrategy DeploymentStrategy
+	DefaultEnvironment string
 	CreatedAt          time.Time
 	UpdatedAt          time.Time
 	SecretPath         string
 }
 
 type ProjectContext struct {
-	ID        string
-	Namespace string
+	ID           string
+	Namespace    string
+	Environments []string
+	Policies     projectPolicy
+}
+
+type projectPolicy struct {
+	MinReplicas                 int
+	AllowedEnvironments         []string
+	AllowedDeploymentStrategies []string
+	AllowedClusterTargets       []string
+	ProdPRRequired              bool
+	AutoRollbackEnabled         bool
+	RequiredProbes              bool
 }
 
 type Summary struct {
@@ -68,6 +95,7 @@ type Application struct {
 	Image              string     `json:"image"`
 	ServicePort        int        `json:"servicePort"`
 	DeploymentStrategy string     `json:"deploymentStrategy"`
+	DefaultEnvironment string     `json:"defaultEnvironment,omitempty"`
 	SyncStatus         SyncStatus `json:"syncStatus,omitempty"`
 	CreatedAt          time.Time  `json:"createdAt,omitempty"`
 	UpdatedAt          time.Time  `json:"updatedAt,omitempty"`
@@ -77,13 +105,69 @@ type DeploymentResponse struct {
 	DeploymentID  string `json:"deploymentId"`
 	ApplicationID string `json:"applicationId"`
 	ImageTag      string `json:"imageTag"`
+	Environment   string `json:"environment,omitempty"`
 	Status        string `json:"status"`
+}
+
+type DeploymentRecord struct {
+	DeploymentID        string             `json:"deploymentId"`
+	ApplicationID       string             `json:"applicationId"`
+	ProjectID           string             `json:"projectId"`
+	ApplicationName     string             `json:"applicationName"`
+	Environment         string             `json:"environment"`
+	Image               string             `json:"image"`
+	ImageTag            string             `json:"imageTag"`
+	DeploymentStrategy  DeploymentStrategy `json:"deploymentStrategy"`
+	Status              string             `json:"status"`
+	SyncStatus          SyncStatus         `json:"syncStatus,omitempty"`
+	RolloutPhase        string             `json:"rolloutPhase,omitempty"`
+	CurrentStep         *int               `json:"currentStep,omitempty"`
+	CanaryWeight        *int               `json:"canaryWeight,omitempty"`
+	StableRevision      string             `json:"stableRevision,omitempty"`
+	CanaryRevision      string             `json:"canaryRevision,omitempty"`
+	Message             string             `json:"message,omitempty"`
+	CreatedAt           time.Time          `json:"createdAt"`
+	UpdatedAt           time.Time          `json:"updatedAt"`
+}
+
+type DeploymentListResponse struct {
+	ApplicationID string             `json:"applicationId"`
+	Items         []DeploymentRecord `json:"items"`
+}
+
+type RollbackPolicy struct {
+	Enabled         bool     `json:"enabled"`
+	MaxErrorRate    *float64 `json:"maxErrorRate,omitempty"`
+	MaxLatencyP95Ms *int     `json:"maxLatencyP95Ms,omitempty"`
+	MinRequestRate  *float64 `json:"minRequestRate,omitempty"`
+}
+
+type Event struct {
+	ID        string         `json:"id"`
+	Type      string         `json:"type"`
+	Message   string         `json:"message"`
+	CreatedAt time.Time      `json:"createdAt"`
+	Metadata  map[string]any `json:"metadata,omitempty"`
+}
+
+type EventListResponse struct {
+	ApplicationID string  `json:"applicationId"`
+	Items         []Event `json:"items"`
 }
 
 type SyncInfo struct {
 	Status     SyncStatus
 	Message    string
 	ObservedAt time.Time
+}
+
+type RolloutInfo struct {
+	Phase          string
+	CurrentStep    *int
+	CanaryWeight   *int
+	StableRevision string
+	CanaryRevision string
+	Message        string
 }
 
 type SyncStatusResponse struct {

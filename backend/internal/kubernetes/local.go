@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/aolda/aods-backend/internal/application"
+	"github.com/aolda/aods-backend/internal/core"
 )
 
 type LocalSyncStatusReader struct{}
@@ -36,4 +37,52 @@ func (r LocalSyncStatusReader) ReadMany(ctx context.Context, records []applicati
 		items[record.ID] = info
 	}
 	return items, nil
+}
+
+type LocalRolloutController struct{}
+
+func NewRolloutController(cfg core.Config) application.RolloutController {
+	if !cfg.UseKubernetesAPI() {
+		return LocalRolloutController{}
+	}
+
+	controller, err := NewArgoRolloutController(cfg)
+	if err != nil {
+		return ErrorRolloutController{Err: err}
+	}
+	return controller
+}
+
+func (LocalRolloutController) GetRollout(ctx context.Context, record application.Record) (application.RolloutInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return application.RolloutInfo{}, err
+	}
+	weight := 100
+	step := 4
+	return application.RolloutInfo{
+		Phase:          "Healthy",
+		CurrentStep:    &step,
+		CanaryWeight:   &weight,
+		StableRevision: "stable",
+		CanaryRevision: record.Image,
+		Message:        "로컬 롤아웃 어댑터 기준으로 현재 배포가 완료된 것으로 판단했습니다.",
+	}, nil
+}
+
+func (LocalRolloutController) Promote(ctx context.Context, record application.Record, full bool) (application.RolloutInfo, error) {
+	return LocalRolloutController{}.GetRollout(ctx, record)
+}
+
+func (LocalRolloutController) Abort(ctx context.Context, record application.Record) (application.RolloutInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return application.RolloutInfo{}, err
+	}
+	weight := 0
+	return application.RolloutInfo{
+		Phase:          "Degraded",
+		CanaryWeight:   &weight,
+		StableRevision: "stable",
+		CanaryRevision: record.Image,
+		Message:        "로컬 롤아웃 어댑터 기준으로 중단 요청을 반영했습니다.",
+	}, nil
 }

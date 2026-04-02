@@ -1,12 +1,13 @@
 openapi: 3.0.3
 info:
   title: Internal App Deployment Platform API
-  version: 0.5.0
+  version: 0.8.0
   description: >
-    Phase 1 MVP API specification for the internal app deployment platform.
-    This contract covers project catalog discovery, GitHub-backed application
-    metadata, standard deployment, GitOps sync visibility, Vault-backed secret
-    submission, and basic metrics.
+    Phase 1 through Phase 4 API specification for the internal app deployment
+    platform. This contract covers GitHub-backed catalog discovery, standard and
+    canary deployment workflows, change management, environment and policy
+    controls, GitOps sync visibility, Vault-backed secret submission, and
+    platform-scale guardrails.
 servers:
   - url: http://localhost:8080
     description: Local development server
@@ -38,6 +39,119 @@ paths:
                 $ref: '#/components/schemas/ProjectListResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/clusters:
+    get:
+      summary: List cluster targets available to the platform
+      responses:
+        '200':
+          description: Cluster list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/projects/{projectId}/environments:
+    get:
+      summary: List environments configured for a project
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Project environment list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EnvironmentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/projects/{projectId}/policies:
+    get:
+      summary: Read project deployment guardrails
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Project policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectPolicy'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    patch:
+      summary: Update project deployment guardrails
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProjectPolicy'
+      responses:
+        '200':
+          description: Updated project policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectPolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/projects/{projectId}/changes:
+    post:
+      summary: Create a reviewed change request for a project mutation
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateChangeRequest'
+      responses:
+        '201':
+          description: Change created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeRecord'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalServerError'
 
@@ -93,9 +207,28 @@ paths:
           $ref: '#/components/responses/InternalServerError'
 
   /api/v1/applications/{applicationId}/deployments:
+    get:
+      summary: List deployment history for an application
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Deployment history list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     post:
-      summary: Trigger a new standard deployment
-      description: Phase 1 only supports redeploying with a new image tag.
+      summary: Trigger a new deployment revision
+      description: Supports standard redeploys and canary revisions.
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
       requestBody:
@@ -121,6 +254,103 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}:
+    patch:
+      summary: Update application strategy or environment defaults
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateApplicationRequest'
+      responses:
+        '200':
+          description: Application updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Application'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/deployments/{deploymentId}:
+    get:
+      summary: Get deployment revision detail including rollout state
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/DeploymentId'
+      responses:
+        '200':
+          description: Deployment detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/deployments/{deploymentId}/promote:
+    post:
+      summary: Promote a canary rollout to the next step
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/DeploymentId'
+      responses:
+        '200':
+          description: Deployment promoted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/deployments/{deploymentId}/abort:
+    post:
+      summary: Abort an in-flight canary rollout
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/DeploymentId'
+      responses:
+        '200':
+          description: Deployment aborted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeploymentRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
         '500':
           $ref: '#/components/responses/InternalServerError'
 
@@ -166,6 +396,159 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /api/v1/applications/{applicationId}/rollback-policies:
+    get:
+      summary: Get rollback policy thresholds for an application
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Current rollback policy
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RollbackPolicy'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      summary: Save rollback policy thresholds for an application
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RollbackPolicy'
+      responses:
+        '200':
+          description: Rollback policy saved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RollbackPolicy'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/events:
+    get:
+      summary: List application deployment and policy events
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Event list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EventListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/changes/{changeId}:
+    get:
+      summary: Get change request detail
+      parameters:
+        - $ref: '#/components/parameters/ChangeId'
+      responses:
+        '200':
+          description: Change detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/changes/{changeId}/submit:
+    post:
+      summary: Submit a draft change for review
+      parameters:
+        - $ref: '#/components/parameters/ChangeId'
+      responses:
+        '200':
+          description: Change submitted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/changes/{changeId}/approve:
+    post:
+      summary: Approve a submitted change
+      parameters:
+        - $ref: '#/components/parameters/ChangeId'
+      responses:
+        '200':
+          description: Change approved
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/changes/{changeId}/merge:
+    post:
+      summary: Merge an approved change into the desired state
+      parameters:
+        - $ref: '#/components/parameters/ChangeId'
+      responses:
+        '200':
+          description: Change merged
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChangeRecord'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
 components:
   parameters:
     ProjectId:
@@ -181,6 +564,18 @@ components:
       in: path
       required: true
       description: Deterministic application ID derived from GitHub path, e.g. project-a__my-app.
+      schema:
+        type: string
+    DeploymentId:
+      name: deploymentId
+      in: path
+      required: true
+      schema:
+        type: string
+    ChangeId:
+      name: changeId
+      in: path
+      required: true
       schema:
         type: string
 
@@ -273,6 +668,9 @@ components:
           type: string
           enum:
             - Standard
+            - Canary
+        environment:
+          type: string
         secrets:
           type: array
           description: Secrets are submitted directly to the backend and stored in Vault KV v2.
@@ -306,6 +704,9 @@ components:
           type: string
           enum:
             - Standard
+            - Canary
+        defaultEnvironment:
+          type: string
         syncStatus:
           $ref: '#/components/schemas/SyncStatus'
         createdAt:
@@ -334,6 +735,7 @@ components:
           type: string
           enum:
             - Standard
+            - Canary
         syncStatus:
           $ref: '#/components/schemas/SyncStatus'
 
@@ -354,6 +756,25 @@ components:
       properties:
         imageTag:
           type: string
+        environment:
+          type: string
+
+    UpdateApplicationRequest:
+      type: object
+      properties:
+        description:
+          type: string
+        servicePort:
+          type: integer
+          minimum: 1
+          maximum: 65535
+        deploymentStrategy:
+          type: string
+          enum:
+            - Standard
+            - Canary
+        environment:
+          type: string
 
     DeploymentResponse:
       type: object
@@ -369,11 +790,85 @@ components:
           type: string
         imageTag:
           type: string
+        environment:
+          type: string
         status:
           type: string
           enum:
             - Pending
             - Syncing
+            - Promoted
+            - Aborted
+
+    DeploymentRecord:
+      type: object
+      required:
+        - deploymentId
+        - applicationId
+        - projectId
+        - applicationName
+        - environment
+        - image
+        - imageTag
+        - deploymentStrategy
+        - status
+        - createdAt
+        - updatedAt
+      properties:
+        deploymentId:
+          type: string
+        applicationId:
+          type: string
+        projectId:
+          type: string
+        applicationName:
+          type: string
+        environment:
+          type: string
+        image:
+          type: string
+        imageTag:
+          type: string
+        deploymentStrategy:
+          type: string
+          enum:
+            - Standard
+            - Canary
+        status:
+          type: string
+        syncStatus:
+          $ref: '#/components/schemas/SyncStatus'
+        rolloutPhase:
+          type: string
+        currentStep:
+          type: integer
+        canaryWeight:
+          type: integer
+        stableRevision:
+          type: string
+        canaryRevision:
+          type: string
+        message:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    DeploymentListResponse:
+      type: object
+      required:
+        - applicationId
+        - items
+      properties:
+        applicationId:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DeploymentRecord'
 
     SyncStatus:
       type: string
@@ -444,6 +939,251 @@ components:
           items:
             $ref: '#/components/schemas/MetricSeries'
 
+    EnvironmentSummary:
+      type: object
+      required:
+        - id
+        - name
+        - clusterId
+        - writeMode
+        - default
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        clusterId:
+          type: string
+        writeMode:
+          type: string
+          enum:
+            - direct
+            - pull_request
+        default:
+          type: boolean
+
+    EnvironmentListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/EnvironmentSummary'
+
+    ProjectPolicy:
+      type: object
+      required:
+        - minReplicas
+        - allowedEnvironments
+        - allowedDeploymentStrategies
+        - allowedClusterTargets
+        - prodPRRequired
+        - autoRollbackEnabled
+        - requiredProbes
+      properties:
+        minReplicas:
+          type: integer
+        allowedEnvironments:
+          type: array
+          items:
+            type: string
+        allowedDeploymentStrategies:
+          type: array
+          items:
+            type: string
+            enum:
+              - Standard
+              - Canary
+        allowedClusterTargets:
+          type: array
+          items:
+            type: string
+        prodPRRequired:
+          type: boolean
+        autoRollbackEnabled:
+          type: boolean
+        requiredProbes:
+          type: boolean
+
+    ClusterSummary:
+      type: object
+      required:
+        - id
+        - name
+        - default
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        default:
+          type: boolean
+
+    ClusterListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ClusterSummary'
+
+    RollbackPolicy:
+      type: object
+      required:
+        - enabled
+      properties:
+        enabled:
+          type: boolean
+        maxErrorRate:
+          type: number
+        maxLatencyP95Ms:
+          type: integer
+        minRequestRate:
+          type: number
+
+    ApplicationEvent:
+      type: object
+      required:
+        - id
+        - type
+        - message
+        - createdAt
+      properties:
+        id:
+          type: string
+        type:
+          type: string
+        message:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        metadata:
+          type: object
+          additionalProperties: true
+
+    EventListResponse:
+      type: object
+      required:
+        - applicationId
+        - items
+      properties:
+        applicationId:
+          type: string
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApplicationEvent'
+
+    CreateChangeRequest:
+      type: object
+      required:
+        - operation
+      properties:
+        operation:
+          type: string
+          enum:
+            - CreateApplication
+            - UpdateApplication
+            - Redeploy
+            - UpdatePolicies
+        applicationId:
+          type: string
+        name:
+          type: string
+        description:
+          type: string
+        image:
+          type: string
+        servicePort:
+          type: integer
+        deploymentStrategy:
+          type: string
+          enum:
+            - Standard
+            - Canary
+        environment:
+          type: string
+        imageTag:
+          type: string
+        secrets:
+          type: array
+          items:
+            $ref: '#/components/schemas/SecretEntry'
+        policies:
+          $ref: '#/components/schemas/ProjectPolicy'
+        summary:
+          type: string
+
+    ChangeRecord:
+      type: object
+      required:
+        - id
+        - projectId
+        - operation
+        - environment
+        - writeMode
+        - status
+        - summary
+        - diffPreview
+        - createdBy
+        - createdAt
+        - updatedAt
+      properties:
+        id:
+          type: string
+        projectId:
+          type: string
+        applicationId:
+          type: string
+        operation:
+          type: string
+          enum:
+            - CreateApplication
+            - UpdateApplication
+            - Redeploy
+            - UpdatePolicies
+        environment:
+          type: string
+        writeMode:
+          type: string
+          enum:
+            - direct
+            - pull_request
+        status:
+          type: string
+          enum:
+            - Draft
+            - Submitted
+            - Approved
+            - Merged
+        summary:
+          type: string
+        diffPreview:
+          type: array
+          items:
+            type: string
+        createdBy:
+          type: string
+        approvedBy:
+          type: string
+        mergedBy:
+          type: string
+        request:
+          $ref: '#/components/schemas/CreateChangeRequest'
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
     ErrorBody:
       type: object
       required:
@@ -509,7 +1249,4 @@ components:
           schema:
             $ref: '#/components/schemas/ErrorResponse'
 
-# Phase 2 deferred endpoints:
-# - PATCH /api/v1/applications/{applicationId}
-# - POST /api/v1/applications/{applicationId}/deployments/{deploymentId}/promote
-# - POST /api/v1/applications/{applicationId}/deployments/{deploymentId}/abort
+# Phase 2-4 endpoints are now part of the active contract above.
