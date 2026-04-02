@@ -9,6 +9,11 @@ import type {
   ProjectListResponse,
   SyncStatusResponse,
 } from '../types/api'
+import {
+  clearOIDCSession,
+  ensureOIDCAccessToken,
+  isOIDCAuthEnabled,
+} from '../auth/oidc'
 
 const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
 
@@ -22,13 +27,26 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, init?: RequestInit) {
+  const headers = new Headers(init?.headers ?? {})
+  if (!headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json')
+  }
+
+  if (isOIDCAuthEnabled() && !headers.has('Authorization')) {
+    const accessToken = await ensureOIDCAccessToken()
+    if (accessToken) {
+      headers.set('Authorization', `Bearer ${accessToken}`)
+    }
+  }
+
   const response = await fetch(`${apiBaseUrl}${path}`, {
-    headers: {
-      'Content-Type': 'application/json',
-      ...(init?.headers ?? {}),
-    },
     ...init,
+    headers,
   })
+
+  if (response.status === 401 && isOIDCAuthEnabled()) {
+    clearOIDCSession()
+  }
 
   const text = await response.text()
   const payload = text ? (JSON.parse(text) as T | ErrorResponse) : null

@@ -42,12 +42,28 @@ func main() {
 		}
 	}
 
+	if cfg.UseOIDCAuth() {
+		if _, err := core.NewOIDCUserProvider(cfg); err != nil {
+			slog.Error(
+				"oidc auth preflight failed",
+				"authMode", cfg.AuthMode,
+				"oidcIssuerURL", cfg.OIDCIssuerURL,
+				"oidcJWKSURL", cfg.OIDCJWKSURL,
+				"error", err,
+			)
+			os.Exit(1)
+		}
+	}
+
 	handler := server.New(cfg)
 
 	slog.Info(
 		"starting AODS backend",
 		"address", cfg.Address,
 		"repoRoot", cfg.RepoRoot,
+		"authMode", cfg.AuthMode,
+		"oidcIssuerURL", cfg.OIDCIssuerURL,
+		"oidcJWKSURL", cfg.OIDCJWKSURL,
 		"gitMode", cfg.GitMode,
 		"gitRepoDir", cfg.GitRepoDir,
 		"gitRemote", redactRemote(cfg.GitRemote),

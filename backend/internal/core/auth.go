@@ -2,6 +2,7 @@ package core
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 )
@@ -19,24 +20,98 @@ type UserProvider interface {
 	CurrentUser(r *http.Request) (User, error)
 }
 
+type ErrorUserProvider struct {
+	Err error
+}
+
+func (p ErrorUserProvider) CurrentUser(r *http.Request) (User, error) {
+	if p.Err == nil {
+		return User{}, ErrUnauthorized
+	}
+	return User{}, p.Err
+}
+
 type HeaderUserProvider struct {
 	AllowDevFallback bool
 	DevUser          User
 }
 
+type DevFallbackUserProvider struct {
+	AllowDevFallback bool
+	DevUser          User
+}
+
 func (p HeaderUserProvider) CurrentUser(r *http.Request) (User, error) {
+	user, hasExplicitHeaders, err := userFromHeaders(r)
+	if err == nil {
+		return user, nil
+	}
+	if errors.Is(err, ErrUnauthorized) && !hasExplicitHeaders && p.AllowDevFallback {
+		return p.DevUser, nil
+	}
+	return User{}, err
+}
+
+type CompositeUserProvider struct {
+	Primary     UserProvider
+	DevFallback DevFallbackUserProvider
+}
+
+func (p CompositeUserProvider) CurrentUser(r *http.Request) (User, error) {
+	if authorizationHeaderProvided(r) {
+		if p.Primary == nil {
+			return User{}, ErrUnauthorized
+		}
+		return p.Primary.CurrentUser(r)
+	}
+	return p.DevFallback.CurrentUser(r)
+}
+
+func (p DevFallbackUserProvider) CurrentUser(r *http.Request) (User, error) {
+	if authorizationHeaderProvided(r) || headerIdentityProvided(r) {
+		return User{}, ErrUnauthorized
+	}
+	if p.AllowDevFallback {
+		return p.DevUser, nil
+	}
+	return User{}, ErrUnauthorized
+}
+
+func NewUserProvider(cfg Config) UserProvider {
+	header := HeaderUserProvider{
+		AllowDevFallback: cfg.AllowDevFallback,
+		DevUser:          cfg.DevUser,
+	}
+
+	switch strings.ToLower(strings.TrimSpace(cfg.AuthMode)) {
+	case "", "header":
+		return header
+	case "oidc":
+		provider, err := NewOIDCUserProvider(cfg)
+		if err != nil {
+			return ErrorUserProvider{Err: fmt.Errorf("configure oidc auth provider: %w", err)}
+		}
+		return CompositeUserProvider{
+			Primary: provider,
+			DevFallback: DevFallbackUserProvider{
+				AllowDevFallback: cfg.AllowDevFallback,
+				DevUser:          cfg.DevUser,
+			},
+		}
+	default:
+		return ErrorUserProvider{Err: fmt.Errorf("unsupported auth mode %q", cfg.AuthMode)}
+	}
+}
+
+func userFromHeaders(r *http.Request) (User, bool, error) {
 	userID := strings.TrimSpace(r.Header.Get("X-AODS-User-Id"))
 	username := strings.TrimSpace(r.Header.Get("X-AODS-Username"))
 	displayName := strings.TrimSpace(r.Header.Get("X-AODS-Display-Name"))
 	groupsHeader := strings.TrimSpace(r.Header.Get("X-AODS-Groups"))
 
 	hasExplicitHeaders := userID != "" || username != "" || displayName != "" || groupsHeader != ""
-	if userID == "" && username == "" && !hasExplicitHeaders && p.AllowDevFallback {
-		return p.DevUser, nil
-	}
-
 	if userID == "" || username == "" {
-		return User{}, ErrUnauthorized
+		return User{}, hasExplicitHeaders, ErrUnauthorized
 	}
 
 	return User{
@@ -44,7 +119,32 @@ func (p HeaderUserProvider) CurrentUser(r *http.Request) (User, error) {
 		Username:    username,
 		DisplayName: displayName,
 		Groups:      splitCommaSeparated(groupsHeader),
-	}, nil
+	}, hasExplicitHeaders, nil
+}
+
+func bearerTokenFromRequest(r *http.Request) (string, bool) {
+	raw := strings.TrimSpace(r.Header.Get("Authorization"))
+	if raw == "" {
+		return "", false
+	}
+	scheme, token, ok := strings.Cut(raw, " ")
+	if !ok || !strings.EqualFold(strings.TrimSpace(scheme), "Bearer") {
+		return "", false
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", false
+	}
+	return token, true
+}
+
+func authorizationHeaderProvided(r *http.Request) bool {
+	return strings.TrimSpace(r.Header.Get("Authorization")) != ""
+}
+
+func headerIdentityProvided(r *http.Request) bool {
+	_, hasExplicitHeaders, _ := userFromHeaders(r)
+	return hasExplicitHeaders
 }
 
 func splitCommaSeparated(raw string) []string {
