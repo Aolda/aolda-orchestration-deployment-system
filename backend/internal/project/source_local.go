@@ -2,6 +2,7 @@ package project
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -30,12 +31,23 @@ type catalogAccess struct {
 	AdminGroups    []string `yaml:"adminGroups"`
 }
 
+type CatalogNotFoundError struct {
+	Path string
+}
+
+func (e CatalogNotFoundError) Error() string {
+	return fmt.Sprintf("project catalog was not found at %s", e.Path)
+}
+
 func (s LocalCatalogSource) ListProjects(ctx context.Context) ([]CatalogProject, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	data, err := os.ReadFile(s.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, CatalogNotFoundError{Path: s.Path}
+	}
 	if err != nil {
 		return nil, fmt.Errorf("read project catalog: %w", err)
 	}

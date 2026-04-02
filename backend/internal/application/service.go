@@ -40,6 +40,10 @@ type StatusReader interface {
 	Read(ctx context.Context, record Record) (SyncInfo, error)
 }
 
+type BatchStatusReader interface {
+	ReadMany(ctx context.Context, records []Record) (map[string]SyncInfo, error)
+}
+
 type MetricsReader interface {
 	Read(ctx context.Context, record Record) ([]MetricSeries, error)
 }
@@ -67,11 +71,22 @@ func (s Service) ListApplications(ctx context.Context, user core.User, projectID
 		return nil, err
 	}
 
-	items := make([]Summary, 0, len(records))
-	for _, record := range records {
-		syncInfo, err := s.StatusReader.Read(ctx, record)
+	syncByApplicationID := map[string]SyncInfo{}
+	if reader, ok := s.StatusReader.(BatchStatusReader); ok {
+		syncByApplicationID, err = reader.ReadMany(ctx, records)
 		if err != nil {
 			return nil, err
+		}
+	}
+
+	items := make([]Summary, 0, len(records))
+	for _, record := range records {
+		syncInfo, ok := syncByApplicationID[record.ID]
+		if !ok {
+			syncInfo, err = s.StatusReader.Read(ctx, record)
+			if err != nil {
+				return nil, err
+			}
 		}
 
 		items = append(items, Summary{
@@ -111,9 +126,10 @@ func (s Service) CreateApplication(
 		return Application{}, err
 	}
 
-	secretPath := core.BuildVaultFinalPath(projectID, input.Name)
+	secretPath := ""
 	var staged StagedSecret
 	if len(secretData) > 0 && s.Secrets != nil {
+		secretPath = core.BuildVaultFinalPath(projectID, input.Name)
 		staged, err = s.Secrets.Stage(ctx, requestID, projectID, input.Name, user.Username, secretData)
 		if err != nil {
 			return Application{}, err

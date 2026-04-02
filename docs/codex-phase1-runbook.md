@@ -15,6 +15,7 @@
 * 앱 ID 규칙: `{projectId}__{appName}`
 * Git write 모델: Phase 1은 `direct push`
 * Secret 처리: Vault KV v2, `staging -> git commit -> final -> cleanup`
+* 개발 실연동 순서: `GitHub 먼저`, `Vault는 local adapter 유지 후 후속 연결`
 
 ## 2. Read Order
 
@@ -117,6 +118,67 @@ make check
 
 환경이 덜 깔려 있더라도, missing integration 때문에 구현을 멈추지 않는다.
 
+### 6.1 GitHub First Dev Env
+
+개발 환경에서 GitHub real adapter 를 먼저 붙일 때는 아래 env 를 사용한다.
+
+```bash
+export AODS_GIT_MODE=git
+export AODS_GIT_REPO_DIR=/tmp/aods-managed-gitops
+export AODS_GIT_BRANCH=main
+export AODS_GIT_AUTHOR_NAME="AODS Bot"
+export AODS_GIT_AUTHOR_EMAIL="aods-bot@local"
+export AODS_GITHUB_USERNAME="your-github-username"
+export AODS_GITHUB_TOKEN="github_pat_xxx"
+export AODS_GIT_REMOTE="https://${AODS_GITHUB_USERNAME}:${AODS_GITHUB_TOKEN}@github.com/Aolda/aods-manifest.git"
+```
+
+Vault는 GitHub-first 초기 단계에서는 local adapter 를 유지해도 된다.
+다만 real Vault 검증 단계에서는 아래 env 를 추가한다.
+
+```bash
+export AODS_VAULT_MODE=token
+export AODS_VAULT_ADDR="http://127.0.0.1:18200"
+export AODS_VAULT_TOKEN="root"
+export AODS_VAULT_NAMESPACE=""
+export AODS_VAULT_REQUEST_TIMEOUT="5s"
+```
+
+주의:
+
+* local backend 가 in-cluster Vault service 를 직접 볼 수 없다면 `kubectl port-forward -n vault svc/vault 18200:8200` 같은 터널이 필요하다.
+* 현재 self-hosted dev cluster 의 External Secrets Operator 는 `external-secrets.io/v1` 만 served 이므로, generated `ExternalSecret` manifest 도 `v1` 여야 한다.
+
+주의:
+
+* `git` 모드 startup preflight 는 `platform/projects.yaml` 이 target GitOps repo 에 없으면 즉시 실패한다.
+* credential helper 를 쓰지 않는다면 `AODS_GIT_REMOTE` 에 tokenized HTTPS remote 를 넣어야 한다.
+
+실제 Kubernetes sync-status reader 를 붙일 때는 아래 env 를 추가한다.
+
+```bash
+export AODS_K8S_MODE=kubeconfig
+export AODS_K8S_KUBECONFIG="$HOME/.kube/config"
+export AODS_K8S_CONTEXT="your-kube-context"
+export AODS_FLUX_KUSTOMIZATION_NAMESPACE="flux-system"
+export AODS_K8S_REQUEST_TIMEOUT="5s"
+```
+
+실제 Prometheus metrics reader 를 붙일 때는 아래 env 를 추가한다.
+
+```bash
+export AODS_PROMETHEUS_MODE=prometheus
+export AODS_PROMETHEUS_URL="http://127.0.0.1:19090"
+export AODS_PROMETHEUS_REQUEST_TIMEOUT="5s"
+export AODS_PROMETHEUS_RANGE="1h"
+export AODS_PROMETHEUS_STEP="5m"
+```
+
+주의:
+
+* local backend 가 in-cluster Prometheus service 를 직접 볼 수 없다면 `kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 19090:9090` 같은 터널이 필요하다.
+* 앱/서비스 메트릭이 cluster Prometheus 에 실제로 scrape 되지 않는 환경이면, real adapter 는 `null` 값 point 들을 반환하고 API 자체는 200 으로 유지한다.
+
 ## 7. Implementation Order
 
 가장 작은 vertical slice 순서:
@@ -131,6 +193,14 @@ make check
 8. frontend project list
 9. frontend app list
 10. frontend create/app detail wiring
+
+실연동 단계에서는 아래 순서를 권장한다.
+
+1. GitHub-backed project/app reader + writer
+2. local secret adapter 유지 상태로 create/redeploy 검증
+3. Vault KV v2 adapter 추가
+4. Kubernetes/Prometheus real adapter 추가
+5. Keycloak real auth 연결
 
 ## 8. When To Stop And Ask
 
