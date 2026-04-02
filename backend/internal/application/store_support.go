@@ -20,7 +20,7 @@ type appMetadata struct {
 	Image              string             `yaml:"image"`
 	ServicePort        int                `yaml:"servicePort"`
 	Replicas           int                `yaml:"replicas"`
-	RequiredProbes     bool               `yaml:"requiredProbes"`
+	RequiredProbes     *bool              `yaml:"requiredProbes,omitempty"`
 	DeploymentStrategy DeploymentStrategy `yaml:"deploymentStrategy"`
 	DefaultEnvironment string             `yaml:"defaultEnvironment"`
 	CreatedAt          time.Time          `yaml:"createdAt"`
@@ -39,7 +39,7 @@ func metadataFromRecord(record Record, environments []string) appMetadata {
 		Image:              record.Image,
 		ServicePort:        record.ServicePort,
 		Replicas:           record.Replicas,
-		RequiredProbes:     record.RequiredProbes,
+		RequiredProbes:     boolPointer(record.RequiredProbes),
 		DeploymentStrategy: record.DeploymentStrategy,
 		DefaultEnvironment: record.DefaultEnvironment,
 		CreatedAt:          record.CreatedAt,
@@ -59,7 +59,7 @@ func (m appMetadata) toRecord() Record {
 		Image:              m.Image,
 		ServicePort:        m.ServicePort,
 		Replicas:           m.Replicas,
-		RequiredProbes:     m.RequiredProbes,
+		RequiredProbes:     m.requiredProbesOrDefault(),
 		DeploymentStrategy: m.DeploymentStrategy,
 		DefaultEnvironment: m.DefaultEnvironment,
 		CreatedAt:          m.CreatedAt,
@@ -99,6 +99,17 @@ func readMetadata(repoRoot string, projectID string, appName string) (appMetadat
 		return appMetadata{}, fmt.Errorf("decode application metadata: %w", err)
 	}
 	return metadata, nil
+}
+
+func (m appMetadata) requiredProbesOrDefault() bool {
+	if m.RequiredProbes == nil {
+		return true
+	}
+	return *m.RequiredProbes
+}
+
+func boolPointer(value bool) *bool {
+	return &value
 }
 
 func deploymentHistoryDir(repoRoot string, projectID string, appName string) string {
