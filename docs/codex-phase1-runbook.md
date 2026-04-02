@@ -202,6 +202,43 @@ export AODS_PROMETHEUS_STEP="5m"
 4. Kubernetes/Prometheus real adapter 추가
 5. Keycloak real auth 연결
 
+Keycloak real auth 를 붙일 때는 아래 env 를 추가한다.
+
+```bash
+export AODS_AUTH_MODE=oidc
+export AODS_OIDC_ISSUER_URL="https://keycloak.example.com/realms/aods"
+export AODS_OIDC_AUDIENCE="aods-portal"
+export AODS_OIDC_JWKS_URL=""
+export AODS_OIDC_USER_ID_CLAIM="sub"
+export AODS_OIDC_USERNAME_CLAIM="preferred_username"
+export AODS_OIDC_DISPLAY_NAME_CLAIM="name"
+export AODS_OIDC_GROUPS_CLAIM="groups"
+export AODS_OIDC_REQUEST_TIMEOUT="5s"
+export AODS_ALLOW_DEV_FALLBACK=false
+```
+
+주의:
+
+* `oidc` 모드에서는 `Authorization: Bearer ...` 토큰을 우선 사용한다.
+* `X-AODS-User-*` 개발용 헤더 인증은 `header` 모드에서만 허용된다.
+* `AODS_ALLOW_DEV_FALLBACK=true` 면 로컬에서 Authorization 없이도 dev user 로 기동 가능하지만, real auth 검증 단계에서는 `false` 로 두는 편이 맞다.
+
+프론트에서 Keycloak MVP 로그인을 직접 붙일 때는 아래 env 를 추가한다.
+
+```bash
+export VITE_AODS_AUTH_MODE=oidc
+export VITE_AODS_OIDC_ISSUER_URL="https://keycloak.example.com/realms/aods"
+export VITE_AODS_OIDC_CLIENT_ID="aods-portal"
+export VITE_AODS_OIDC_REDIRECT_URI="http://localhost:5173"
+export VITE_AODS_OIDC_SCOPE="openid profile email groups"
+```
+
+주의:
+
+* 프론트는 Authorization Code + PKCE 로 access token 을 `sessionStorage` 에 저장한다.
+* API client 는 stored access token 을 자동으로 bearer header 로 붙인다.
+* access token 이 만료되면 refresh token 으로 1차 갱신을 시도하고, 실패하면 다시 Keycloak authorize endpoint 로 보낸다.
+
 ## 8. When To Stop And Ask
 
 아래 경우만 멈춘다.

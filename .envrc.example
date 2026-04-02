@@ -10,6 +10,25 @@ export AODS_GITHUB_USERNAME="your-github-username"
 export AODS_GITHUB_TOKEN="github_pat_xxx"
 export AODS_GIT_REMOTE="https://${AODS_GITHUB_USERNAME}:${AODS_GITHUB_TOKEN}@github.com/Aolda/aods-manifest.git"
 
+# Optional: real Keycloak / OIDC auth
+# export AODS_AUTH_MODE=oidc
+# export AODS_OIDC_ISSUER_URL="https://keycloak.example.com/realms/aods"
+# export AODS_OIDC_AUDIENCE="aods-portal"
+# export AODS_OIDC_JWKS_URL=""
+# export AODS_OIDC_USER_ID_CLAIM="sub"
+# export AODS_OIDC_USERNAME_CLAIM="preferred_username"
+# export AODS_OIDC_DISPLAY_NAME_CLAIM="name"
+# export AODS_OIDC_GROUPS_CLAIM="groups"
+# export AODS_OIDC_REQUEST_TIMEOUT="5s"
+# export AODS_ALLOW_DEV_FALLBACK=false
+
+# Optional: frontend OIDC bootstrap
+# export VITE_AODS_AUTH_MODE=oidc
+# export VITE_AODS_OIDC_ISSUER_URL="https://keycloak.example.com/realms/aods"
+# export VITE_AODS_OIDC_CLIENT_ID="aods-portal"
+# export VITE_AODS_OIDC_REDIRECT_URI="http://localhost:5173"
+# export VITE_AODS_OIDC_SCOPE="openid profile email groups"
+
 # Optional: real Kubernetes sync-status reader
 # export AODS_K8S_MODE=kubeconfig
 # export AODS_K8S_KUBECONFIG="$HOME/.kube/config"

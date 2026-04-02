@@ -14,10 +14,7 @@ import (
 )
 
 func New(cfg core.Config) http.Handler {
-	userProvider := core.HeaderUserProvider{
-		AllowDevFallback: cfg.AllowDevFallback,
-		DevUser:          cfg.DevUser,
-	}
+	userProvider := core.NewUserProvider(cfg)
 
 	projectSource := project.CatalogSource(project.LocalCatalogSource{
 		Path: filepath.Join(cfg.RepoRoot, "platform", "projects.yaml"),

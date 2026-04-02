@@ -12,6 +12,15 @@ import (
 type Config struct {
 	Address                    string
 	RepoRoot                   string
+	AuthMode                   string
+	OIDCIssuerURL              string
+	OIDCJWKSURL                string
+	OIDCAudience               string
+	OIDCUserIDClaim            string
+	OIDCUsernameClaim          string
+	OIDCDisplayNameClaim       string
+	OIDCGroupsClaim            string
+	OIDCRequestTimeout         time.Duration
 	GitMode                    string
 	GitRepoDir                 string
 	GitRemote                  string
@@ -60,6 +69,11 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	oidcRequestTimeout, err := envDuration("AODS_OIDC_REQUEST_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
 	gitCommandTimeout, err := envDuration("AODS_GIT_COMMAND_TIMEOUT", 15*time.Second)
 	if err != nil {
 		return Config{}, err
@@ -88,6 +102,15 @@ func LoadConfig() (Config, error) {
 	return Config{
 		Address:                    envOrDefault("AODS_ADDR", ":8080"),
 		RepoRoot:                   repoRoot,
+		AuthMode:                   envOrDefault("AODS_AUTH_MODE", "header"),
+		OIDCIssuerURL:              envOrDefault("AODS_OIDC_ISSUER_URL", ""),
+		OIDCJWKSURL:                envOrDefault("AODS_OIDC_JWKS_URL", ""),
+		OIDCAudience:               envOrDefault("AODS_OIDC_AUDIENCE", ""),
+		OIDCUserIDClaim:            envOrDefault("AODS_OIDC_USER_ID_CLAIM", "sub"),
+		OIDCUsernameClaim:          envOrDefault("AODS_OIDC_USERNAME_CLAIM", "preferred_username"),
+		OIDCDisplayNameClaim:       envOrDefault("AODS_OIDC_DISPLAY_NAME_CLAIM", "name"),
+		OIDCGroupsClaim:            envOrDefault("AODS_OIDC_GROUPS_CLAIM", "groups"),
+		OIDCRequestTimeout:         oidcRequestTimeout,
 		GitMode:                    envOrDefault("AODS_GIT_MODE", "local"),
 		GitRepoDir:                 envOrDefault("AODS_GIT_REPO_DIR", filepath.Join(os.TempDir(), "aods-managed-gitops")),
 		GitRemote:                  envOrDefault("AODS_GIT_REMOTE", ""),
@@ -130,6 +153,10 @@ func LoadConfig() (Config, error) {
 
 func (c Config) UseGitRepo() bool {
 	return strings.EqualFold(c.GitMode, "git")
+}
+
+func (c Config) UseOIDCAuth() bool {
+	return strings.EqualFold(strings.TrimSpace(c.AuthMode), "oidc")
 }
 
 func (c Config) UseKubernetesAPI() bool {
