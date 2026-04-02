@@ -699,7 +699,11 @@ func selectKustomization(items []fluxKustomization, record application.Record) (
 }
 
 func desiredFluxPath(record application.Record) string {
-	return normalizeFluxPath(path.Join("apps", record.ProjectID, record.Name, "overlays", "prod"))
+	environment := strings.TrimSpace(record.DefaultEnvironment)
+	if environment == "" {
+		environment = "prod"
+	}
+	return normalizeFluxPath(path.Join("apps", record.ProjectID, record.Name, "overlays", environment))
 }
 
 func normalizeFluxPath(value string) string {
@@ -847,7 +851,7 @@ func rolloutResourcePath(record application.Record) string {
 
 func buildPromotePatches(rollout rolloutResponse, full bool) ([]byte, []byte, []byte) {
 	const (
-		unpausePatch                       = `{"spec":{"paused":false}}`
+		unpausePatch                      = `{"spec":{"paused":false}}`
 		clearPauseConditionsPatch         = `{"status":{"pauseConditions":null}}`
 		unpauseAndClearPauseConditions    = `{"spec":{"paused":false},"status":{"pauseConditions":null}}`
 		promoteFullPatch                  = `{"status":{"promoteFull":true}}`

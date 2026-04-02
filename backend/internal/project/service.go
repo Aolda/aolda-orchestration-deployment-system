@@ -42,23 +42,23 @@ type Environment struct {
 }
 
 type PolicySet struct {
-	MinReplicas                int
-	AllowedEnvironments        []string
+	MinReplicas                 int
+	AllowedEnvironments         []string
 	AllowedDeploymentStrategies []string
-	AllowedClusterTargets      []string
-	ProdPRRequired             bool
-	AutoRollbackEnabled        bool
-	RequiredProbes             bool
+	AllowedClusterTargets       []string
+	ProdPRRequired              bool
+	AutoRollbackEnabled         bool
+	RequiredProbes              bool
 }
 
 type CatalogProject struct {
-	ID          string
-	Name        string
-	Description string
-	Namespace   string
-	Access      Access
+	ID           string
+	Name         string
+	Description  string
+	Namespace    string
+	Access       Access
 	Environments []Environment
-	Policies    PolicySet
+	Policies     PolicySet
 }
 
 type Summary struct {
@@ -262,7 +262,14 @@ func applyEnvironmentDefaults(environments []Environment) []Environment {
 	}
 
 	items := make([]Environment, 0, len(environments))
-	hasDefault := false
+	hasExplicitDefault := false
+	for _, environment := range environments {
+		if environment.ID != "" && environment.Default {
+			hasExplicitDefault = true
+			break
+		}
+	}
+
 	for index, environment := range environments {
 		item := environment
 		if item.ID == "" {
@@ -277,17 +284,13 @@ func applyEnvironmentDefaults(environments []Environment) []Environment {
 		if item.WriteMode == "" {
 			item.WriteMode = WriteModeDirect
 		}
-		if item.Default {
-			hasDefault = true
-		}
-		if index == 0 && !hasDefault {
+		if index == 0 && !hasExplicitDefault {
 			item.Default = true
-			hasDefault = true
 		}
 		items = append(items, item)
 	}
 
-	if !hasDefault && len(items) > 0 {
+	if !hasExplicitDefault && len(items) > 0 {
 		items[0].Default = true
 	}
 
