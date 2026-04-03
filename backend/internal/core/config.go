@@ -162,7 +162,7 @@ func LoadConfig() (Config, error) {
 			Username:    envOrDefault("AODS_DEV_USERNAME", "local.developer"),
 			DisplayName: envOrDefault("AODS_DEV_DISPLAY_NAME", "로컬 운영자"),
 			Groups: splitCommaSeparated(
-				envOrDefault("AODS_DEV_GROUPS", "aods:project-a:deploy,aods:project-b:view"),
+				envOrDefault("AODS_DEV_GROUPS", "aods:project-a:deploy"),
 			),
 		},
 		LocalVaultDir: envOrDefault("AODS_LOCAL_VAULT_DIR", filepath.Join(os.TempDir(), "aods-local-vault")),

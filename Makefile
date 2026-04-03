@@ -1,4 +1,4 @@
-.PHONY: backend-run frontend-run check setup doctor
+.PHONY: backend-run frontend-run check setup doctor deploy-testbed
 
 setup:
 	@echo "Setting up basic directories..."
@@ -19,3 +19,6 @@ check:
 
 doctor:
 	@bash scripts/doctor.sh
+
+deploy-testbed:
+	@bash scripts/deploy-testbed.sh
