@@ -37,7 +37,7 @@ func TestFluxSyncStatusReaderTokenMode(t *testing.T) {
 			"items": [
 				{
 					"metadata": {"name": "project-a-my-app", "namespace": "flux-system"},
-					"spec": {"path": "./apps/project-a/my-app/overlays/prod", "targetNamespace": "project-a"},
+					"spec": {"path": "./apps/project-a/my-app/overlays/shared", "targetNamespace": "project-a"},
 					"status": {
 						"conditions": [
 							{
@@ -67,9 +67,10 @@ func TestFluxSyncStatusReaderTokenMode(t *testing.T) {
 	}
 
 	info, err := reader.Read(context.Background(), application.Record{
-		ProjectID: "project-a",
-		Name:      "my-app",
-		Namespace: "project-a",
+		ProjectID:          "project-a",
+		Name:               "my-app",
+		Namespace:          "project-a",
+		DefaultEnvironment: "shared",
 	})
 	if err != nil {
 		t.Fatalf("read sync status: %v", err)

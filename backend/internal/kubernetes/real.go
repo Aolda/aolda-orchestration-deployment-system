@@ -227,7 +227,7 @@ func (r PodMetricsReader) Read(ctx context.Context, record application.Record, d
 	}
 
 	now := r.now().UTC()
-	
+
 	queryStep := step
 	if queryStep <= 0 {
 		queryStep = r.metricStep()
@@ -945,7 +945,7 @@ func selectKustomization(items []fluxKustomization, record application.Record) (
 func desiredFluxPath(record application.Record) string {
 	environment := strings.TrimSpace(record.DefaultEnvironment)
 	if environment == "" {
-		environment = "prod"
+		environment = "shared"
 	}
 	return normalizeFluxPath(path.Join("apps", record.ProjectID, record.Name, "overlays", environment))
 }

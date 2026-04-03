@@ -43,7 +43,7 @@ func metadataFromRecord(record Record, environments []string) appMetadata {
 		ServicePort:         record.ServicePort,
 		Replicas:            record.Replicas,
 		RequiredProbes:      boolPointer(record.RequiredProbes),
-		DeploymentStrategy:  record.DeploymentStrategy,
+		DeploymentStrategy:  NormalizeDeploymentStrategy(record.DeploymentStrategy),
 		DefaultEnvironment:  record.DefaultEnvironment,
 		CreatedAt:           record.CreatedAt,
 		UpdatedAt:           record.UpdatedAt,
@@ -66,7 +66,7 @@ func (m appMetadata) toRecord() Record {
 		ServicePort:         m.ServicePort,
 		Replicas:            m.Replicas,
 		RequiredProbes:      m.requiredProbesOrDefault(),
-		DeploymentStrategy:  m.DeploymentStrategy,
+		DeploymentStrategy:  NormalizeDeploymentStrategy(m.DeploymentStrategy),
 		DefaultEnvironment:  m.DefaultEnvironment,
 		CreatedAt:           m.CreatedAt,
 		UpdatedAt:           m.UpdatedAt,
@@ -126,6 +126,7 @@ func deploymentHistoryDir(repoRoot string, projectID string, appName string) str
 }
 
 func writeDeploymentRecord(repoRoot string, deployment DeploymentRecord) error {
+	deployment.DeploymentStrategy = NormalizeDeploymentStrategy(deployment.DeploymentStrategy)
 	path := filepath.Join(deploymentHistoryDir(repoRoot, deployment.ProjectID, deployment.ApplicationName), deployment.DeploymentID+".yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create deployment history directory: %w", err)
@@ -155,6 +156,7 @@ func readDeploymentRecord(repoRoot string, projectID string, appName string, dep
 	if err := yaml.Unmarshal(data, &deployment); err != nil {
 		return DeploymentRecord{}, fmt.Errorf("decode deployment history: %w", err)
 	}
+	deployment.DeploymentStrategy = NormalizeDeploymentStrategy(deployment.DeploymentStrategy)
 	return deployment, nil
 }
 

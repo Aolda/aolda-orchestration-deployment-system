@@ -30,7 +30,7 @@ export type CreateApplicationRequest = {
   image: string
   servicePort: number
   replicas?: number
-  deploymentStrategy: 'Standard' | 'Canary'
+  deploymentStrategy: 'Rollout' | 'Canary'
   environment?: string
   secrets?: SecretEntry[]
   repositoryId?: string
@@ -48,7 +48,7 @@ export type Application = {
   image: string
   servicePort: number
   replicas: number
-  deploymentStrategy: 'Standard' | 'Canary'
+  deploymentStrategy: 'Rollout' | 'Canary'
   defaultEnvironment?: string
   syncStatus?: SyncStatus
   createdAt?: string
@@ -62,7 +62,7 @@ export type ApplicationSummary = {
   id: string
   name: string
   image: string
-  deploymentStrategy: 'Standard' | 'Canary'
+  deploymentStrategy: 'Rollout' | 'Canary'
   syncStatus: SyncStatus
 }
 
@@ -80,7 +80,7 @@ export type UpdateApplicationRequest = {
   image?: string
   servicePort?: number
   replicas?: number
-  deploymentStrategy?: 'Standard' | 'Canary'
+  deploymentStrategy?: 'Rollout' | 'Canary'
   environment?: string
   repositoryId?: string
   repositoryServiceId?: string
@@ -104,6 +104,7 @@ export type RepositorySummary = {
   name: string
   url: string
   description?: string
+  branch?: string
   configFile?: string
 }
 
@@ -114,7 +115,7 @@ export type RepositoryListResponse = {
 export type ProjectPolicy = {
   minReplicas: number
   allowedEnvironments: string[]
-  allowedDeploymentStrategies: Array<'Standard' | 'Canary'>
+  allowedDeploymentStrategies: Array<'Rollout' | 'Canary'>
   allowedClusterTargets: string[]
   prodPRRequired: boolean
   autoRollbackEnabled: boolean
@@ -140,7 +141,7 @@ export type DeploymentRecord = {
   environment: string
   image: string
   imageTag: string
-  deploymentStrategy: 'Standard' | 'Canary'
+  deploymentStrategy: 'Rollout' | 'Canary'
   status: string
   syncStatus?: SyncStatus
   rolloutPhase?: string
@@ -209,7 +210,7 @@ export type CreateChangeRequest = {
   description?: string
   image?: string
   servicePort?: number
-  deploymentStrategy?: 'Standard' | 'Canary'
+  deploymentStrategy?: 'Rollout' | 'Canary'
   environment?: string
   imageTag?: string
   secrets?: SecretEntry[]

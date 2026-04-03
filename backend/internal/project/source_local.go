@@ -33,6 +33,7 @@ type catalogRepository struct {
 	Name           string `yaml:"name"`
 	URL            string `yaml:"url"`
 	Description    string `yaml:"description,omitempty"`
+	Branch         string `yaml:"branch,omitempty"`
 	AuthSecretPath string `yaml:"authSecretPath,omitempty"`
 	ConfigFile     string `yaml:"configFile,omitempty"`
 }
@@ -124,6 +125,7 @@ func (s LocalCatalogSource) ListProjects(ctx context.Context) ([]CatalogProject,
 				Name:           repo.Name,
 				URL:            repo.URL,
 				Description:    repo.Description,
+				Branch:         repo.Branch,
 				AuthSecretPath: repo.AuthSecretPath,
 				ConfigFile:     repo.ConfigFile,
 			})

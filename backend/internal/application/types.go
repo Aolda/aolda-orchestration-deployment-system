@@ -1,13 +1,32 @@
 package application
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type DeploymentStrategy string
 
 const (
+	DeploymentStrategyRollout  DeploymentStrategy = "Rollout"
 	DeploymentStrategyStandard DeploymentStrategy = "Standard"
 	DeploymentStrategyCanary   DeploymentStrategy = "Canary"
 )
+
+func NormalizeDeploymentStrategy(value DeploymentStrategy) DeploymentStrategy {
+	switch strings.TrimSpace(string(value)) {
+	case string(DeploymentStrategyCanary):
+		return DeploymentStrategyCanary
+	case string(DeploymentStrategyRollout), string(DeploymentStrategyStandard):
+		return DeploymentStrategyRollout
+	default:
+		return DeploymentStrategy(strings.TrimSpace(string(value)))
+	}
+}
+
+func IsCanaryDeploymentStrategy(value DeploymentStrategy) bool {
+	return NormalizeDeploymentStrategy(value) == DeploymentStrategyCanary
+}
 
 type SyncStatus string
 

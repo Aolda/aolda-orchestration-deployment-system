@@ -2,7 +2,7 @@ package project
 
 import "testing"
 
-func TestApplyEnvironmentDefaultsReturnsProdWhenCatalogIsEmpty(t *testing.T) {
+func TestApplyEnvironmentDefaultsReturnsSharedWhenCatalogIsEmpty(t *testing.T) {
 	t.Parallel()
 
 	items := applyEnvironmentDefaults(nil)
@@ -10,11 +10,11 @@ func TestApplyEnvironmentDefaultsReturnsProdWhenCatalogIsEmpty(t *testing.T) {
 	if len(items) != 1 {
 		t.Fatalf("expected 1 environment, got %d", len(items))
 	}
-	if items[0].ID != "prod" {
-		t.Fatalf("expected prod environment, got %s", items[0].ID)
+	if items[0].ID != "shared" {
+		t.Fatalf("expected shared environment, got %s", items[0].ID)
 	}
-	if items[0].Name != "Production" {
-		t.Fatalf("expected Production name, got %s", items[0].Name)
+	if items[0].Name != "Shared" {
+		t.Fatalf("expected Shared name, got %s", items[0].Name)
 	}
 	if items[0].ClusterID != "default" {
 		t.Fatalf("expected default cluster, got %s", items[0].ClusterID)
@@ -23,7 +23,7 @@ func TestApplyEnvironmentDefaultsReturnsProdWhenCatalogIsEmpty(t *testing.T) {
 		t.Fatalf("expected direct write mode, got %s", items[0].WriteMode)
 	}
 	if !items[0].Default {
-		t.Fatal("expected synthesized prod environment to be default")
+		t.Fatal("expected synthesized shared environment to be default")
 	}
 }
 
@@ -82,7 +82,7 @@ func TestApplyPolicyDefaultsDerivesEnvironmentAndClusterTargets(t *testing.T) {
 	if len(items.AllowedEnvironments) != 2 || items.AllowedEnvironments[0] != "dev" || items.AllowedEnvironments[1] != "prod" {
 		t.Fatalf("expected derived environments [dev prod], got %#v", items.AllowedEnvironments)
 	}
-	if len(items.AllowedDeploymentStrategies) != 2 || items.AllowedDeploymentStrategies[0] != "Standard" || items.AllowedDeploymentStrategies[1] != "Canary" {
+	if len(items.AllowedDeploymentStrategies) != 2 || items.AllowedDeploymentStrategies[0] != "Rollout" || items.AllowedDeploymentStrategies[1] != "Canary" {
 		t.Fatalf("expected default deployment strategies, got %#v", items.AllowedDeploymentStrategies)
 	}
 	if len(items.AllowedClusterTargets) != 2 || items.AllowedClusterTargets[0] != "default" || items.AllowedClusterTargets[1] != "analytics" {
@@ -114,5 +114,8 @@ func TestApplyPolicyDefaultsPreservesExplicitDisabledProbes(t *testing.T) {
 
 	if items.RequiredProbes {
 		t.Fatal("expected explicit requiredProbes=false to be preserved")
+	}
+	if len(items.AllowedDeploymentStrategies) != 1 || items.AllowedDeploymentStrategies[0] != "Rollout" {
+		t.Fatalf("expected Standard to normalize to Rollout, got %#v", items.AllowedDeploymentStrategies)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -44,6 +45,11 @@ type desiredRepositoryState struct {
 	Image     string
 	Port      int
 	Replicas  int
+}
+
+type remoteFileTarget struct {
+	URL               string
+	UseGitHubContents bool
 }
 
 func (p *AutoUpdatePoller) Start(ctx context.Context) {
@@ -119,7 +125,11 @@ func (p *AutoUpdatePoller) pollApp(ctx context.Context, user core.User, proj pro
 			return
 		}
 		if secrets != nil {
-			token = secrets["token"]
+			token = resolveRepositoryToken(secrets)
+		}
+		if token == "" {
+			slog.Error("poller failed to resolve repository token", "app", app.ID, "path", repo.AuthSecretPath)
+			return
 		}
 	}
 
@@ -206,12 +216,12 @@ func (p *AutoUpdatePoller) reconcileRepositoryState(ctx context.Context, user co
 
 func (p *AutoUpdatePoller) resolveDesiredState(ctx context.Context, repo project.Repository, app Record, token string) (*desiredRepositoryState, string, error) {
 	if strings.TrimSpace(repo.ConfigFile) != "" {
-		rawURL := p.convertToRawURL(repo.URL, repo.ConfigFile, "")
-		if rawURL == "" {
-			return nil, "", fmt.Errorf("could not determine descriptor raw URL for repository %s", repo.URL)
+		target, err := p.resolveRepositoryFileTarget(repo, repo.ConfigFile, "", token)
+		if err != nil {
+			return nil, "", err
 		}
 
-		data, err := p.fetchRemoteFile(ctx, rawURL, token)
+		data, err := p.fetchRemoteFile(ctx, target, token)
 		if err == nil {
 			descriptor, parseErr := parseRepositoryDescriptor(data)
 			if parseErr != nil {
@@ -234,12 +244,12 @@ func (p *AutoUpdatePoller) resolveDesiredState(ctx context.Context, repo project
 		}
 	}
 
-	rawURL := p.convertToRawURL(repo.URL, app.ConfigPath, "aolda-deploy.yaml")
-	if rawURL == "" {
-		return nil, "", fmt.Errorf("could not determine raw URL for repository %s", repo.URL)
+	target, err := p.resolveRepositoryFileTarget(repo, app.ConfigPath, "aolda-deploy.yaml", token)
+	if err != nil {
+		return nil, "", err
 	}
 
-	config, err := p.fetchUpdateConfig(ctx, rawURL, token)
+	config, err := p.fetchUpdateConfig(ctx, target, token)
 	if err != nil {
 		return nil, "", err
 	}
@@ -315,33 +325,72 @@ func intPointer(value int) *int {
 	return &value
 }
 
-func (p *AutoUpdatePoller) convertToRawURL(repoURL string, relativePath string, defaultPath string) string {
-	trimmed := strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(repoURL), "https://"), ".git")
-	parts := strings.Split(trimmed, "/")
-	if len(parts) < 3 || parts[0] != "github.com" {
-		return ""
+func resolveRepositoryToken(values map[string]string) string {
+	for _, key := range []string{"token", "pat", "github_pat", "githubPat", "github_token", "githubToken", "access_token", "accessToken"} {
+		if value := strings.TrimSpace(values[key]); value != "" {
+			return value
+		}
 	}
-
-	path := strings.TrimSpace(relativePath)
-	if path == "" {
-		path = defaultPath
-	}
-	if path == "" {
-		return ""
-	}
-
-	org := parts[1]
-	repo := parts[2]
-	return fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/main/%s", org, repo, strings.TrimPrefix(path, "/"))
+	return ""
 }
 
-func (p *AutoUpdatePoller) fetchRemoteFile(ctx context.Context, url string, token string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+func (p *AutoUpdatePoller) resolveRepositoryFileTarget(repo project.Repository, relativePath string, defaultPath string, token string) (remoteFileTarget, error) {
+	owner, name, ok := parseGitHubRepository(repo.URL)
+	if !ok {
+		return remoteFileTarget{}, fmt.Errorf("could not determine repository location for %s", repo.URL)
+	}
+
+	path := strings.TrimPrefix(strings.TrimSpace(relativePath), "/")
+	if path == "" {
+		path = strings.TrimPrefix(strings.TrimSpace(defaultPath), "/")
+	}
+	if path == "" {
+		return remoteFileTarget{}, fmt.Errorf("repository path is required for %s", repo.URL)
+	}
+
+	branch := strings.TrimSpace(repo.Branch)
+	if branch == "" {
+		branch = "main"
+	}
+
+	if strings.TrimSpace(token) != "" {
+		return remoteFileTarget{
+			URL:               fmt.Sprintf("https://api.github.com/repos/%s/%s/contents/%s?ref=%s", owner, name, path, url.QueryEscape(branch)),
+			UseGitHubContents: true,
+		}, nil
+	}
+
+	return remoteFileTarget{
+		URL: fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, name, branch, path),
+	}, nil
+}
+
+func parseGitHubRepository(repoURL string) (string, string, bool) {
+	trimmed := strings.TrimSpace(repoURL)
+	trimmed = strings.TrimPrefix(trimmed, "https://")
+	trimmed = strings.TrimPrefix(trimmed, "http://")
+	trimmed = strings.TrimPrefix(trimmed, "git@")
+	trimmed = strings.TrimSuffix(trimmed, ".git")
+	trimmed = strings.ReplaceAll(trimmed, ":", "/")
+
+	parts := strings.Split(trimmed, "/")
+	if len(parts) < 3 || parts[0] != "github.com" {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
+}
+
+func (p *AutoUpdatePoller) fetchRemoteFile(ctx context.Context, target remoteFileTarget, token string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.URL, nil)
 	if err != nil {
 		return nil, err
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "token "+token)
+	if target.UseGitHubContents {
+		req.Header.Set("Accept", "application/vnd.github.raw")
+		req.Header.Set("X-GitHub-Api-Version", "2022-11-28")
+	}
+	if strings.TrimSpace(token) != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
 	}
 
 	resp, err := p.Client.Do(req)
@@ -361,8 +410,8 @@ func (p *AutoUpdatePoller) fetchRemoteFile(ctx context.Context, url string, toke
 	return data, nil
 }
 
-func (p *AutoUpdatePoller) fetchUpdateConfig(ctx context.Context, url string, token string) (updateConfig, error) {
-	data, err := p.fetchRemoteFile(ctx, url, token)
+func (p *AutoUpdatePoller) fetchUpdateConfig(ctx context.Context, target remoteFileTarget, token string) (updateConfig, error) {
+	data, err := p.fetchRemoteFile(ctx, target, token)
 	if err != nil {
 		return updateConfig{}, err
 	}

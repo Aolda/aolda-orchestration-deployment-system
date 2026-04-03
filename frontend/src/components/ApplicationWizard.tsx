@@ -16,7 +16,7 @@ export type CreateFormState = {
   description: string
   image: string
   servicePort: number
-  deploymentStrategy: 'Standard' | 'Canary'
+  deploymentStrategy: 'Rollout' | 'Canary'
   environment: string
   secrets: { key: string; value: string }[]
 }
@@ -53,7 +53,7 @@ export function ApplicationWizard({
   }
 
   const nextStrategy = (value: string | null): CreateFormState['deploymentStrategy'] =>
-    value === 'Canary' ? 'Canary' : 'Standard'
+    value === 'Canary' ? 'Canary' : 'Rollout'
 
   return (
     <Card shadow="sm" p="lg" radius="md" withBorder className="glass-panel">

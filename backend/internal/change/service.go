@@ -218,7 +218,7 @@ func resolveEnvironment(projectInfo project.CatalogProject, requested string) st
 			return environment.ID
 		}
 	}
-	return "prod"
+	return "shared"
 }
 
 func resolveWriteMode(projectInfo project.CatalogProject, environment string) project.WriteMode {
