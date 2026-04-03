@@ -1,0 +1,23 @@
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: aods
+spec:
+  gateways:
+    - istio-ingress/public-gateway
+  hosts:
+    - aods.jalju.com
+  http:
+    - match:
+        - uri:
+            prefix: /api
+      route:
+        - destination:
+            host: aods-backend.aods-system.svc.cluster.local
+            port:
+              number: 8080
+    - route:
+        - destination:
+            host: aods-frontend.aods-system.svc.cluster.local
+            port:
+              number: 80

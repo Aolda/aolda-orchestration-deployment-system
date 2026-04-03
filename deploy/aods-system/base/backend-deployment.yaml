@@ -1,0 +1,102 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aods-backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aods-backend
+  template:
+    metadata:
+      labels:
+        app: aods-backend
+    spec:
+      serviceAccountName: aods-backend
+      imagePullSecrets:
+        - name: aods-registry-creds
+      containers:
+        - name: backend
+          image: ghcr.io/aolda/aods-backend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: AODS_ADDR
+              value: ":8080"
+            - name: AODS_REPO_ROOT
+              value: /app
+            - name: AODS_AUTH_MODE
+              value: header
+            - name: AODS_ALLOW_DEV_FALLBACK
+              value: "true"
+            - name: AODS_ALLOWED_ORIGIN
+              value: https://aods.jalju.com
+            - name: AODS_DEV_GROUPS
+              value: aods:project-a:deploy
+            - name: AODS_DEV_DISPLAY_NAME
+              value: 테스트베드 운영자
+            - name: AODS_GIT_MODE
+              value: git
+            - name: AODS_GIT_REPO_DIR
+              value: /data/gitops
+            - name: AODS_GIT_BRANCH
+              value: main
+            - name: AODS_GIT_AUTHOR_NAME
+              value: AODS Bot
+            - name: AODS_GIT_AUTHOR_EMAIL
+              value: aods-bot@local
+            - name: AODS_GIT_SYNC_TTL
+              value: 10s
+            - name: AODS_GIT_REMOTE
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_GIT_REMOTE
+            - name: AODS_K8S_MODE
+              value: token
+            - name: AODS_K8S_API_URL
+              value: https://kubernetes.default.svc
+            - name: AODS_K8S_REQUEST_TIMEOUT
+              value: 5s
+            - name: AODS_FLUX_KUSTOMIZATION_NAMESPACE
+              value: flux-system
+            - name: AODS_FLUX_SOURCE_NAME
+              value: aods-manifest
+            - name: AODS_PROMETHEUS_MODE
+              value: prometheus
+            - name: AODS_PROMETHEUS_URL
+              value: http://kube-prometheus-stack-prometheus.monitoring:9090
+            - name: AODS_PROMETHEUS_REQUEST_TIMEOUT
+              value: 5s
+            - name: AODS_PROMETHEUS_RANGE
+              value: 1h
+            - name: AODS_PROMETHEUS_STEP
+              value: 5m
+            - name: AODS_VAULT_MODE
+              value: local
+            - name: AODS_LOCAL_VAULT_DIR
+              value: /data/local-vault
+            - name: AODS_IMAGE_CHECK_MODE
+              value: anonymous
+            - name: AODS_IMAGE_CHECK_TIMEOUT
+              value: 5s
+          readinessProbe:
+            httpGet:
+              path: /api/v1/projects
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/projects
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}

@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: aods-frontend
+spec:
+  selector:
+    app: aods-frontend
+  ports:
+    - name: http
+      port: 80
+      targetPort: http

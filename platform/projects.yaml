@@ -1,8 +1,8 @@
 projects:
   - id: project-a
-    name: Project A
-    description: Core internal APIs and shared platform services.
-    namespace: project-a
+    name: 공용 프로젝트
+    description: 공용 내부 서비스와 운영 검증 워크로드를 관리합니다.
+    namespace: shared
     access:
       viewerGroups:
         - aods:project-a:view

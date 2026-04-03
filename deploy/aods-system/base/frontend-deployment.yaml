@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aods-frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: aods-frontend
+  template:
+    metadata:
+      labels:
+        app: aods-frontend
+    spec:
+      imagePullSecrets:
+        - name: aods-registry-creds
+      containers:
+        - name: frontend
+          image: ghcr.io/aolda/aods-frontend:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 80
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20

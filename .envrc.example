@@ -11,6 +11,7 @@ export AODS_GITHUB_USERNAME="your-github-username"
 export AODS_GITHUB_TOKEN="github_pat_xxx"
 export AODS_GIT_REMOTE="https://${AODS_GITHUB_USERNAME}:${AODS_GITHUB_TOKEN}@github.com/Aolda/aods-manifest.git"
 export AODS_IMAGE_CHECK_MODE=anonymous
+export AODS_DEV_GROUPS="aods:project-a:deploy"
 # export AODS_IMAGE_CHECK_TIMEOUT="5s"
 
 # Optional: real Keycloak / OIDC auth
