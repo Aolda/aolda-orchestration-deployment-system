@@ -157,18 +157,18 @@ export function ApplicationWizard({
                 variant="default"
                 onClick={() => fileInputRef.current?.click()}
               >
-                .env 파일 가져오기
+                환경 변수 파일 가져오기
               </Button>
               <input
                 ref={fileInputRef}
                 type="file"
-                accept=".env,text/plain"
                 style={{ display: 'none' }}
                 onChange={handleImportEnvFile}
               />
             </Group>
             <Text size="xs" c="dimmed">
-              `KEY=value`, `export KEY=value`, 주석(`#`) 형식을 자동으로 파싱합니다. 같은 키가 여러 번 나오면 마지막 값을 사용합니다.
+              `.env`, `.env.example`, `application-prod.env`, `.txt` 같은 텍스트 파일을 바로 읽습니다. `KEY=value`,
+              `export KEY=value`, 주석(`#`) 형식을 자동으로 파싱하며 같은 키가 여러 번 나오면 마지막 값을 사용합니다.
             </Text>
             {envBulkMessage ? (
               <Text size="sm" c="dimmed">{envBulkMessage}</Text>
