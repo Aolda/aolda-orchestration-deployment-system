@@ -203,6 +203,77 @@ func TestSelectKustomizationMatchesDefaultEnvironmentPath(t *testing.T) {
 	}
 }
 
+func TestPodMetricsReaderTokenModeProvidesCPUAndMemoryFallback(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer metrics-token" {
+			t.Fatalf("expected bearer token auth, got %q", got)
+		}
+		if got := r.URL.Path; got != "/apis/metrics.k8s.io/v1beta1/namespaces/project-a/pods" {
+			t.Fatalf("unexpected request path %q", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"items": [
+				{
+					"metadata": {"name": "my-app-7cc4d5f789-abcde"},
+					"containers": [
+						{"usage": {"cpu": "250m", "memory": "64Mi"}},
+						{"usage": {"cpu": "125m", "memory": "16Mi"}}
+					]
+				},
+				{
+					"metadata": {"name": "other-app-7cc4d5f789-abcde"},
+					"containers": [
+						{"usage": {"cpu": "100m", "memory": "32Mi"}}
+					]
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	reader, err := NewPodMetricsReader(core.Config{
+		KubernetesMode:           "token",
+		KubernetesAPIURL:         server.URL,
+		KubernetesBearerToken:    "metrics-token",
+		KubernetesRequestTimeout: 2 * time.Second,
+		PrometheusRange:          10 * time.Minute,
+		PrometheusStep:           5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("new pod metrics reader: %v", err)
+	}
+	reader.Now = func() time.Time {
+		return time.Date(2026, 4, 3, 1, 0, 0, 0, time.UTC)
+	}
+
+	metrics, err := reader.Read(context.Background(), application.Record{
+		Name:      "my-app",
+		Namespace: "project-a",
+	}, 10*time.Minute, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("read pod metrics: %v", err)
+	}
+
+	if len(metrics) != 5 {
+		t.Fatalf("expected 5 metric series, got %d", len(metrics))
+	}
+	if metrics[0].Points[len(metrics[0].Points)-1].Value != nil {
+		t.Fatal("expected request_rate to stay empty without prometheus data")
+	}
+	cpuValue := metrics[3].Points[len(metrics[3].Points)-1].Value
+	if cpuValue == nil || *cpuValue != 0.375 {
+		t.Fatalf("expected cpu_usage fallback to be 0.375, got %#v", cpuValue)
+	}
+	memoryValue := metrics[4].Points[len(metrics[4].Points)-1].Value
+	if memoryValue == nil || *memoryValue != 80 {
+		t.Fatalf("expected memory_usage fallback to be 80MiB, got %#v", memoryValue)
+	}
+}
+
 func TestKubeUserResolveClientCertificateFromData(t *testing.T) {
 	t.Parallel()
 

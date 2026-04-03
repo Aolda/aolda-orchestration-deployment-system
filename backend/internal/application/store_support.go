@@ -12,59 +12,68 @@ import (
 )
 
 type appMetadata struct {
-	ID                 string             `yaml:"id"`
-	ProjectID          string             `yaml:"projectId"`
-	Namespace          string             `yaml:"namespace"`
-	Name               string             `yaml:"name"`
-	Description        string             `yaml:"description,omitempty"`
-	Image              string             `yaml:"image"`
-	ServicePort        int                `yaml:"servicePort"`
-	Replicas           int                `yaml:"replicas"`
-	RequiredProbes     *bool              `yaml:"requiredProbes,omitempty"`
-	DeploymentStrategy DeploymentStrategy `yaml:"deploymentStrategy"`
-	DefaultEnvironment string             `yaml:"defaultEnvironment"`
-	CreatedAt          time.Time          `yaml:"createdAt"`
-	UpdatedAt          time.Time          `yaml:"updatedAt"`
-	SecretPath         string             `yaml:"secretPath,omitempty"`
-	Environments       []string           `yaml:"environments,omitempty"`
+	ID                  string             `yaml:"id"`
+	ProjectID           string             `yaml:"projectId"`
+	Namespace           string             `yaml:"namespace"`
+	Name                string             `yaml:"name"`
+	Description         string             `yaml:"description,omitempty"`
+	Image               string             `yaml:"image"`
+	ServicePort         int                `yaml:"servicePort"`
+	Replicas            int                `yaml:"replicas"`
+	RequiredProbes      *bool              `yaml:"requiredProbes,omitempty"`
+	DeploymentStrategy  DeploymentStrategy `yaml:"deploymentStrategy"`
+	DefaultEnvironment  string             `yaml:"defaultEnvironment"`
+	CreatedAt           time.Time          `yaml:"createdAt"`
+	UpdatedAt           time.Time          `yaml:"updatedAt"`
+	SecretPath          string             `yaml:"secretPath,omitempty"`
+	Environments        []string           `yaml:"environments,omitempty"`
+	RepositoryID        string             `yaml:"repositoryId,omitempty"`
+	RepositoryServiceID string             `yaml:"repositoryServiceId,omitempty"`
+	ConfigPath          string             `yaml:"configPath,omitempty"`
 }
 
 func metadataFromRecord(record Record, environments []string) appMetadata {
 	return appMetadata{
-		ID:                 record.ID,
-		ProjectID:          record.ProjectID,
-		Namespace:          record.Namespace,
-		Name:               record.Name,
-		Description:        record.Description,
-		Image:              record.Image,
-		ServicePort:        record.ServicePort,
-		Replicas:           record.Replicas,
-		RequiredProbes:     boolPointer(record.RequiredProbes),
-		DeploymentStrategy: record.DeploymentStrategy,
-		DefaultEnvironment: record.DefaultEnvironment,
-		CreatedAt:          record.CreatedAt,
-		UpdatedAt:          record.UpdatedAt,
-		SecretPath:         record.SecretPath,
-		Environments:       append([]string(nil), environments...),
+		ID:                  record.ID,
+		ProjectID:           record.ProjectID,
+		Namespace:           record.Namespace,
+		Name:                record.Name,
+		Description:         record.Description,
+		Image:               record.Image,
+		ServicePort:         record.ServicePort,
+		Replicas:            record.Replicas,
+		RequiredProbes:      boolPointer(record.RequiredProbes),
+		DeploymentStrategy:  record.DeploymentStrategy,
+		DefaultEnvironment:  record.DefaultEnvironment,
+		CreatedAt:           record.CreatedAt,
+		UpdatedAt:           record.UpdatedAt,
+		SecretPath:          record.SecretPath,
+		Environments:        append([]string(nil), environments...),
+		RepositoryID:        record.RepositoryID,
+		RepositoryServiceID: record.RepositoryServiceID,
+		ConfigPath:          record.ConfigPath,
 	}
 }
 
 func (m appMetadata) toRecord() Record {
 	return Record{
-		ID:                 m.ID,
-		ProjectID:          m.ProjectID,
-		Namespace:          m.Namespace,
-		Name:               m.Name,
-		Description:        m.Description,
-		Image:              m.Image,
-		ServicePort:        m.ServicePort,
-		Replicas:           m.Replicas,
-		RequiredProbes:     m.requiredProbesOrDefault(),
-		DeploymentStrategy: m.DeploymentStrategy,
-		DefaultEnvironment: m.DefaultEnvironment,
-		CreatedAt:          m.CreatedAt,
-		UpdatedAt:          m.UpdatedAt,
-		SecretPath:         m.SecretPath,
+		ID:                  m.ID,
+		ProjectID:           m.ProjectID,
+		Namespace:           m.Namespace,
+		Name:                m.Name,
+		Description:         m.Description,
+		Image:               m.Image,
+		ServicePort:         m.ServicePort,
+		Replicas:            m.Replicas,
+		RequiredProbes:      m.requiredProbesOrDefault(),
+		DeploymentStrategy:  m.DeploymentStrategy,
+		DefaultEnvironment:  m.DefaultEnvironment,
+		CreatedAt:           m.CreatedAt,
+		UpdatedAt:           m.UpdatedAt,
+		SecretPath:          m.SecretPath,
+		RepositoryID:        m.RepositoryID,
+		RepositoryServiceID: m.RepositoryServiceID,
+		ConfigPath:          m.ConfigPath,
 	}
 }
 

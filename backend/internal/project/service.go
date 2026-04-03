@@ -51,6 +51,15 @@ type PolicySet struct {
 	RequiredProbes              bool
 }
 
+type Repository struct {
+	ID             string `json:"id"`
+	Name           string `json:"name"`
+	URL            string `json:"url"`
+	Description    string `json:"description,omitempty"`
+	AuthSecretPath string `json:"authSecretPath,omitempty"`
+	ConfigFile     string `json:"configFile,omitempty"`
+}
+
 type CatalogProject struct {
 	ID           string
 	Name         string
@@ -58,6 +67,7 @@ type CatalogProject struct {
 	Namespace    string
 	Access       Access
 	Environments []Environment
+	Repositories []Repository
 	Policies     PolicySet
 }
 
@@ -75,6 +85,14 @@ type EnvironmentSummary struct {
 	ClusterID string    `json:"clusterId"`
 	WriteMode WriteMode `json:"writeMode"`
 	Default   bool      `json:"default"`
+}
+
+type RepositorySummary struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	Description string `json:"description,omitempty"`
+	ConfigFile  string `json:"configFile,omitempty"`
 }
 
 type PolicySummary struct {
@@ -179,6 +197,25 @@ func (s Service) ListEnvironments(ctx context.Context, user core.User, projectID
 			ClusterID: environment.ClusterID,
 			WriteMode: environment.WriteMode,
 			Default:   environment.Default,
+		})
+	}
+	return items, nil
+}
+
+func (s Service) ListRepositories(ctx context.Context, user core.User, projectID string) ([]RepositorySummary, error) {
+	authorized, err := s.GetAuthorized(ctx, user, projectID)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]RepositorySummary, 0, len(authorized.Project.Repositories))
+	for _, repo := range authorized.Project.Repositories {
+		items = append(items, RepositorySummary{
+			ID:          repo.ID,
+			Name:        repo.Name,
+			URL:         repo.URL,
+			Description: repo.Description,
+			ConfigFile:  repo.ConfigFile,
 		})
 	}
 	return items, nil

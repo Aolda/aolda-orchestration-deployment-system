@@ -6,7 +6,7 @@ setup:
 
 backend-run:
 	@echo "Running backend server..."
-	@cd backend && go run cmd/server/main.go
+	@bash scripts/backend-run.sh
 
 frontend-run:
 	@echo "Running frontend locally..."

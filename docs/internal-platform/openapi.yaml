@@ -78,6 +78,27 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /api/v1/projects/{projectId}/repositories:
+    get:
+      summary: List source repositories connected to a project
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Project repository list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepositoryListResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   /api/v1/projects/{projectId}/policies:
     get:
       summary: Read project deployment guardrails
@@ -664,12 +685,21 @@ components:
           type: integer
           minimum: 1
           maximum: 65535
+        replicas:
+          type: integer
+          minimum: 1
         deploymentStrategy:
           type: string
           enum:
             - Standard
             - Canary
         environment:
+          type: string
+        repositoryId:
+          type: string
+        repositoryServiceId:
+          type: string
+        configPath:
           type: string
         secrets:
           type: array
@@ -700,6 +730,8 @@ components:
           type: string
         servicePort:
           type: integer
+        replicas:
+          type: integer
         deploymentStrategy:
           type: string
           enum:
@@ -715,6 +747,12 @@ components:
         updatedAt:
           type: string
           format: date-time
+        repositoryId:
+          type: string
+        repositoryServiceId:
+          type: string
+        configPath:
+          type: string
 
     ApplicationSummary:
       type: object
@@ -764,16 +802,27 @@ components:
       properties:
         description:
           type: string
+        image:
+          type: string
         servicePort:
           type: integer
           minimum: 1
           maximum: 65535
+        replicas:
+          type: integer
+          minimum: 1
         deploymentStrategy:
           type: string
           enum:
             - Standard
             - Canary
         environment:
+          type: string
+        repositoryId:
+          type: string
+        repositoryServiceId:
+          type: string
+        configPath:
           type: string
 
     DeploymentResponse:
@@ -971,6 +1020,33 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/EnvironmentSummary'
+    RepositorySummary:
+      type: object
+      required:
+        - id
+        - name
+        - url
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        description:
+          type: string
+        configFile:
+          type: string
+    RepositoryListResponse:
+      type: object
+      required:
+        - items
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RepositorySummary'
 
     ProjectPolicy:
       type: object

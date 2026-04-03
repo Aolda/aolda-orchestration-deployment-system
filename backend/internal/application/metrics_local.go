@@ -8,20 +8,29 @@ import (
 
 type LocalMetricsReader struct{}
 
-func (LocalMetricsReader) Read(ctx context.Context, record Record) ([]MetricSeries, error) {
+func (LocalMetricsReader) Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
+	queryStep := step
+	if queryStep <= 0 {
+		queryStep = 5 * time.Minute
+	}
+	queryWindow := duration
+	if queryWindow <= 0 {
+		queryWindow = time.Hour
+	}
+
 	seed := hashRecord(record.ID)
-	now := time.Now().UTC().Truncate(5 * time.Minute)
+	now := time.Now().UTC().Truncate(queryStep)
 
 	return []MetricSeries{
-		buildMetricSeries(now, seed, "request_rate", "Requests", "rpm", 120, 17, false),
-		buildMetricSeries(now, seed+11, "error_rate", "Error Rate", "%", 1.3, 0.35, true),
-		buildMetricSeries(now, seed+23, "latency_p95", "P95 Latency", "ms", 180, 22, false),
-		buildMetricSeries(now, seed+31, "cpu_usage", "CPU Usage", "cores", 0.42, 0.08, false),
-		buildMetricSeries(now, seed+47, "memory_usage", "Memory Usage", "MiB", 286, 15, true),
+		buildMetricSeries(now, seed, "request_rate", "Requests", "rpm", 0.0, 0.0, false, queryWindow, queryStep),
+		buildMetricSeries(now, seed+11, "error_rate", "Error Rate", "%", 0.0, 0.0, true, queryWindow, queryStep),
+		buildMetricSeries(now, seed+23, "latency_p95", "P95 Latency", "ms", 0.0, 0.0, false, queryWindow, queryStep),
+		buildMetricSeries(now, seed+31, "cpu_usage", "CPU Usage", "cores", 0.0, 0.0, false, queryWindow, queryStep),
+		buildMetricSeries(now, seed+47, "memory_usage", "Memory Usage", "MiB", 0.0, 0.0, true, queryWindow, queryStep),
 	}, nil
 }
 
@@ -34,9 +43,15 @@ func buildMetricSeries(
 	base float64,
 	delta float64,
 	withGaps bool,
+	duration time.Duration,
+	step time.Duration,
 ) MetricSeries {
-	points := make([]MetricPoint, 0, 12)
-	for offset := 11; offset >= 0; offset-- {
+	numPoints := int(duration / step)
+	if numPoints <= 0 {
+		numPoints = 12
+	}
+	points := make([]MetricPoint, 0, numPoints)
+	for offset := numPoints - 1; offset >= 0; offset-- {
 		value := base + float64((int(seed)+offset*7)%9)*delta
 		var pointValue *float64
 		if !withGaps || offset%5 != 0 {
@@ -44,7 +59,7 @@ func buildMetricSeries(
 		}
 
 		points = append(points, MetricPoint{
-			Timestamp: start.Add(-time.Duration(offset) * 5 * time.Minute),
+			Timestamp: start.Add(-time.Duration(offset) * step),
 			Value:     pointValue,
 		})
 	}

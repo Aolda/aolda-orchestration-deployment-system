@@ -20,6 +20,15 @@ type PrometheusMetricsReader struct {
 	Now     func() time.Time
 }
 
+type CompositeMetricsReader struct {
+	Primary  MetricsReader
+	Fallback MetricsReader
+}
+
+type ErrorMetricsReader struct {
+	Err error
+}
+
 type prometheusMetricDefinition struct {
 	Key     string
 	Label   string
@@ -40,23 +49,73 @@ type prometheusMatrixResponse struct {
 	Values [][]any `json:"values"`
 }
 
-func (r PrometheusMetricsReader) Read(ctx context.Context, record Record) ([]MetricSeries, error) {
+func (r CompositeMetricsReader) Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.Primary == nil && r.Fallback == nil {
+		return nil, fmt.Errorf("metrics reader is not configured")
+	}
+
+	if r.Primary == nil {
+		return r.Fallback.Read(ctx, record, duration, step)
+	}
+
+	primary, err := r.Primary.Read(ctx, record, duration, step)
+	if err != nil {
+		if r.Fallback == nil {
+			return nil, err
+		}
+		return r.Fallback.Read(ctx, record, duration, step)
+	}
+	if r.Fallback == nil {
+		return primary, nil
+	}
+
+	fallback, err := r.Fallback.Read(ctx, record, duration, step)
+	if err != nil {
+		return primary, nil
+	}
+
+	return mergeMetricSeries(primary, fallback), nil
+}
+
+func (r ErrorMetricsReader) Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.Err == nil {
+		return []MetricSeries{}, nil
+	}
+	return nil, r.Err
+}
+
+func (r PrometheusMetricsReader) Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 
 	now := r.now().UTC()
-	step := r.metricStep()
-	window := r.metricRange()
-	end := now.Truncate(step)
-	start := end.Add(-window).Add(step)
+	
+	// Use provided duration/step if greater than zero, otherwise fallback to defaults
+	queryStep := step
+	if queryStep <= 0 {
+		queryStep = r.metricStep()
+	}
+	queryWindow := duration
+	if queryWindow <= 0 {
+		queryWindow = r.metricRange()
+	}
+
+	end := now.Truncate(queryStep)
+	start := end.Add(-queryWindow).Add(queryStep)
 	if start.After(end) {
 		start = end
 	}
 
 	metrics := make([]MetricSeries, 0, len(prometheusMetricDefinitions))
 	for _, definition := range prometheusMetricDefinitions {
-		points, err := r.queryMetricPoints(ctx, record, definition.Queries, start, end, step)
+		points, err := r.queryMetricPoints(ctx, record, definition.Queries, start, end, queryStep)
 		if err != nil {
 			return nil, err
 		}
@@ -72,14 +131,103 @@ func (r PrometheusMetricsReader) Read(ctx context.Context, record Record) ([]Met
 	return metrics, nil
 }
 
+func mergeMetricSeries(primary []MetricSeries, fallback []MetricSeries) []MetricSeries {
+	if len(primary) == 0 {
+		return fallback
+	}
+
+	fallbackByKey := make(map[string]MetricSeries, len(fallback))
+	for _, series := range fallback {
+		fallbackByKey[series.Key] = series
+	}
+
+	merged := make([]MetricSeries, 0, len(primary)+len(fallback))
+	for _, series := range primary {
+		fallbackSeries, ok := fallbackByKey[series.Key]
+		if !ok {
+			merged = append(merged, series)
+			continue
+		}
+
+		merged = append(merged, mergeSingleMetricSeries(series, fallbackSeries))
+		delete(fallbackByKey, series.Key)
+	}
+
+	for _, series := range fallbackByKey {
+		merged = append(merged, series)
+	}
+
+	return merged
+}
+
+func metricSeriesHasValues(series MetricSeries) bool {
+	for _, point := range series.Points {
+		if point.Value != nil {
+			return true
+		}
+	}
+	return false
+}
+
+func mergeSingleMetricSeries(primary MetricSeries, fallback MetricSeries) MetricSeries {
+	if len(primary.Points) == 0 {
+		return fallback
+	}
+	if !metricSeriesHasValues(primary) && metricSeriesHasValues(fallback) {
+		return mergeMetricPoints(primary, fallback)
+	}
+	if !metricSeriesHasValues(fallback) {
+		return primary
+	}
+	return mergeMetricPoints(primary, fallback)
+}
+
+func mergeMetricPoints(primary MetricSeries, fallback MetricSeries) MetricSeries {
+	if len(primary.Points) == 0 {
+		return fallback
+	}
+
+	fallbackByTimestamp := make(map[int64]*float64, len(fallback.Points))
+	for _, point := range fallback.Points {
+		if point.Value == nil {
+			continue
+		}
+		valueCopy := *point.Value
+		fallbackByTimestamp[point.Timestamp.Unix()] = &valueCopy
+	}
+
+	merged := primary
+	merged.Points = make([]MetricPoint, 0, len(primary.Points))
+	for _, point := range primary.Points {
+		if point.Value == nil {
+			if fallbackValue, ok := fallbackByTimestamp[point.Timestamp.Unix()]; ok {
+				merged.Points = append(merged.Points, MetricPoint{
+					Timestamp: point.Timestamp,
+					Value:     fallbackValue,
+				})
+				continue
+			}
+		}
+		merged.Points = append(merged.Points, point)
+	}
+
+	if merged.Label == "" {
+		merged.Label = fallback.Label
+	}
+	if merged.Unit == "" {
+		merged.Unit = fallback.Unit
+	}
+	return merged
+}
+
 var prometheusMetricDefinitions = []prometheusMetricDefinition{
 	{
 		Key:   "request_rate",
 		Label: "Requests",
 		Unit:  "rpm",
 		Queries: []string{
-			`sum(rate(istio_requests_total{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}"}[5m])) * 60`,
-			`sum(rate(http_server_requests_seconds_count{namespace="{{namespace}}",application="{{appName}}"}[5m])) * 60`,
+			`(sum(rate(istio_requests_total{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}"}[5m])) * 60) or vector(0)`,
+			`(sum(rate(http_server_requests_seconds_count{namespace="{{namespace}}",application="{{appName}}"}[5m])) * 60) or vector(0)`,
 		},
 	},
 	{
@@ -87,8 +235,8 @@ var prometheusMetricDefinitions = []prometheusMetricDefinition{
 		Label: "Error Rate",
 		Unit:  "%",
 		Queries: []string{
-			`100 * sum(rate(istio_requests_total{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}",response_code=~"5.."}[5m])) / clamp_min(sum(rate(istio_requests_total{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}"}[5m])), 0.001)`,
-			`100 * sum(rate(http_server_requests_seconds_count{namespace="{{namespace}}",application="{{appName}}",status=~"5.."}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{namespace="{{namespace}}",application="{{appName}}"}[5m])), 0.001)`,
+			`100 * ((sum(rate(istio_requests_total{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}",response_code=~"5.."}[5m])) or vector(0)) / clamp_min(sum(rate(istio_requests_total{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}"}[5m])), 0.001))`,
+			`100 * ((sum(rate(http_server_requests_seconds_count{namespace="{{namespace}}",application="{{appName}}",status=~"5.."}[5m])) or vector(0)) / clamp_min(sum(rate(http_server_requests_seconds_count{namespace="{{namespace}}",application="{{appName}}"}[5m])), 0.001))`,
 		},
 	},
 	{
@@ -96,9 +244,9 @@ var prometheusMetricDefinitions = []prometheusMetricDefinition{
 		Label: "P95 Latency",
 		Unit:  "ms",
 		Queries: []string{
-			`histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}"}[5m])) by (le))`,
-			`histogram_quantile(0.95, sum(rate(istio_request_duration_seconds_bucket{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}"}[5m])) by (le)) * 1000`,
-			`histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{namespace="{{namespace}}",application="{{appName}}"}[5m])) by (le)) * 1000`,
+			`histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}"}[5m])) by (le)) or vector(0)`,
+			`(histogram_quantile(0.95, sum(rate(istio_request_duration_seconds_bucket{reporter="destination",destination_workload_namespace="{{namespace}}",destination_app="{{appName}}"}[5m])) by (le)) * 1000) or vector(0)`,
+			`(histogram_quantile(0.95, sum(rate(http_server_requests_seconds_bucket{namespace="{{namespace}}",application="{{appName}}"}[5m])) by (le)) * 1000) or vector(0)`,
 		},
 	},
 	{

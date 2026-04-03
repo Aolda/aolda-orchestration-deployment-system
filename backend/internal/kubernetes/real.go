@@ -15,6 +15,8 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -25,6 +27,7 @@ import (
 
 const fluxKustomizationResourcePath = "/apis/kustomize.toolkit.fluxcd.io/v1"
 const argoRolloutResourcePath = "/apis/argoproj.io/v1alpha1"
+const kubernetesPodMetricsResourcePath = "/apis/metrics.k8s.io/v1beta1"
 
 type ErrorSyncStatusReader struct {
 	Err error
@@ -77,6 +80,13 @@ type FluxSyncStatusReader struct {
 	KustomizationNamespace string
 }
 
+type PodMetricsReader struct {
+	Client *apiClient
+	Range  time.Duration
+	Step   time.Duration
+	Now    func() time.Time
+}
+
 type ArgoRolloutController struct {
 	Client *apiClient
 }
@@ -112,6 +122,19 @@ func NewArgoRolloutController(cfg core.Config) (ArgoRolloutController, error) {
 		return ArgoRolloutController{}, err
 	}
 	return ArgoRolloutController{Client: client}, nil
+}
+
+func NewPodMetricsReader(cfg core.Config) (PodMetricsReader, error) {
+	client, err := newAPIClient(cfg)
+	if err != nil {
+		return PodMetricsReader{}, err
+	}
+
+	return PodMetricsReader{
+		Client: client,
+		Range:  cfg.PrometheusRange,
+		Step:   cfg.PrometheusStep,
+	}, nil
 }
 
 func (r FluxSyncStatusReader) Read(ctx context.Context, record application.Record) (application.SyncInfo, error) {
@@ -187,6 +210,227 @@ func (r FluxSyncStatusReader) listKustomizations(ctx context.Context) (kustomiza
 	}
 
 	return response, nil
+}
+
+func (r PodMetricsReader) Read(ctx context.Context, record application.Record, duration time.Duration, step time.Duration) ([]application.MetricSeries, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.Client == nil {
+		return nil, fmt.Errorf("kubernetes api client is not configured")
+	}
+
+	resourcePath := kubernetesPodMetricsResourcePath + "/namespaces/" + url.PathEscape(record.Namespace) + "/pods"
+	var response podMetricsListResponse
+	if err := r.Client.GetJSON(ctx, resourcePath, &response); err != nil {
+		return nil, err
+	}
+
+	now := r.now().UTC()
+	
+	queryStep := step
+	if queryStep <= 0 {
+		queryStep = r.metricStep()
+	}
+	queryWindow := duration
+	if queryWindow <= 0 {
+		queryWindow = r.metricRange()
+	}
+
+	end := now.Truncate(queryStep)
+	start := end.Add(-queryWindow).Add(queryStep)
+	if start.After(end) {
+		start = end
+	}
+
+	cpuUsage, memoryUsage, found, err := collectPodResourceUsage(response.Items, record.Name)
+	if err != nil {
+		return nil, err
+	}
+
+	metrics := []application.MetricSeries{
+		buildKubernetesMetricSeries("request_rate", "Requests", "rpm", start, end, queryStep, nil),
+		buildKubernetesMetricSeries("error_rate", "Error Rate", "%", start, end, queryStep, nil),
+		buildKubernetesMetricSeries("latency_p95", "P95 Latency", "ms", start, end, queryStep, nil),
+	}
+
+	if found {
+		metrics = append(metrics,
+			buildKubernetesMetricSeries("cpu_usage", "CPU Usage", "cores", start, end, queryStep, &cpuUsage),
+			buildKubernetesMetricSeries("memory_usage", "Memory Usage", "MiB", start, end, queryStep, &memoryUsage),
+		)
+		return metrics, nil
+	}
+
+	metrics = append(metrics,
+		buildKubernetesMetricSeries("cpu_usage", "CPU Usage", "cores", start, end, queryStep, nil),
+		buildKubernetesMetricSeries("memory_usage", "Memory Usage", "MiB", start, end, queryStep, nil),
+	)
+	return metrics, nil
+}
+
+type podMetricsListResponse struct {
+	Items []podMetricsResponse `json:"items"`
+}
+
+type podMetricsResponse struct {
+	Metadata struct {
+		Name string `json:"name"`
+	} `json:"metadata"`
+	Containers []podMetricsContainer `json:"containers"`
+}
+
+type podMetricsContainer struct {
+	Usage struct {
+		CPU    string `json:"cpu"`
+		Memory string `json:"memory"`
+	} `json:"usage"`
+}
+
+func collectPodResourceUsage(items []podMetricsResponse, appName string) (float64, float64, bool, error) {
+	podPattern := regexp.MustCompile("^" + regexp.QuoteMeta(appName) + `-[a-z0-9]+(?:-[a-z0-9]+)?$`)
+
+	var cpuUsage float64
+	var memoryUsage float64
+	found := false
+
+	for _, item := range items {
+		if !podPattern.MatchString(strings.TrimSpace(item.Metadata.Name)) {
+			continue
+		}
+		found = true
+		for _, container := range item.Containers {
+			cpuValue, err := parseCPUQuantityToCores(container.Usage.CPU)
+			if err != nil {
+				return 0, 0, false, err
+			}
+			memoryValue, err := parseMemoryQuantityToMiB(container.Usage.Memory)
+			if err != nil {
+				return 0, 0, false, err
+			}
+			cpuUsage += cpuValue
+			memoryUsage += memoryValue
+		}
+	}
+
+	return cpuUsage, memoryUsage, found, nil
+}
+
+func buildKubernetesMetricSeries(
+	key string,
+	label string,
+	unit string,
+	start time.Time,
+	end time.Time,
+	step time.Duration,
+	latestValue *float64,
+) application.MetricSeries {
+	points := make([]application.MetricPoint, 0, int(end.Sub(start)/step)+1)
+	for current := start; !current.After(end); current = current.Add(step) {
+		point := application.MetricPoint{Timestamp: current}
+		if latestValue != nil && current.Equal(end) {
+			valueCopy := *latestValue
+			point.Value = &valueCopy
+		}
+		points = append(points, point)
+	}
+
+	return application.MetricSeries{
+		Key:    key,
+		Label:  label,
+		Unit:   unit,
+		Points: points,
+	}
+}
+
+func parseCPUQuantityToCores(raw string) (float64, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, nil
+	}
+
+	for _, unit := range []struct {
+		Suffix     string
+		Multiplier float64
+	}{
+		{Suffix: "n", Multiplier: 1e-9},
+		{Suffix: "u", Multiplier: 1e-6},
+		{Suffix: "m", Multiplier: 1e-3},
+	} {
+		if strings.HasSuffix(value, unit.Suffix) {
+			number, err := strconv.ParseFloat(strings.TrimSuffix(value, unit.Suffix), 64)
+			if err != nil {
+				return 0, fmt.Errorf("parse kubernetes cpu quantity %q: %w", raw, err)
+			}
+			return number * unit.Multiplier, nil
+		}
+	}
+
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse kubernetes cpu quantity %q: %w", raw, err)
+	}
+	return number, nil
+}
+
+func parseMemoryQuantityToMiB(raw string) (float64, error) {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return 0, nil
+	}
+
+	for _, unit := range []struct {
+		Suffix     string
+		Multiplier float64
+	}{
+		{Suffix: "Ki", Multiplier: 1 / 1024.0},
+		{Suffix: "Mi", Multiplier: 1},
+		{Suffix: "Gi", Multiplier: 1024},
+		{Suffix: "Ti", Multiplier: 1024 * 1024},
+		{Suffix: "Pi", Multiplier: 1024 * 1024 * 1024},
+		{Suffix: "Ei", Multiplier: 1024 * 1024 * 1024 * 1024},
+		{Suffix: "K", Multiplier: 1000 / (1024.0 * 1024.0)},
+		{Suffix: "M", Multiplier: 1000 * 1000 / (1024.0 * 1024.0)},
+		{Suffix: "G", Multiplier: 1000 * 1000 * 1000 / (1024.0 * 1024.0)},
+		{Suffix: "T", Multiplier: 1000 * 1000 * 1000 * 1000 / (1024.0 * 1024.0)},
+		{Suffix: "P", Multiplier: 1000 * 1000 * 1000 * 1000 * 1000 / (1024.0 * 1024.0)},
+		{Suffix: "E", Multiplier: 1000 * 1000 * 1000 * 1000 * 1000 * 1000 / (1024.0 * 1024.0)},
+	} {
+		if strings.HasSuffix(value, unit.Suffix) {
+			number, err := strconv.ParseFloat(strings.TrimSuffix(value, unit.Suffix), 64)
+			if err != nil {
+				return 0, fmt.Errorf("parse kubernetes memory quantity %q: %w", raw, err)
+			}
+			return number * unit.Multiplier, nil
+		}
+	}
+
+	number, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse kubernetes memory quantity %q: %w", raw, err)
+	}
+	return number / (1024.0 * 1024.0), nil
+}
+
+func (r PodMetricsReader) metricRange() time.Duration {
+	if r.Range > 0 {
+		return r.Range
+	}
+	return time.Hour
+}
+
+func (r PodMetricsReader) metricStep() time.Duration {
+	if r.Step > 0 {
+		return r.Step
+	}
+	return 5 * time.Minute
+}
+
+func (r PodMetricsReader) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
 }
 
 type apiClient struct {

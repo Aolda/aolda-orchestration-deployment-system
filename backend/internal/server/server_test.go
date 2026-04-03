@@ -67,6 +67,40 @@ func TestViewerCannotCreateApplication(t *testing.T) {
 	}
 }
 
+func TestProjectRepositoriesCanBeListed(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	response := performJSONRequest(t, env, http.MethodGet, "/api/v1/projects/project-a/repositories", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "alice",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", response.StatusCode)
+	}
+
+	var body struct {
+		Items []struct {
+			ID          string `json:"id"`
+			Name        string `json:"name"`
+			URL         string `json:"url"`
+			Description string `json:"description"`
+		} `json:"items"`
+	}
+	decodeBody(t, response, &body)
+
+	if len(body.Items) != 1 {
+		t.Fatalf("expected 1 repository, got %d", len(body.Items))
+	}
+	if body.Items[0].ID != "project-a-api" {
+		t.Fatalf("expected project-a-api, got %s", body.Items[0].ID)
+	}
+	if body.Items[0].URL != "https://github.com/aolda-demo/project-a-api" {
+		t.Fatalf("unexpected repository url: %s", body.Items[0].URL)
+	}
+}
+
 func TestCreateRedeployAndObserveApplication(t *testing.T) {
 	env := newTestEnvironment(t)
 
@@ -97,6 +131,7 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 		"kustomization.yaml",
 		"deployment.yaml",
 		"service.yaml",
+		"servicemonitor.yaml",
 		"virtualservice.yaml",
 		"destinationrule.yaml",
 		"externalsecret.yaml",
@@ -107,6 +142,8 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 			t.Fatalf("expected %s to exist: %v", fileName, err)
 		}
 	}
+	assertFluxBootstrapFiles(t, env.repoRoot, "default")
+	assertFluxChildManifestPath(t, env.repoRoot, "default", "project-a-my-app", "./apps/project-a/my-app/overlays/prod")
 
 	repoFiles := []string{
 		filepath.Join(appDir, "deployment.yaml"),
@@ -123,6 +160,20 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 		if strings.Contains(string(content), secretValue) {
 			t.Fatalf("secret value leaked into manifest %s", path)
 		}
+	}
+
+	serviceMonitorManifest, err := os.ReadFile(filepath.Join(appDir, "servicemonitor.yaml"))
+	if err != nil {
+		t.Fatalf("read servicemonitor manifest: %v", err)
+	}
+	if !strings.Contains(string(serviceMonitorManifest), "kind: ServiceMonitor") {
+		t.Fatal("expected ServiceMonitor manifest to be generated")
+	}
+	if !strings.Contains(string(serviceMonitorManifest), "prometheus: argo-cd-grafana") {
+		t.Fatal("expected ServiceMonitor manifest to include Prometheus selector labels")
+	}
+	if !strings.Contains(string(serviceMonitorManifest), `aods.io/metrics-scrape: "true"`) {
+		t.Fatal("expected ServiceMonitor manifest to target the stable service")
 	}
 
 	finalVaultFile := filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "my-app", "prod.json")
@@ -238,6 +289,29 @@ func TestCreateApplicationWithoutSecretsSkipsSecretArtifacts(t *testing.T) {
 	if strings.Contains(string(deploymentManifest), "envFrom:") {
 		t.Fatal("expected deployment manifest to omit envFrom when no secrets are provided")
 	}
+	if !strings.Contains(string(deploymentManifest), `sidecar.istio.io/inject: "true"`) {
+		t.Fatal("expected deployment manifest to opt workloads into Istio sidecar injection")
+	}
+	if !strings.Contains(string(deploymentManifest), "labels:\n        sidecar.istio.io/inject: \"true\"") {
+		t.Fatal("expected deployment manifest to label pods for Istio sidecar injection")
+	}
+	if !strings.Contains(string(deploymentManifest), "app: stateless-app") {
+		t.Fatal("expected deployment manifest to include Istio telemetry app label")
+	}
+	serviceManifest, err := os.ReadFile(filepath.Join(appDir, "service.yaml"))
+	if err != nil {
+		t.Fatalf("read service manifest: %v", err)
+	}
+	if !strings.Contains(string(serviceManifest), "name: envoy-metrics") {
+		t.Fatal("expected service manifest to expose envoy metrics port")
+	}
+	serviceMonitorManifest, err := os.ReadFile(filepath.Join(appDir, "servicemonitor.yaml"))
+	if err != nil {
+		t.Fatalf("read servicemonitor manifest: %v", err)
+	}
+	if !strings.Contains(string(serviceMonitorManifest), "port: envoy-metrics") || !strings.Contains(string(serviceMonitorManifest), "path: /stats/prometheus") {
+		t.Fatal("expected ServiceMonitor to scrape Istio sidecar envoy metrics")
+	}
 
 	kustomizationManifest, err := os.ReadFile(filepath.Join(appDir, "kustomization.yaml"))
 	if err != nil {
@@ -282,6 +356,7 @@ func TestCanaryApplicationCreatesRolloutArtifacts(t *testing.T) {
 		"kustomization.yaml",
 		"rollout.yaml",
 		"service.yaml",
+		"servicemonitor.yaml",
 		"canary-service.yaml",
 		"virtualservice.yaml",
 		"destinationrule.yaml",
@@ -293,6 +368,35 @@ func TestCanaryApplicationCreatesRolloutArtifacts(t *testing.T) {
 
 	if _, err := os.Stat(filepath.Join(env.repoRoot, "apps", "project-a", "canary-app", "overlays", "dev", "kustomization.yaml")); err != nil {
 		t.Fatalf("expected dev overlay to exist: %v", err)
+	}
+	assertFluxBootstrapFiles(t, env.repoRoot, "default")
+	assertFluxChildManifestPath(t, env.repoRoot, "default", "project-a-canary-app", "./apps/project-a/canary-app/overlays/dev")
+	rolloutManifest, err := os.ReadFile(filepath.Join(appDir, "rollout.yaml"))
+	if err != nil {
+		t.Fatalf("read rollout manifest: %v", err)
+	}
+	if !strings.Contains(string(rolloutManifest), `sidecar.istio.io/inject: "true"`) {
+		t.Fatal("expected rollout manifest to opt workloads into Istio sidecar injection")
+	}
+	if !strings.Contains(string(rolloutManifest), "labels:\n        sidecar.istio.io/inject: \"true\"") {
+		t.Fatal("expected rollout manifest to label pods for Istio sidecar injection")
+	}
+	if !strings.Contains(string(rolloutManifest), "app: canary-app") {
+		t.Fatal("expected rollout manifest to include Istio telemetry app label")
+	}
+	serviceManifest, err := os.ReadFile(filepath.Join(appDir, "service.yaml"))
+	if err != nil {
+		t.Fatalf("read service manifest: %v", err)
+	}
+	if !strings.Contains(string(serviceManifest), "name: envoy-metrics") {
+		t.Fatal("expected canary service manifest to expose envoy metrics port")
+	}
+	serviceMonitorManifest, err := os.ReadFile(filepath.Join(appDir, "servicemonitor.yaml"))
+	if err != nil {
+		t.Fatalf("read servicemonitor manifest: %v", err)
+	}
+	if !strings.Contains(string(serviceMonitorManifest), "port: envoy-metrics") || !strings.Contains(string(serviceMonitorManifest), "path: /stats/prometheus") {
+		t.Fatal("expected canary ServiceMonitor to scrape Istio sidecar envoy metrics")
 	}
 
 	deploymentsResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__canary-app/deployments", nil, map[string]string{
@@ -818,6 +922,52 @@ func TestSubmittedDirectChangeCanMerge(t *testing.T) {
 func TestRedeployCanSwitchEnvironment(t *testing.T) {
 	env := newTestEnvironment(t)
 
+	projectsYAML := `projects:
+  - id: project-a
+    name: Project A
+    description: Test project
+    namespace: project-a
+    access:
+      viewerGroups:
+        - aods:project-a:view
+      deployerGroups:
+        - aods:project-a:deploy
+      adminGroups:
+        - aods:platform:admin
+    repositories:
+      - id: project-a-api
+        name: API Repository
+        url: https://github.com/aolda-demo/project-a-api
+        description: Primary API source code
+    environments:
+      - id: dev
+        name: Development
+        clusterId: analytics
+        writeMode: direct
+      - id: prod
+        name: Production
+        clusterId: default
+        writeMode: direct
+        default: true
+    policies:
+      minReplicas: 1
+      allowedEnvironments:
+        - dev
+        - prod
+      allowedDeploymentStrategies:
+        - Standard
+        - Canary
+      allowedClusterTargets:
+        - default
+        - analytics
+      prodPRRequired: false
+      autoRollbackEnabled: false
+      requiredProbes: true
+`
+	if err := os.WriteFile(filepath.Join(env.repoRoot, "platform", "projects.yaml"), []byte(projectsYAML), 0o644); err != nil {
+		t.Fatalf("rewrite projects.yaml: %v", err)
+	}
+
 	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
 		"name":               "env-switch-app",
 		"description":        "Environment switch",
@@ -833,6 +983,7 @@ func TestRedeployCanSwitchEnvironment(t *testing.T) {
 	if createResponse.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 from create, got %d", createResponse.StatusCode)
 	}
+	assertFluxChildManifestPath(t, env.repoRoot, "default", "project-a-env-switch-app", "./apps/project-a/env-switch-app/overlays/prod")
 
 	redeployResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/applications/project-a__env-switch-app/deployments", map[string]any{
 		"imageTag":    "v2",
@@ -862,6 +1013,9 @@ func TestRedeployCanSwitchEnvironment(t *testing.T) {
 	if !strings.Contains(string(metadata), "defaultEnvironment: dev") {
 		t.Fatal("expected default environment to switch to dev")
 	}
+	assertNoFluxChildManifest(t, env.repoRoot, "default", "project-a-env-switch-app")
+	assertFluxBootstrapFiles(t, env.repoRoot, "analytics")
+	assertFluxChildManifestPath(t, env.repoRoot, "analytics", "project-a-env-switch-app", "./apps/project-a/env-switch-app/overlays/dev")
 }
 
 func TestCreateApplicationRejectsDisallowedEnvironment(t *testing.T) {
@@ -879,6 +1033,11 @@ func TestCreateApplicationRejectsDisallowedEnvironment(t *testing.T) {
         - aods:project-a:deploy
       adminGroups:
         - aods:platform:admin
+    repositories:
+      - id: project-a-api
+        name: API Repository
+        url: https://github.com/aolda-demo/project-a-api
+        description: Primary API source code
     environments:
       - id: dev
         name: Development
@@ -1132,6 +1291,10 @@ type testEnvironment struct {
 }
 
 func newTestEnvironment(t *testing.T) testEnvironment {
+	return newTestEnvironmentWithConfig(t, nil)
+}
+
+func newTestEnvironmentWithConfig(t *testing.T, mutate func(*core.Config)) testEnvironment {
 	t.Helper()
 
 	repoRoot := t.TempDir()
@@ -1153,6 +1316,11 @@ func newTestEnvironment(t *testing.T) testEnvironment {
         - aods:project-a:deploy
       adminGroups:
         - aods:platform:admin
+    repositories:
+      - id: project-a-api
+        name: API Repository
+        url: https://github.com/aolda-demo/project-a-api
+        description: Primary API source code
     environments:
       - id: dev
         name: Development
@@ -1185,17 +1353,26 @@ func newTestEnvironment(t *testing.T) testEnvironment {
     name: Default Cluster
     description: Test cluster
     default: true
+  - id: analytics
+    name: Analytics Cluster
+    description: Analytics test cluster
+    default: false
 `
 	if err := os.WriteFile(filepath.Join(repoRoot, "platform", "clusters.yaml"), []byte(clustersYAML), 0o644); err != nil {
 		t.Fatalf("write clusters.yaml: %v", err)
 	}
 
-	handler := server.New(core.Config{
+	cfg := core.Config{
 		RepoRoot:         repoRoot,
 		AllowedOrigin:    "*",
 		AllowDevFallback: false,
 		LocalVaultDir:    vaultRoot,
-	})
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+
+	handler, _, _ := server.New(cfg)
 
 	httpServer := httptest.NewServer(handler)
 	t.Cleanup(httpServer.Close)
@@ -1256,5 +1433,74 @@ func decodeBody(t *testing.T, response *http.Response, target any) {
 
 	if err := json.NewDecoder(response.Body).Decode(target); err != nil {
 		t.Fatalf("decode response body: %v", err)
+	}
+}
+
+func assertFluxBootstrapFiles(t *testing.T, repoRoot string, clusterID string) {
+	t.Helper()
+
+	rootPath := filepath.Join(repoRoot, "platform", "flux", "bootstrap", clusterID, "root-kustomization.yaml")
+	rootContent, err := os.ReadFile(rootPath)
+	if err != nil {
+		t.Fatalf("read flux bootstrap root manifest: %v", err)
+	}
+	if !strings.Contains(string(rootContent), "kind: Kustomization") {
+		t.Fatalf("expected bootstrap root manifest to define Flux Kustomization: %s", rootPath)
+	}
+	if !strings.Contains(string(rootContent), "name: aods-root-"+clusterID) {
+		t.Fatalf("expected bootstrap root manifest to target cluster %s", clusterID)
+	}
+	if !strings.Contains(string(rootContent), "path: ./platform/flux/clusters/"+clusterID) {
+		t.Fatalf("expected bootstrap root manifest to reference cluster path for %s", clusterID)
+	}
+	if !strings.Contains(string(rootContent), "wait: false") {
+		t.Fatalf("expected bootstrap root manifest to disable wait for cluster %s", clusterID)
+	}
+
+	kustomizationPath := filepath.Join(repoRoot, "platform", "flux", "bootstrap", clusterID, "kustomization.yaml")
+	kustomizationContent, err := os.ReadFile(kustomizationPath)
+	if err != nil {
+		t.Fatalf("read flux bootstrap kustomization: %v", err)
+	}
+	if !strings.Contains(string(kustomizationContent), "root-kustomization.yaml") {
+		t.Fatalf("expected bootstrap kustomization to include root manifest for %s", clusterID)
+	}
+}
+
+func assertFluxChildManifestPath(t *testing.T, repoRoot string, clusterID string, fileBase string, overlayPath string) {
+	t.Helper()
+
+	childPath := filepath.Join(repoRoot, "platform", "flux", "clusters", clusterID, "applications", fileBase+".yaml")
+	childContent, err := os.ReadFile(childPath)
+	if err != nil {
+		t.Fatalf("read flux child manifest: %v", err)
+	}
+	if !strings.Contains(string(childContent), "kind: Kustomization") {
+		t.Fatalf("expected flux child manifest to define Flux Kustomization: %s", childPath)
+	}
+	if !strings.Contains(string(childContent), "path: "+overlayPath) {
+		t.Fatalf("expected flux child manifest to reference %s, got:\n%s", overlayPath, childContent)
+	}
+	if !strings.Contains(string(childContent), "name: aods-manifest") {
+		t.Fatalf("expected flux child manifest to reference default GitRepository source: %s", childPath)
+	}
+
+	rootPath := filepath.Join(repoRoot, "platform", "flux", "clusters", clusterID, "kustomization.yaml")
+	rootContent, err := os.ReadFile(rootPath)
+	if err != nil {
+		t.Fatalf("read flux root kustomization: %v", err)
+	}
+	resource := "applications/" + fileBase + ".yaml"
+	if !strings.Contains(string(rootContent), resource) {
+		t.Fatalf("expected flux root kustomization to include %s", resource)
+	}
+}
+
+func assertNoFluxChildManifest(t *testing.T, repoRoot string, clusterID string, fileBase string) {
+	t.Helper()
+
+	childPath := filepath.Join(repoRoot, "platform", "flux", "clusters", clusterID, "applications", fileBase+".yaml")
+	if _, err := os.Stat(childPath); !os.IsNotExist(err) {
+		t.Fatalf("expected no flux child manifest at %s, got %v", childPath, err)
 	}
 }

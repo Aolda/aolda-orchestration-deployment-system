@@ -15,7 +15,7 @@ import (
 	"github.com/aolda/aods-backend/internal/vault"
 )
 
-func New(cfg core.Config) http.Handler {
+func New(cfg core.Config) (http.Handler, *application.Service, *project.Service) {
 	userProvider := core.NewUserProvider(cfg)
 
 	projectSource := project.CatalogSource(project.LocalCatalogSource{
@@ -24,7 +24,11 @@ func New(cfg core.Config) http.Handler {
 	clusterSource := cluster.Source(cluster.LocalSource{
 		Path: filepath.Join(cfg.RepoRoot, "platform", "clusters.yaml"),
 	})
-	applicationStore := application.Store(application.LocalManifestStore{RepoRoot: cfg.RepoRoot})
+	applicationStore := application.Store(application.LocalManifestStore{
+		RepoRoot:                   cfg.RepoRoot,
+		FluxKustomizationNamespace: cfg.FluxKustomizationNamespace,
+		FluxSourceName:             cfg.FluxSourceName,
+	})
 	changeStore := change.Store(change.LocalStore{RepoRoot: cfg.RepoRoot})
 
 	if cfg.UseGitRepo() {
@@ -35,11 +39,16 @@ func New(cfg core.Config) http.Handler {
 			AuthorName:  cfg.GitAuthorName,
 			AuthorEmail: cfg.GitAuthorEmail,
 			Timeout:     maxDuration(cfg.GitCommandTimeout, 15*time.Second),
+			SyncTTL:     cfg.GitSyncTTL,
 		}
 
 		projectSource = project.GitCatalogSource{Repository: repository}
 		clusterSource = cluster.GitSource{Repository: repository}
-		applicationStore = application.GitManifestStore{Repository: repository}
+		applicationStore = application.GitManifestStore{
+			Repository:                 repository,
+			FluxKustomizationNamespace: cfg.FluxKustomizationNamespace,
+			FluxSourceName:             cfg.FluxSourceName,
+		}
 		changeStore = change.GitStore{Repository: repository}
 	}
 
@@ -49,22 +58,52 @@ func New(cfg core.Config) http.Handler {
 	clusterService := &cluster.Service{Source: clusterSource}
 
 	metricsReader := application.MetricsReader(application.LocalMetricsReader{})
+	var prometheusReader application.MetricsReader
 	if cfg.UsePrometheusAPI() {
-		metricsReader = application.PrometheusMetricsReader{
+		prometheusReader = application.PrometheusMetricsReader{
 			BaseURL: cfg.PrometheusURL,
 			Client:  &http.Client{Timeout: maxDuration(cfg.PrometheusRequestTimeout, 5*time.Second)},
 			Range:   cfg.PrometheusRange,
 			Step:    cfg.PrometheusStep,
 		}
 	}
+	var kubernetesMetricsReader application.MetricsReader
+	if cfg.UseKubernetesAPI() {
+		reader, err := kubernetes.NewPodMetricsReader(cfg)
+		if err != nil {
+			if prometheusReader == nil {
+				metricsReader = application.ErrorMetricsReader{Err: err}
+			}
+		} else {
+			kubernetesMetricsReader = reader
+		}
+	}
+	switch {
+	case prometheusReader != nil && kubernetesMetricsReader != nil:
+		metricsReader = application.CompositeMetricsReader{
+			Primary:  prometheusReader,
+			Fallback: kubernetesMetricsReader,
+		}
+	case prometheusReader != nil:
+		metricsReader = prometheusReader
+	case kubernetesMetricsReader != nil:
+		metricsReader = kubernetesMetricsReader
+	}
 
-	secretStore := application.SecretsStager(vault.LocalStore{RootDir: cfg.LocalVaultDir})
+	secretStore := application.SecretStore(vault.LocalStore{RootDir: cfg.LocalVaultDir})
 	if cfg.UseVaultAPI() {
 		secretStore = vault.RealStore{
 			Address:   cfg.VaultAddress,
 			Token:     cfg.VaultToken,
 			Namespace: cfg.VaultNamespace,
 			Client:    &http.Client{Timeout: maxDuration(cfg.VaultRequestTimeout, 5*time.Second)},
+		}
+	}
+
+	imageVerifier := application.ImageVerifier(application.NoopImageVerifier{})
+	if cfg.UseImageVerification() {
+		imageVerifier = application.RegistryImageVerifier{
+			Client: &http.Client{Timeout: maxDuration(cfg.ImageVerificationTimeout, 5*time.Second)},
 		}
 	}
 
@@ -75,6 +114,7 @@ func New(cfg core.Config) http.Handler {
 		MetricsReader: metricsReader,
 		Secrets:       secretStore,
 		Rollouts:      kubernetes.NewRolloutController(cfg),
+		Images:        imageVerifier,
 	}
 	changeService := &change.Service{
 		Projects:     projectService,
@@ -102,6 +142,7 @@ func New(cfg core.Config) http.Handler {
 	mux.HandleFunc("GET /api/v1/clusters", clusterHandler.ListClusters)
 	mux.HandleFunc("GET /api/v1/projects", projectHandler.ListProjects)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/environments", projectHandler.ListEnvironments)
+	mux.HandleFunc("GET /api/v1/projects/{projectId}/repositories", projectHandler.ListRepositories)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/policies", projectHandler.GetPolicies)
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/policies", projectHandler.UpdatePolicies)
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/changes", changeHandler.Create)
@@ -134,7 +175,7 @@ func New(cfg core.Config) http.Handler {
 		)
 	})
 
-	return core.WithRequestID(core.WithCORS(mux, cfg.AllowedOrigin))
+	return core.WithRequestID(core.WithCORS(mux, cfg.AllowedOrigin)), applicationService, projectService
 }
 
 func maxDuration(value time.Duration, fallback time.Duration) time.Duration {

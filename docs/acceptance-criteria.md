@@ -42,6 +42,7 @@
 - **Then** 백엔드는 상태 코드 `201` 을 반환해야 한다.
 - **And** 백엔드는 GitOps 저장소의 `apps/project-a/my-app/base/` 경로에 템플릿된 리소스 파일셋을 생성하는 커밋을 발생시켜야 한다.
 - **And** 생성 파일셋에는 `kustomization.yaml`, `deployment.yaml`, `service.yaml`, `virtualservice.yaml`, `destinationrule.yaml`, `externalsecret.yaml` 이 포함되어야 한다.
+- **And** 백엔드는 GitOps 저장소의 `platform/flux/clusters/{clusterId}/applications/` 아래에 해당 앱을 가리키는 Flux child `Kustomization` manifest 를 생성해야 한다.
 - **And** Secret 평문 값은 Git 커밋이나 생성된 매니페스트에 포함되면 안 된다.
 - **And** Secret 값은 먼저 Vault 임시 경로에 저장되고, Git 커밋 성공 후 최종 경로로 확정되어야 한다.
 

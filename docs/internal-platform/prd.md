@@ -255,6 +255,16 @@ Phase 1에서는 GitHub 저장소 안에 아래 두 영역을 사용한다.
 ```text
 platform/
   projects.yaml
+  flux/
+    bootstrap/
+      {clusterId}/
+        kustomization.yaml
+        root-kustomization.yaml
+    clusters/
+      {clusterId}/
+        kustomization.yaml
+        applications/
+          {projectId}-{appName}.yaml
 
 apps/
   {projectId}/
@@ -272,6 +282,8 @@ apps/
 ```
 
 `platform/projects.yaml` 은 프로젝트 목록의 source of truth다.
+`platform/flux/bootstrap/{clusterId}` 는 cluster bootstrap 용 Flux root manifest 위치다.
+`platform/flux/clusters/{clusterId}` 는 Flux root 가 읽는 child `Kustomization` 집합이다.
 
 `Canary` 동작은 Phase 2로 미루더라도, 구조는 이후 확장을 방해하지 않는 형태로 시작한다.
 

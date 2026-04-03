@@ -1,0 +1,121 @@
+.shell {
+  min-height: 100vh;
+}
+
+.navbar {
+  background: rgba(255, 255, 255, 0.94);
+  border-right: 1px solid var(--portal-border);
+  backdrop-filter: blur(14px);
+}
+
+.navbarInner {
+  display: flex;
+  height: 100%;
+  flex-direction: column;
+  gap: 24px;
+  padding: 20px 16px;
+}
+
+.brandBlock {
+  display: grid;
+  gap: 6px;
+}
+
+.brandKicker {
+  font-size: 0.74rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--portal-muted);
+}
+
+.brandTitle {
+  font-size: 1.05rem;
+  font-weight: 700;
+  color: var(--portal-text);
+}
+
+.brandBody {
+  font-size: 0.88rem;
+  line-height: 1.5;
+  color: var(--portal-muted);
+}
+
+.main {
+  background: transparent;
+}
+
+.content {
+  padding: 28px 28px 40px;
+}
+
+.secondaryNavContainer {
+  margin-top: 24px;
+  padding-top: 24px;
+  border-top: 1px solid var(--portal-border);
+}
+
+.topbar {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  margin-bottom: 20px;
+  border: 1px solid var(--portal-border);
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(14px);
+}
+
+.topbarInner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 22px;
+}
+
+.topbarMeta {
+  display: grid;
+  gap: 6px;
+}
+
+.breadcrumbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 0.8rem;
+  color: var(--portal-muted);
+}
+
+.crumbCurrent {
+  color: var(--portal-text);
+  font-weight: 700;
+}
+
+.topbarTitle {
+  font-size: 1.5rem;
+  font-weight: 800;
+  color: var(--portal-text);
+}
+
+.topbarBody {
+  color: var(--portal-muted);
+  line-height: 1.5;
+}
+
+.topbarActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 12px;
+}
+
+@media (max-width: 900px) {
+  .content {
+    padding: 18px 18px 28px;
+  }
+
+  .topbarInner {
+    padding: 16px 18px;
+  }
+}

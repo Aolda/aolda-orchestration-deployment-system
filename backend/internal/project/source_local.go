@@ -24,7 +24,17 @@ type catalogProject struct {
 	Namespace    string               `yaml:"namespace"`
 	Access       catalogAccess        `yaml:"access"`
 	Environments []catalogEnvironment `yaml:"environments"`
+	Repositories []catalogRepository  `yaml:"repositories,omitempty"`
 	Policies     catalogPolicies      `yaml:"policies"`
+}
+
+type catalogRepository struct {
+	ID             string `yaml:"id"`
+	Name           string `yaml:"name"`
+	URL            string `yaml:"url"`
+	Description    string `yaml:"description,omitempty"`
+	AuthSecretPath string `yaml:"authSecretPath,omitempty"`
+	ConfigFile     string `yaml:"configFile,omitempty"`
 }
 
 type catalogAccess struct {
@@ -106,6 +116,16 @@ func (s LocalCatalogSource) ListProjects(ctx context.Context) ([]CatalogProject,
 				ClusterID: environment.ClusterID,
 				WriteMode: environment.WriteMode,
 				Default:   environment.Default,
+			})
+		}
+		for _, repo := range item.Repositories {
+			project.Repositories = append(project.Repositories, Repository{
+				ID:             repo.ID,
+				Name:           repo.Name,
+				URL:            repo.URL,
+				Description:    repo.Description,
+				AuthSecretPath: repo.AuthSecretPath,
+				ConfigFile:     repo.ConfigFile,
 			})
 		}
 		projects = append(projects, applyProjectDefaults(project))

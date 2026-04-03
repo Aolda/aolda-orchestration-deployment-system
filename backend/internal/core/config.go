@@ -28,6 +28,7 @@ type Config struct {
 	GitAuthorName              string
 	GitAuthorEmail             string
 	GitCommandTimeout          time.Duration
+	GitSyncTTL                 time.Duration
 	KubernetesMode             string
 	KubernetesAPIURL           string
 	KubernetesBearerToken      string
@@ -36,7 +37,10 @@ type Config struct {
 	KubernetesKubeconfigPath   string
 	KubernetesContext          string
 	KubernetesRequestTimeout   time.Duration
+	ImageVerificationMode      string
+	ImageVerificationTimeout   time.Duration
 	FluxKustomizationNamespace string
+	FluxSourceName             string
 	PrometheusMode             string
 	PrometheusURL              string
 	PrometheusRequestTimeout   time.Duration
@@ -69,12 +73,22 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
+	imageVerificationTimeout, err := envDuration("AODS_IMAGE_CHECK_TIMEOUT", 5*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
 	oidcRequestTimeout, err := envDuration("AODS_OIDC_REQUEST_TIMEOUT", 5*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
 
 	gitCommandTimeout, err := envDuration("AODS_GIT_COMMAND_TIMEOUT", 15*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
+	gitSyncTTL, err := envDuration("AODS_GIT_SYNC_TTL", 3*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
@@ -118,6 +132,7 @@ func LoadConfig() (Config, error) {
 		GitAuthorName:              envOrDefault("AODS_GIT_AUTHOR_NAME", "AODS Bot"),
 		GitAuthorEmail:             envOrDefault("AODS_GIT_AUTHOR_EMAIL", "aods-bot@local"),
 		GitCommandTimeout:          gitCommandTimeout,
+		GitSyncTTL:                 gitSyncTTL,
 		KubernetesMode:             envOrDefault("AODS_K8S_MODE", "local"),
 		KubernetesAPIURL:           envOrDefault("AODS_K8S_API_URL", ""),
 		KubernetesBearerToken:      envOrDefault("AODS_K8S_BEARER_TOKEN", ""),
@@ -126,7 +141,10 @@ func LoadConfig() (Config, error) {
 		KubernetesKubeconfigPath:   envOrDefault("AODS_K8S_KUBECONFIG", defaultKubeconfigPath()),
 		KubernetesContext:          envOrDefault("AODS_K8S_CONTEXT", ""),
 		KubernetesRequestTimeout:   kubernetesRequestTimeout,
+		ImageVerificationMode:      envOrDefault("AODS_IMAGE_CHECK_MODE", "anonymous"),
+		ImageVerificationTimeout:   imageVerificationTimeout,
 		FluxKustomizationNamespace: envOrDefault("AODS_FLUX_KUSTOMIZATION_NAMESPACE", "flux-system"),
+		FluxSourceName:             envOrDefault("AODS_FLUX_SOURCE_NAME", "aods-manifest"),
 		PrometheusMode:             envOrDefault("AODS_PROMETHEUS_MODE", "local"),
 		PrometheusURL:              envOrDefault("AODS_PROMETHEUS_URL", ""),
 		PrometheusRequestTimeout:   prometheusRequestTimeout,
@@ -161,6 +179,11 @@ func (c Config) UseOIDCAuth() bool {
 
 func (c Config) UseKubernetesAPI() bool {
 	mode := strings.TrimSpace(c.KubernetesMode)
+	return mode != "" && !strings.EqualFold(mode, "local")
+}
+
+func (c Config) UseImageVerification() bool {
+	mode := strings.TrimSpace(c.ImageVerificationMode)
 	return mode != "" && !strings.EqualFold(mode, "local")
 }
 

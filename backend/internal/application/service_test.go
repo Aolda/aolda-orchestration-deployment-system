@@ -18,6 +18,11 @@ func (s stubStore) ListApplications(ctx context.Context, projectID string) ([]Re
 }
 
 func (s stubStore) GetApplication(ctx context.Context, applicationID string) (Record, error) {
+	for _, record := range s.records {
+		if record.ID == applicationID {
+			return record, nil
+		}
+	}
 	return Record{}, nil
 }
 
@@ -25,11 +30,11 @@ func (s stubStore) CreateApplication(ctx context.Context, project ProjectContext
 	return Record{}, nil
 }
 
-func (s stubStore) UpdateApplicationImage(ctx context.Context, applicationID string, imageTag string, deploymentID string) (Record, error) {
+func (s stubStore) UpdateApplicationImage(ctx context.Context, project ProjectContext, applicationID string, imageTag string, deploymentID string) (Record, error) {
 	return Record{}, nil
 }
 
-func (s stubStore) PatchApplication(ctx context.Context, applicationID string, input UpdateApplicationRequest) (Record, error) {
+func (s stubStore) PatchApplication(ctx context.Context, project ProjectContext, applicationID string, input UpdateApplicationRequest) (Record, error) {
 	return Record{}, nil
 }
 
@@ -127,6 +132,10 @@ func (s *secretsSpy) Finalize(ctx context.Context, staged StagedSecret, data map
 	s.finalizeCalls++
 	s.finalizedPath = staged.FinalPath
 	return nil
+}
+
+func (s *secretsSpy) Get(ctx context.Context, logicalPath string) (map[string]string, error) {
+	return nil, nil
 }
 
 func TestServiceListApplicationsUsesBatchStatusReaderWhenAvailable(t *testing.T) {
@@ -246,5 +255,67 @@ func TestCreateApplicationDoesNotFinalizeSecretsWhenStoreWriteFails(t *testing.T
 	}
 	if len(store.secretPaths) != 1 || store.secretPaths[0] != "secret/aods/apps/project-a/secret-app/prod" {
 		t.Fatalf("expected final vault path to be passed to manifest store, got %#v", store.secretPaths)
+	}
+}
+
+func TestPatchApplicationRejectsZeroReplicas(t *testing.T) {
+	t.Parallel()
+
+	service := Service{
+		Projects: &project.Service{
+			Source: staticCatalogSource{
+				items: []project.CatalogProject{
+					{
+						ID:        "project-a",
+						Name:      "Project A",
+						Namespace: "project-a",
+						Access: project.Access{
+							DeployerGroups: []string{"aods:project-a:deploy"},
+						},
+						Environments: []project.Environment{
+							{
+								ID:        "prod",
+								Name:      "Production",
+								ClusterID: "default",
+								WriteMode: project.WriteModeDirect,
+								Default:   true,
+							},
+						},
+						Policies: project.PolicySet{
+							MinReplicas:                 1,
+							AllowedEnvironments:         []string{"prod"},
+							AllowedDeploymentStrategies: []string{"Standard"},
+							AllowedClusterTargets:       []string{"default"},
+							RequiredProbes:              true,
+						},
+					},
+				},
+			},
+		},
+		Store: stubStore{
+			records: []Record{
+				{
+					ID:                 "project-a__demo",
+					ProjectID:          "project-a",
+					Name:               "demo",
+					Image:              "ghcr.io/aolda/demo:v1",
+					ServicePort:        8080,
+					Replicas:           1,
+					DeploymentStrategy: DeploymentStrategyStandard,
+					DefaultEnvironment: "prod",
+				},
+			},
+		},
+		StatusReader: &batchStatusReaderStub{},
+	}
+
+	zero := 0
+	_, err := service.PatchApplication(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, "project-a__demo", UpdateApplicationRequest{
+		Replicas: &zero,
+	})
+	if err == nil {
+		t.Fatal("expected zero replicas to be rejected")
 	}
 }

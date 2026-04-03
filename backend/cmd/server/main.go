@@ -7,9 +7,11 @@ import (
 	"net/url"
 	"os"
 
+	"github.com/aolda/aods-backend/internal/application"
 	"github.com/aolda/aods-backend/internal/core"
 	"github.com/aolda/aods-backend/internal/gitops"
 	"github.com/aolda/aods-backend/internal/server"
+	"time"
 )
 
 func main() {
@@ -27,6 +29,7 @@ func main() {
 			AuthorName:  cfg.GitAuthorName,
 			AuthorEmail: cfg.GitAuthorEmail,
 			Timeout:     cfg.GitCommandTimeout,
+			SyncTTL:     cfg.GitSyncTTL,
 		}
 
 		if err := repository.EnsureFile(context.Background(), "platform/projects.yaml"); err != nil {
@@ -55,7 +58,7 @@ func main() {
 		}
 	}
 
-	handler := server.New(cfg)
+	handler, applicationService, projectService := server.New(cfg)
 
 	slog.Info(
 		"starting AODS backend",
@@ -79,6 +82,13 @@ func main() {
 		"devAuthFallback", cfg.AllowDevFallback,
 		"localVaultDir", cfg.LocalVaultDir,
 	)
+
+	poller := &application.AutoUpdatePoller{
+		Service:  applicationService,
+		Projects: projectService,
+		Interval: 5 * time.Minute,
+	}
+	go poller.Start(context.Background())
 
 	if err := http.ListenAndServe(cfg.Address, handler); err != nil {
 		slog.Error("backend server stopped", "error", err)

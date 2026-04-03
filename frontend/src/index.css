@@ -1,12 +1,24 @@
 :root {
-  color: #1f2927;
-  background:
-    radial-gradient(circle at top left, rgba(70, 163, 155, 0.2), transparent 26%),
-    radial-gradient(circle at 80% 0, rgba(214, 177, 87, 0.24), transparent 24%),
-    linear-gradient(180deg, #f7f1e6 0%, #efe6d8 100%);
+  --aju-blue: #1d66d6;
+  --aju-blue-deep: #0b3d7f;
+  --aju-blue-soft: rgba(29, 102, 214, 0.1);
+  --portal-text: #111827;
+  --portal-muted: #6B7280;
+  --portal-border: #E5E7EB;
+  --portal-surface: #ffffff;
+  --portal-bg: #F9FAFB;
+}
+
+body {
+  margin: 0;
+  background-color: var(--portal-bg);
+  color: var(--portal-text);
   font-family:
-    'Avenir Next',
-    'Segoe UI',
+    'Inter',
+    -apple-system,
+    BlinkMacSystemFont,
+    system-ui,
+    Roboto,
     sans-serif;
   line-height: 1.5;
   font-weight: 400;
@@ -28,16 +40,22 @@ body,
   min-height: 100%;
 }
 
-body {
-  margin: 0;
-}
-
 code {
-  padding: 0.1rem 0.4rem;
+  padding: 0.12rem 0.4rem;
   border-radius: 999px;
-  background: rgba(22, 46, 43, 0.08);
+  background: var(--aju-blue-soft);
+  color: var(--aju-blue-deep);
   font-family:
     'SF Mono',
     'IBM Plex Mono',
     monospace;
+}
+
+.glass-panel {
+  background: rgba(255, 255, 255, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--portal-border);
+  box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.05), 0 2px 4px -1px rgba(0, 0, 0, 0.03);
+  border-radius: 12px;
 }

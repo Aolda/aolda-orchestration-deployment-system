@@ -94,6 +94,28 @@ func (h Handler) ListEnvironments(w http.ResponseWriter, r *http.Request) {
 	}{Items: items})
 }
 
+func (h Handler) ListRepositories(w http.ResponseWriter, r *http.Request) {
+	user, err := h.Users.CurrentUser(r)
+	if err != nil {
+		if errors.Is(err, core.ErrUnauthorized) {
+			core.WriteError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication is required.", nil, false)
+			return
+		}
+		core.WriteError(w, r, http.StatusInternalServerError, "AUTH_PROVIDER_ERROR", "Could not resolve the current user.", nil, true)
+		return
+	}
+
+	items, err := h.Service.ListRepositories(r.Context(), user, r.PathValue("projectId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, struct {
+		Items []RepositorySummary `json:"items"`
+	}{Items: items})
+}
+
 func (h Handler) GetPolicies(w http.ResponseWriter, r *http.Request) {
 	user, err := h.Users.CurrentUser(r)
 	if err != nil {

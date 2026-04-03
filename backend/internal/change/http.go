@@ -100,9 +100,23 @@ func (h Handler) currentUser(w http.ResponseWriter, r *http.Request) (core.User,
 }
 
 func (h Handler) writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
+	var imageError application.ImageValidationError
 	switch {
 	case errors.Is(err, project.ErrForbidden), errors.Is(err, application.ErrRequiresDeployer), errors.Is(err, application.ErrRequiresAdmin):
 		core.WriteError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have permission to perform this action.", nil, false)
+	case errors.As(err, &imageError):
+		core.WriteError(
+			w,
+			r,
+			http.StatusBadRequest,
+			imageError.Code,
+			imageError.Message,
+			map[string]any{
+				"image":    imageError.Image,
+				"registry": imageError.Registry,
+			},
+			false,
+		)
 	case errors.Is(err, ErrInvalidOperation):
 		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "Change request is invalid.", map[string]any{"error": err.Error()}, false)
 	case errors.Is(err, project.ErrNotFound):

@@ -15,6 +15,7 @@ import type {
   EventListResponse,
   ProjectListResponse,
   ProjectPolicy,
+  RepositoryListResponse,
   RollbackPolicy,
   SyncStatusResponse,
   UpdateApplicationRequest,
@@ -91,6 +92,9 @@ export const api = {
   getProjectEnvironments(projectId: string) {
     return request<EnvironmentListResponse>(`/api/v1/projects/${projectId}/environments`)
   },
+  getProjectRepositories(projectId: string) {
+    return request<RepositoryListResponse>(`/api/v1/projects/${projectId}/repositories`)
+  },
   getProjectPolicies(projectId: string) {
     return request<ProjectPolicy>(`/api/v1/projects/${projectId}/policies`)
   },
@@ -161,9 +165,14 @@ export const api = {
   getSyncStatus(applicationId: string) {
     return request<SyncStatusResponse>(`/api/v1/applications/${applicationId}/sync-status`)
   },
-  getMetrics(applicationId: string) {
+  getMetrics(applicationId: string, range?: string) {
+    const params = new URLSearchParams()
+    if (range) {
+      params.append('range', range)
+    }
+    const query = params.toString() ? `?${params.toString()}` : ''
     return request<ApplicationMetricsResponse>(
-      `/api/v1/applications/${applicationId}/metrics`,
+      `/api/v1/applications/${applicationId}/metrics${query}`,
     )
   },
   getRollbackPolicy(applicationId: string) {
