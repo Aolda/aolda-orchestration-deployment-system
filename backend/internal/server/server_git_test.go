@@ -59,7 +59,7 @@ func TestGitModeCreateAndRedeployApplication(t *testing.T) {
 		t.Fatal("expected remote checkout to contain ServiceMonitor manifest")
 	}
 	assertFluxBootstrapFiles(t, verifyDir, "default")
-	assertFluxChildManifestPath(t, verifyDir, "default", "project-a-git-app", "./apps/project-a/git-app/overlays/prod")
+	assertFluxChildManifestPath(t, verifyDir, "default", "project-a-git-app", "./apps/project-a/git-app/overlays/prod", true)
 
 	redeployPayload := map[string]string{"imageTag": "v2"}
 	redeployResponse := performJSONRequest(t, env, "POST", "/api/v1/applications/project-a__git-app/deployments", redeployPayload, map[string]string{
@@ -79,7 +79,7 @@ func TestGitModeCreateAndRedeployApplication(t *testing.T) {
 	if !strings.Contains(string(deploymentManifest), "repo/git-app:v2") {
 		t.Fatal("expected remote repo to contain redeployed image tag")
 	}
-	assertFluxChildManifestPath(t, verifyDir, "default", "project-a-git-app", "./apps/project-a/git-app/overlays/prod")
+	assertFluxChildManifestPath(t, verifyDir, "default", "project-a-git-app", "./apps/project-a/git-app/overlays/prod", true)
 
 	if _, err := os.Stat(filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "git-app", "prod.json")); err != nil {
 		t.Fatalf("expected local vault final file: %v", err)
