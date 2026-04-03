@@ -3,6 +3,7 @@ package gitops
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -66,5 +67,69 @@ func TestRepositoryRunOutputDisablesInteractiveGitPrompts(t *testing.T) {
 
 	if err := repo.runOutput(context.Background(), nil, nil, "status"); err != nil {
 		t.Fatalf("expected git command env to be non-interactive, got %v", err)
+	}
+}
+
+func TestRepositoryAcquireProcessLockBlocksConcurrentAccess(t *testing.T) {
+	t.Parallel()
+
+	repoA := Repository{Dir: filepath.Join(t.TempDir(), "managed-repo")}
+	repoB := Repository{Dir: repoA.Dir}
+
+	lockFile, err := repoA.acquireProcessLock(context.Background())
+	if err != nil {
+		t.Fatalf("acquire initial lock: %v", err)
+	}
+	defer func() {
+		_ = lockFile.Close()
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	_, err = repoB.acquireProcessLock(ctx)
+	if err == nil {
+		t.Fatal("expected concurrent lock acquisition to fail")
+	}
+	if time.Since(start) < 100*time.Millisecond {
+		t.Fatalf("expected concurrent lock acquisition to wait, got %s", time.Since(start))
+	}
+	if err != context.DeadlineExceeded {
+		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
+}
+
+func TestRepositorySyncCacheFreshness(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	gitDir := filepath.Join(dir, ".git")
+	if err := os.MkdirAll(gitDir, 0o755); err != nil {
+		t.Fatalf("create git dir: %v", err)
+	}
+
+	repo := Repository{
+		Dir:         dir,
+		Remote:      "https://github.com/Aolda/aods-manifest.git",
+		Branch:      "main",
+		SyncTTL:     3 * time.Second,
+		lastSyncAt:  time.Now(),
+		lastSyncKey: "https://github.com/Aolda/aods-manifest.git|main",
+	}
+
+	if !repo.isSyncCacheFresh(gitDir) {
+		t.Fatal("expected sync cache to be fresh")
+	}
+
+	repo.lastSyncAt = time.Now().Add(-5 * time.Second)
+	if repo.isSyncCacheFresh(gitDir) {
+		t.Fatal("expected stale sync cache to be invalid")
+	}
+
+	repo.lastSyncAt = time.Now()
+	repo.lastSyncKey = "https://github.com/Aolda/aods-manifest.git|staging"
+	if repo.isSyncCacheFresh(gitDir) {
+		t.Fatal("expected branch mismatch to invalidate sync cache")
 	}
 }

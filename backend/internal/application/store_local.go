@@ -15,7 +15,9 @@ import (
 )
 
 type LocalManifestStore struct {
-	RepoRoot string
+	RepoRoot                   string
+	FluxKustomizationNamespace string
+	FluxSourceName             string
 }
 
 func (s LocalManifestStore) ListApplications(ctx context.Context, projectID string) ([]Record, error) {
@@ -91,24 +93,33 @@ func (s LocalManifestStore) CreateApplication(
 		}
 	}
 	record := Record{
-		ID:                 buildApplicationID(project.ID, input.Name),
-		ProjectID:          project.ID,
-		Namespace:          project.Namespace,
-		Name:               input.Name,
-		Description:        input.Description,
-		Image:              input.Image,
-		ServicePort:        input.ServicePort,
-		Replicas:           maxInt(project.Policies.MinReplicas, 1),
-		RequiredProbes:     project.Policies.RequiredProbes,
-		DeploymentStrategy: input.DeploymentStrategy,
-		DefaultEnvironment: defaultEnvironment,
-		CreatedAt:          now,
-		UpdatedAt:          now,
-		SecretPath:         secretPath,
+		ID:                  buildApplicationID(project.ID, input.Name),
+		ProjectID:           project.ID,
+		Namespace:           project.Namespace,
+		Name:                input.Name,
+		Description:         input.Description,
+		Image:               input.Image,
+		ServicePort:         input.ServicePort,
+		Replicas:            desiredReplicas(input.Replicas, project.Policies.MinReplicas),
+		RequiredProbes:      project.Policies.RequiredProbes,
+		DeploymentStrategy:  input.DeploymentStrategy,
+		DefaultEnvironment:  defaultEnvironment,
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		SecretPath:          secretPath,
+		RepositoryID:        input.RepositoryID,
+		RepositoryServiceID: input.RepositoryServiceID,
+		ConfigPath:          input.ConfigPath,
+	}
+	if record.ConfigPath == "" {
+		record.ConfigPath = "aolda-deploy.yaml"
 	}
 
 	environments := normalizedEnvironments(project.Environments, defaultEnvironment)
 	if err := s.writeApplicationFiles(record, environments); err != nil {
+		return Record{}, err
+	}
+	if err := s.syncFluxWiring(record, project, ""); err != nil {
 		return Record{}, err
 	}
 	if err := writeMetadata(s.RepoRoot, record, environments); err != nil {
@@ -134,7 +145,7 @@ func (s LocalManifestStore) CreateApplication(
 	return record, nil
 }
 
-func (s LocalManifestStore) UpdateApplicationImage(ctx context.Context, applicationID string, imageTag string, deploymentID string) (Record, error) {
+func (s LocalManifestStore) UpdateApplicationImage(ctx context.Context, project ProjectContext, applicationID string, imageTag string, deploymentID string) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err
 	}
@@ -148,6 +159,9 @@ func (s LocalManifestStore) UpdateApplicationImage(ctx context.Context, applicat
 	record.UpdatedAt = time.Now().UTC()
 	environments := recordEnvironments(s.RepoRoot, record)
 	if err := s.writeApplicationFiles(record, environments); err != nil {
+		return Record{}, err
+	}
+	if err := s.syncFluxWiring(record, project, record.DefaultEnvironment); err != nil {
 		return Record{}, err
 	}
 	if err := writeMetadata(s.RepoRoot, record, environments); err != nil {
@@ -247,24 +261,27 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 	}
 
 	return Record{
-		ID:                 buildApplicationID(projectID, appName),
-		ProjectID:          projectID,
-		Namespace:          deployment.Metadata.Namespace,
-		Name:               deployment.Metadata.Name,
-		Description:        annotations["aods.io/application-description"],
-		Image:              image,
-		ServicePort:        servicePort,
-		Replicas:           maxInt(deployment.Spec.Replicas, 1),
-		RequiredProbes:     requiredProbes,
-		DeploymentStrategy: inferStrategy(useRollout, annotations["aods.io/deployment-strategy"]),
-		DefaultEnvironment: "prod",
-		CreatedAt:          createdAt,
-		UpdatedAt:          updatedAt,
-		SecretPath:         secretPath,
+		ID:                  buildApplicationID(projectID, appName),
+		ProjectID:           projectID,
+		Namespace:           deployment.Metadata.Namespace,
+		Name:                deployment.Metadata.Name,
+		Description:         annotations["aods.io/application-description"],
+		Image:               image,
+		ServicePort:         servicePort,
+		Replicas:            maxInt(deployment.Spec.Replicas, 1),
+		RequiredProbes:      requiredProbes,
+		DeploymentStrategy:  inferStrategy(useRollout, annotations["aods.io/deployment-strategy"]),
+		DefaultEnvironment:  "prod",
+		CreatedAt:           createdAt,
+		UpdatedAt:           updatedAt,
+		SecretPath:          secretPath,
+		RepositoryID:        annotations["aods.io/repository-id"],
+		RepositoryServiceID: annotations["aods.io/repository-service-id"],
+		ConfigPath:          annotations["aods.io/config-path"],
 	}, nil
 }
 
-func (s LocalManifestStore) PatchApplication(ctx context.Context, applicationID string, input UpdateApplicationRequest) (Record, error) {
+func (s LocalManifestStore) PatchApplication(ctx context.Context, project ProjectContext, applicationID string, input UpdateApplicationRequest) (Record, error) {
 	if err := ctx.Err(); err != nil {
 		return Record{}, err
 	}
@@ -273,18 +290,34 @@ func (s LocalManifestStore) PatchApplication(ctx context.Context, applicationID 
 	if err != nil {
 		return Record{}, err
 	}
+	previousEnvironment := record.DefaultEnvironment
 
 	if input.Description != nil {
 		record.Description = strings.TrimSpace(*input.Description)
 	}
+	if input.Image != nil {
+		record.Image = strings.TrimSpace(*input.Image)
+	}
 	if input.ServicePort != nil {
 		record.ServicePort = *input.ServicePort
+	}
+	if input.Replicas != nil {
+		record.Replicas = *input.Replicas
 	}
 	if input.DeploymentStrategy != nil {
 		record.DeploymentStrategy = *input.DeploymentStrategy
 	}
 	if input.Environment != nil && strings.TrimSpace(*input.Environment) != "" {
 		record.DefaultEnvironment = strings.TrimSpace(*input.Environment)
+	}
+	if input.RepositoryID != nil {
+		record.RepositoryID = *input.RepositoryID
+	}
+	if input.RepositoryServiceID != nil {
+		record.RepositoryServiceID = *input.RepositoryServiceID
+	}
+	if input.ConfigPath != nil {
+		record.ConfigPath = *input.ConfigPath
 	}
 	record.UpdatedAt = time.Now().UTC()
 
@@ -294,6 +327,9 @@ func (s LocalManifestStore) PatchApplication(ctx context.Context, applicationID 
 		sort.Strings(environments)
 	}
 	if err := s.writeApplicationFiles(record, environments); err != nil {
+		return Record{}, err
+	}
+	if err := s.syncFluxWiring(record, project, previousEnvironment); err != nil {
 		return Record{}, err
 	}
 	if err := writeMetadata(s.RepoRoot, record, environments); err != nil {
@@ -426,10 +462,18 @@ type externalSecretManifest struct {
 	} `yaml:"metadata"`
 }
 
+const (
+	defaultMetricsPath      = "/metrics"
+	defaultMetricsInterval  = "30s"
+	defaultEnvoyMetricsPath = "/stats/prometheus"
+	defaultEnvoyMetricsPort = 15090
+)
+
 func renderBaseKustomization(record Record) string {
 	resources := []string{
 		workloadFileName(record),
 		"service.yaml",
+		"servicemonitor.yaml",
 		"virtualservice.yaml",
 		"destinationrule.yaml",
 	}
@@ -493,6 +537,7 @@ metadata:
   name: %s
   namespace: %s
   labels:
+    app: %s
     app.kubernetes.io/name: %s
     app.kubernetes.io/part-of: %s
   annotations:
@@ -500,16 +545,24 @@ metadata:
     aods.io/application-name: %s
     aods.io/application-description: %s
     aods.io/deployment-strategy: %s
+    aods.io/repository-id: %s
+    aods.io/repository-service-id: %s
+    aods.io/config-path: %s
     aods.io/created-at: %s
     aods.io/updated-at: %s
 spec:
   replicas: %d
   selector:
     matchLabels:
+      app: %s
       app.kubernetes.io/name: %s
   template:
     metadata:
+      annotations:
+        sidecar.istio.io/inject: "true"
       labels:
+        sidecar.istio.io/inject: "true"
+        app: %s
         app.kubernetes.io/name: %s
         app.kubernetes.io/part-of: %s
     spec:
@@ -525,14 +578,20 @@ spec:
 		record.Name,
 		record.Namespace,
 		record.Name,
+		record.Name,
 		record.ProjectID,
 		record.ProjectID,
 		record.Name,
 		yamlScalar(record.Description),
 		record.DeploymentStrategy,
+		yamlScalar(record.RepositoryID),
+		yamlScalar(record.RepositoryServiceID),
+		yamlScalar(record.ConfigPath),
 		record.CreatedAt.Format(time.RFC3339),
 		record.UpdatedAt.Format(time.RFC3339),
 		record.Replicas,
+		record.Name,
+		record.Name,
 		record.Name,
 		record.Name,
 		record.ProjectID,
@@ -560,6 +619,7 @@ metadata:
   name: %s
   namespace: %s
   labels:
+    app: %s
     app.kubernetes.io/name: %s
     app.kubernetes.io/part-of: %s
   annotations:
@@ -567,16 +627,24 @@ metadata:
     aods.io/application-name: %s
     aods.io/application-description: %s
     aods.io/deployment-strategy: %s
+    aods.io/repository-id: %s
+    aods.io/repository-service-id: %s
+    aods.io/config-path: %s
     aods.io/created-at: %s
     aods.io/updated-at: %s
 spec:
   replicas: %d
   selector:
     matchLabels:
+      app: %s
       app.kubernetes.io/name: %s
   template:
     metadata:
+      annotations:
+        sidecar.istio.io/inject: "true"
       labels:
+        sidecar.istio.io/inject: "true"
+        app: %s
         app.kubernetes.io/name: %s
         app.kubernetes.io/part-of: %s
     spec:
@@ -610,14 +678,20 @@ spec:
 		record.Name,
 		record.Namespace,
 		record.Name,
+		record.Name,
 		record.ProjectID,
 		record.ProjectID,
 		record.Name,
 		yamlScalar(record.Description),
 		record.DeploymentStrategy,
+		yamlScalar(record.RepositoryID),
+		yamlScalar(record.RepositoryServiceID),
+		yamlScalar(record.ConfigPath),
 		record.CreatedAt.Format(time.RFC3339),
 		record.UpdatedAt.Format(time.RFC3339),
 		record.Replicas,
+		record.Name,
+		record.Name,
 		record.Name,
 		record.Name,
 		record.ProjectID,
@@ -638,19 +712,40 @@ kind: Service
 metadata:
   name: %s
   namespace: %s
+  labels:
+    app: %s
+    app.kubernetes.io/name: %s
+    app.kubernetes.io/part-of: %s
+    aods.io/metrics-scrape: "true"
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: %s
+    prometheus.io/port: %s
 spec:
   selector:
+    app: %s
     app.kubernetes.io/name: %s
   ports:
     - name: http
+      port: %d
+      targetPort: %d
+    - name: envoy-metrics
       port: %d
       targetPort: %d
 `,
 		record.Name,
 		record.Namespace,
 		record.Name,
+		record.Name,
+		record.ProjectID,
+		yamlScalar(defaultMetricsPath),
+		yamlScalar(fmt.Sprintf("%d", record.ServicePort)),
+		record.Name,
+		record.Name,
 		record.ServicePort,
 		record.ServicePort,
+		defaultEnvoyMetricsPort,
+		defaultEnvoyMetricsPort,
 	)
 }
 
@@ -660,19 +755,73 @@ kind: Service
 metadata:
   name: %s-canary
   namespace: %s
+  labels:
+    app: %s
+    app.kubernetes.io/name: %s
+    app.kubernetes.io/part-of: %s
 spec:
   selector:
+    app: %s
     app.kubernetes.io/name: %s
   ports:
     - name: http
+      port: %d
+      targetPort: %d
+    - name: envoy-metrics
       port: %d
       targetPort: %d
 `,
 		record.Name,
 		record.Namespace,
 		record.Name,
+		record.Name,
+		record.ProjectID,
+		record.Name,
+		record.Name,
 		record.ServicePort,
 		record.ServicePort,
+		defaultEnvoyMetricsPort,
+		defaultEnvoyMetricsPort,
+	)
+}
+
+func renderServiceMonitor(record Record) string {
+	return fmt.Sprintf(`apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: %s
+    app.kubernetes.io/part-of: %s
+    prometheus: argo-cd-grafana
+    release: kube-prometheus-stack
+spec:
+  namespaceSelector:
+    matchNames:
+      - %s
+  selector:
+    matchLabels:
+      aods.io/metrics-scrape: "true"
+      app.kubernetes.io/name: %s
+  endpoints:
+    - port: http
+      path: %s
+      interval: %s
+    - port: envoy-metrics
+      path: %s
+      interval: %s
+`,
+		record.Name,
+		record.Namespace,
+		record.Name,
+		record.ProjectID,
+		record.Namespace,
+		record.Name,
+		yamlScalar(defaultMetricsPath),
+		yamlScalar(defaultMetricsInterval),
+		yamlScalar(defaultEnvoyMetricsPath),
+		yamlScalar(defaultMetricsInterval),
 	)
 }
 
@@ -864,6 +1013,13 @@ func maxInt(value int, minimum int) int {
 	return value
 }
 
+func desiredReplicas(value int, minimum int) int {
+	if value > 0 {
+		return value
+	}
+	return maxInt(minimum, 1)
+}
+
 func normalizedEnvironments(environments []string, defaultEnvironment string) []string {
 	items := make([]string, 0, len(environments)+1)
 	for _, environment := range environments {
@@ -897,6 +1053,7 @@ func (s LocalManifestStore) writeApplicationFiles(record Record, environments []
 		filepath.Join(applicationDir, "base", "kustomization.yaml"):     renderBaseKustomization(record),
 		filepath.Join(applicationDir, "base", workloadFileName(record)): renderWorkload(record),
 		filepath.Join(applicationDir, "base", "service.yaml"):           renderService(record),
+		filepath.Join(applicationDir, "base", "servicemonitor.yaml"):    renderServiceMonitor(record),
 		filepath.Join(applicationDir, "base", "virtualservice.yaml"):    renderVirtualService(record),
 		filepath.Join(applicationDir, "base", "destinationrule.yaml"):   renderDestinationRule(record),
 	}

@@ -42,6 +42,7 @@ func TestGitModeCreateAndRedeployApplication(t *testing.T) {
 		"kustomization.yaml",
 		"deployment.yaml",
 		"service.yaml",
+		"servicemonitor.yaml",
 		"virtualservice.yaml",
 		"destinationrule.yaml",
 		"externalsecret.yaml",
@@ -50,6 +51,15 @@ func TestGitModeCreateAndRedeployApplication(t *testing.T) {
 			t.Fatalf("expected %s in remote checkout: %v", fileName, err)
 		}
 	}
+	serviceMonitorManifest, err := os.ReadFile(filepath.Join(appDir, "servicemonitor.yaml"))
+	if err != nil {
+		t.Fatalf("read remote servicemonitor manifest: %v", err)
+	}
+	if !strings.Contains(string(serviceMonitorManifest), "kind: ServiceMonitor") {
+		t.Fatal("expected remote checkout to contain ServiceMonitor manifest")
+	}
+	assertFluxBootstrapFiles(t, verifyDir, "default")
+	assertFluxChildManifestPath(t, verifyDir, "default", "project-a-git-app", "./apps/project-a/git-app/overlays/prod")
 
 	redeployPayload := map[string]string{"imageTag": "v2"}
 	redeployResponse := performJSONRequest(t, env, "POST", "/api/v1/applications/project-a__git-app/deployments", redeployPayload, map[string]string{
@@ -69,6 +79,7 @@ func TestGitModeCreateAndRedeployApplication(t *testing.T) {
 	if !strings.Contains(string(deploymentManifest), "repo/git-app:v2") {
 		t.Fatal("expected remote repo to contain redeployed image tag")
 	}
+	assertFluxChildManifestPath(t, verifyDir, "default", "project-a-git-app", "./apps/project-a/git-app/overlays/prod")
 
 	if _, err := os.Stat(filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "git-app", "prod.json")); err != nil {
 		t.Fatalf("expected local vault final file: %v", err)
@@ -153,6 +164,11 @@ func newGitTestEnvironmentWithCatalog(t *testing.T, includeCatalog bool) testEnv
         - aods:project-a:deploy
       adminGroups:
         - aods:platform:admin
+    repositories:
+      - id: project-a-api
+        name: API Repository
+        url: https://github.com/aolda-demo/project-a-api
+        description: Primary API source code
 `
 		if err := os.WriteFile(filepath.Join(seedDir, "platform", "projects.yaml"), []byte(projectsYAML), 0o644); err != nil {
 			t.Fatalf("write projects.yaml: %v", err)
@@ -165,7 +181,7 @@ func newGitTestEnvironmentWithCatalog(t *testing.T, includeCatalog bool) testEnv
 	}
 	runGit(t, seedDir, "push", "origin", "HEAD:main")
 
-	handler := server.New(core.Config{
+	cfg := core.Config{
 		RepoRoot:         remoteDir,
 		GitMode:          "git",
 		GitRepoDir:       managedRepoDir,
@@ -176,8 +192,9 @@ func newGitTestEnvironmentWithCatalog(t *testing.T, includeCatalog bool) testEnv
 		AllowedOrigin:    "*",
 		AllowDevFallback: false,
 		LocalVaultDir:    vaultRoot,
-	})
+	}
 
+	handler, _, _ := server.New(cfg)
 	httpServer := httptestNewServer(t, handler)
 
 	return testEnvironment{

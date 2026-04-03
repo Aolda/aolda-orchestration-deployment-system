@@ -62,6 +62,16 @@ func (s Service) Create(ctx context.Context, user core.User, projectID string, i
 	if !isSupportedOperation(record.Operation) {
 		return Record{}, ErrInvalidOperation
 	}
+	switch record.Operation {
+	case OperationCreateApplication:
+		if err := s.Applications.ValidateImageReference(ctx, strings.TrimSpace(input.Image)); err != nil {
+			return Record{}, err
+		}
+	case OperationRedeploy:
+		if err := s.Applications.ValidateDeploymentImage(ctx, user, record.ApplicationID, strings.TrimSpace(input.ImageTag)); err != nil {
+			return Record{}, err
+		}
+	}
 	return s.Store.Create(ctx, record)
 }
 

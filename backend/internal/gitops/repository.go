@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -21,8 +22,12 @@ type Repository struct {
 	AuthorName  string
 	AuthorEmail string
 	Timeout     time.Duration
+	SyncTTL     time.Duration
 
 	mu sync.Mutex
+
+	lastSyncAt  time.Time
+	lastSyncKey string
 }
 
 type MissingFileError struct {
@@ -41,11 +46,13 @@ func (r *Repository) WithRead(ctx context.Context, fn func(repoDir string) error
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if err := r.sync(ctx); err != nil {
-		return err
-	}
+	return r.withProcessLock(ctx, func() error {
+		if err := r.sync(ctx, false); err != nil {
+			return err
+		}
 
-	return fn(r.Dir)
+		return fn(r.Dir)
+	})
 }
 
 func (r *Repository) WithWrite(
@@ -60,40 +67,42 @@ func (r *Repository) WithWrite(
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
-	if err := r.sync(ctx); err != nil {
-		return err
-	}
+	return r.withProcessLock(ctx, func() error {
+		if err := r.sync(ctx, true); err != nil {
+			return err
+		}
 
-	if err := fn(r.Dir); err != nil {
-		return err
-	}
+		if err := fn(r.Dir); err != nil {
+			return err
+		}
 
-	changed, err := r.hasChanges(ctx)
-	if err != nil {
-		return err
-	}
-	if !changed {
+		changed, err := r.hasChanges(ctx)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			return nil
+		}
+
+		if err := r.run(ctx, "-C", r.Dir, "add", "--all"); err != nil {
+			return err
+		}
+		if err := r.run(
+			ctx,
+			"-C", r.Dir,
+			"-c", "user.name="+r.AuthorName,
+			"-c", "user.email="+r.AuthorEmail,
+			"commit",
+			"-m", commitMessage,
+		); err != nil {
+			return err
+		}
+		if err := r.run(ctx, "-C", r.Dir, "push", "origin", "HEAD:"+r.Branch); err != nil {
+			return err
+		}
+
 		return nil
-	}
-
-	if err := r.run(ctx, "-C", r.Dir, "add", "--all"); err != nil {
-		return err
-	}
-	if err := r.run(
-		ctx,
-		"-C", r.Dir,
-		"-c", "user.name="+r.AuthorName,
-		"-c", "user.email="+r.AuthorEmail,
-		"commit",
-		"-m", commitMessage,
-	); err != nil {
-		return err
-	}
-	if err := r.run(ctx, "-C", r.Dir, "push", "origin", "HEAD:"+r.Branch); err != nil {
-		return err
-	}
-
-	return nil
+	})
 }
 
 func (r *Repository) EnsureFile(ctx context.Context, relativePath string) error {
@@ -113,7 +122,7 @@ func (r *Repository) EnsureFile(ctx context.Context, relativePath string) error 
 	})
 }
 
-func (r *Repository) sync(ctx context.Context) error {
+func (r *Repository) sync(ctx context.Context, force bool) error {
 	if strings.TrimSpace(r.Dir) == "" {
 		return fmt.Errorf("managed git directory is required when git mode is enabled")
 	}
@@ -125,6 +134,9 @@ func (r *Repository) sync(ctx context.Context) error {
 	}
 
 	gitDir := filepath.Join(r.Dir, ".git")
+	if !force && r.isSyncCacheFresh(gitDir) {
+		return nil
+	}
 	if _, err := os.Stat(gitDir); os.IsNotExist(err) {
 		if err := os.RemoveAll(r.Dir); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("reset managed git directory: %w", err)
@@ -153,6 +165,8 @@ func (r *Repository) sync(ctx context.Context) error {
 		return err
 	}
 
+	r.lastSyncAt = time.Now()
+	r.lastSyncKey = r.syncCacheKey()
 	return nil
 }
 
@@ -219,11 +233,83 @@ func (r *Repository) commandContext(ctx context.Context) (context.Context, conte
 	return context.WithTimeout(ctx, r.effectiveTimeout())
 }
 
+func (r *Repository) withProcessLock(ctx context.Context, fn func() error) error {
+	lockFile, err := r.acquireProcessLock(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}()
+
+	return fn()
+}
+
+func (r *Repository) acquireProcessLock(ctx context.Context) (*os.File, error) {
+	lockPath := r.lockFilePath()
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		return nil, fmt.Errorf("create git lock directory: %w", err)
+	}
+
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open git lock file: %w", err)
+	}
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err == nil {
+			return lockFile, nil
+		} else if !errors.Is(err, syscall.EWOULDBLOCK) {
+			_ = lockFile.Close()
+			return nil, fmt.Errorf("acquire git lock: %w", err)
+		}
+
+		select {
+		case <-ctx.Done():
+			_ = lockFile.Close()
+			return nil, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+func (r *Repository) lockFilePath() string {
+	dir := strings.TrimSpace(r.Dir)
+	if dir == "" {
+		return filepath.Join(os.TempDir(), ".aods-managed-gitops.lock")
+	}
+	return filepath.Join(filepath.Dir(dir), "."+filepath.Base(dir)+".lock")
+}
+
 func (r *Repository) effectiveTimeout() time.Duration {
 	if r.Timeout <= 0 {
 		return 15 * time.Second
 	}
 	return r.Timeout
+}
+
+func (r *Repository) isSyncCacheFresh(gitDir string) bool {
+	if r.SyncTTL <= 0 {
+		return false
+	}
+	if _, err := os.Stat(gitDir); err != nil {
+		return false
+	}
+	if r.lastSyncAt.IsZero() {
+		return false
+	}
+	if r.lastSyncKey != r.syncCacheKey() {
+		return false
+	}
+	return time.Since(r.lastSyncAt) < r.SyncTTL
+}
+
+func (r *Repository) syncCacheKey() string {
+	return strings.TrimSpace(r.Remote) + "|" + strings.TrimSpace(r.Branch)
 }
 
 func redactArgs(args []string) string {

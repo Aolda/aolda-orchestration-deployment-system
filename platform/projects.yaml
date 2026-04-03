@@ -10,6 +10,12 @@ projects:
         - aods:project-a:deploy
       adminGroups:
         - aods:platform:admin
+    repositories:
+      - id: project-a-api
+        name: API Repository
+        url: https://github.com/aolda-demo/project-a-api
+        description: Primary API source code
+        authSecretPath: secrets/project-a/github-token
     environments:
       - id: dev
         name: Development

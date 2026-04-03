@@ -3,6 +3,7 @@ package application
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/aolda/aods-backend/internal/core"
 	"github.com/aolda/aods-backend/internal/project"
@@ -152,7 +153,25 @@ func (h Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	response, err := h.Service.GetMetrics(r.Context(), user, r.PathValue("applicationId"))
+	// Parse range and step from query parameters
+	durationStr := r.URL.Query().Get("range")
+	stepStr := r.URL.Query().Get("step")
+
+	duration := 15 * time.Minute
+	if durationStr != "" {
+		if d, err := time.ParseDuration(durationStr); err == nil {
+			duration = d
+		}
+	}
+
+	step := time.Minute
+	if stepStr != "" {
+		if s, err := time.ParseDuration(stepStr); err == nil {
+			step = s
+		}
+	}
+
+	response, err := h.Service.GetMetrics(r.Context(), user, r.PathValue("applicationId"), duration, step)
 	if err != nil {
 		h.writeDomainError(w, r, err)
 		return
@@ -290,10 +309,24 @@ func (h Handler) currentUser(w http.ResponseWriter, r *http.Request) (core.User,
 
 func (h Handler) writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
 	var validationError ValidationError
+	var imageError ImageValidationError
 
 	switch {
 	case errors.As(err, &validationError):
 		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", validationError.Message, validationError.Details, false)
+	case errors.As(err, &imageError):
+		core.WriteError(
+			w,
+			r,
+			http.StatusBadRequest,
+			imageError.Code,
+			imageError.Message,
+			map[string]any{
+				"image":    imageError.Image,
+				"registry": imageError.Registry,
+			},
+			false,
+		)
 	case errors.Is(err, project.ErrForbidden), errors.Is(err, ErrRequiresDeployer):
 		core.WriteError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have permission to perform this action.", nil, false)
 	case errors.Is(err, ErrChangeRequired):

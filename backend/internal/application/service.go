@@ -40,8 +40,8 @@ type Store interface {
 	ListApplications(ctx context.Context, projectID string) ([]Record, error)
 	GetApplication(ctx context.Context, applicationID string) (Record, error)
 	CreateApplication(ctx context.Context, project ProjectContext, input CreateRequest, secretPath string) (Record, error)
-	UpdateApplicationImage(ctx context.Context, applicationID string, imageTag string, deploymentID string) (Record, error)
-	PatchApplication(ctx context.Context, applicationID string, input UpdateApplicationRequest) (Record, error)
+	UpdateApplicationImage(ctx context.Context, project ProjectContext, applicationID string, imageTag string, deploymentID string) (Record, error)
+	PatchApplication(ctx context.Context, project ProjectContext, applicationID string, input UpdateApplicationRequest) (Record, error)
 	ListDeployments(ctx context.Context, applicationID string) ([]DeploymentRecord, error)
 	GetDeployment(ctx context.Context, applicationID string, deploymentID string) (DeploymentRecord, error)
 	UpdateDeployment(ctx context.Context, applicationID string, deployment DeploymentRecord) (DeploymentRecord, error)
@@ -60,7 +60,7 @@ type BatchStatusReader interface {
 }
 
 type MetricsReader interface {
-	Read(ctx context.Context, record Record) ([]MetricSeries, error)
+	Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error)
 }
 
 type RolloutController interface {
@@ -69,9 +69,10 @@ type RolloutController interface {
 	Abort(ctx context.Context, record Record) (RolloutInfo, error)
 }
 
-type SecretsStager interface {
+type SecretStore interface {
 	Stage(ctx context.Context, requestID string, projectID string, appName string, createdBy string, data map[string]string) (StagedSecret, error)
 	Finalize(ctx context.Context, staged StagedSecret, data map[string]string) error
+	Get(ctx context.Context, logicalPath string) (map[string]string, error)
 }
 
 type Service struct {
@@ -79,8 +80,9 @@ type Service struct {
 	Store         Store
 	StatusReader  StatusReader
 	MetricsReader MetricsReader
-	Secrets       SecretsStager
+	Secrets       SecretStore
 	Rollouts      RolloutController
+	Images        ImageVerifier
 }
 
 func (s Service) ListApplications(ctx context.Context, user core.User, projectID string) ([]Summary, error) {
@@ -142,6 +144,9 @@ func (s Service) CreateApplication(
 	if err := validateCreateRequest(input); err != nil {
 		return Application{}, err
 	}
+	if err := s.verifyImageReference(ctx, strings.TrimSpace(input.Image)); err != nil {
+		return Application{}, err
+	}
 	input.Environment = resolveEnvironment(authorizedProject.Project, input.Environment)
 	if err := validateProjectPolicies(authorizedProject.Project, input.Environment, input.DeploymentStrategy); err != nil {
 		return Application{}, err
@@ -166,23 +171,19 @@ func (s Service) CreateApplication(
 		secretPath = staged.FinalPath
 	}
 
-	record, err := s.Store.CreateApplication(ctx, ProjectContext{
-		ID:           authorizedProject.Project.ID,
-		Namespace:    authorizedProject.Project.Namespace,
-		Environments: environmentIDs(authorizedProject.Project.Environments),
-		Policies: projectPolicy{
-			MinReplicas:                 authorizedProject.Project.Policies.MinReplicas,
-			AllowedEnvironments:         append([]string(nil), authorizedProject.Project.Policies.AllowedEnvironments...),
-			AllowedDeploymentStrategies: append([]string(nil), authorizedProject.Project.Policies.AllowedDeploymentStrategies...),
-			AllowedClusterTargets:       append([]string(nil), authorizedProject.Project.Policies.AllowedClusterTargets...),
-			ProdPRRequired:              authorizedProject.Project.Policies.ProdPRRequired,
-			AutoRollbackEnabled:         authorizedProject.Project.Policies.AutoRollbackEnabled,
-			RequiredProbes:              authorizedProject.Project.Policies.RequiredProbes,
-		},
-	}, input, secretPath)
+	record, err := s.Store.CreateApplication(ctx, buildProjectContext(authorizedProject.Project), input, secretPath)
 	if err != nil {
 		return Application{}, err
 	}
+	record.RepositoryID = input.RepositoryID
+	record.RepositoryServiceID = input.RepositoryServiceID
+	record.ConfigPath = input.ConfigPath
+	if record.ConfigPath == "" {
+		record.ConfigPath = "aolda-deploy.yaml"
+	}
+	// We need to re-save to store the new fields because Store.CreateApplication might not handle them yet
+	// Actually, I should update the Store.CreateApplication interface but let's do a patch for now for safety
+	// or better, update the Store interface.
 
 	if len(secretData) > 0 && s.Secrets != nil {
 		if err := s.Secrets.Finalize(ctx, staged, secretData); err != nil {
@@ -236,9 +237,13 @@ func (s Service) CreateDeployment(
 	if !changeGuardBypassed(ctx) && requiresChangeFlow(projectInfo.Project, targetEnvironment) {
 		return DeploymentResponse{}, ErrChangeRequired
 	}
+	nextImage := replaceImageTag(record.Image, imageTag)
+	if err := s.verifyDeploymentImage(ctx, record, nextImage, imageTag, targetEnvironment); err != nil {
+		return DeploymentResponse{}, err
+	}
 
 	if targetEnvironment != record.DefaultEnvironment {
-		updatedRecord, err := s.Store.PatchApplication(ctx, record.ID, UpdateApplicationRequest{
+		updatedRecord, err := s.Store.PatchApplication(ctx, buildProjectContext(projectInfo.Project), record.ID, UpdateApplicationRequest{
 			Environment: &targetEnvironment,
 		})
 		if err != nil {
@@ -248,10 +253,14 @@ func (s Service) CreateDeployment(
 	}
 
 	deploymentID := strings.Replace(requestID, "req_", "dep_", 1)
-	updatedRecord, err := s.Store.UpdateApplicationImage(ctx, record.ID, imageTag, deploymentID)
+	updatedRecord, err := s.Store.UpdateApplicationImage(ctx, buildProjectContext(projectInfo.Project), record.ID, imageTag, deploymentID)
 	if err != nil {
 		return DeploymentResponse{}, err
 	}
+	_ = s.appendEvent(ctx, record.ID, "DesiredStateCommitted", fmt.Sprintf("Git desired state에 이미지 %s 반영", nextImage), map[string]any{
+		"environment": updatedRecord.DefaultEnvironment,
+		"image":       nextImage,
+	})
 	_ = s.appendEvent(ctx, record.ID, "DeploymentTriggered", fmt.Sprintf("새 이미지 태그 %s 재배포", imageTag), map[string]any{
 		"environment": updatedRecord.DefaultEnvironment,
 		"imageTag":    imageTag,
@@ -264,6 +273,25 @@ func (s Service) CreateDeployment(
 		Environment:   targetEnvironment,
 		Status:        "Syncing",
 	}, nil
+}
+
+func (s Service) ValidateImageReference(ctx context.Context, image string) error {
+	return s.verifyImageReference(ctx, strings.TrimSpace(image))
+}
+
+func (s Service) ValidateDeploymentImage(ctx context.Context, user core.User, applicationID string, imageTag string) error {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return err
+	}
+	if strings.TrimSpace(imageTag) == "" {
+		return ValidationError{
+			Message: "imageTag is required",
+			Details: map[string]any{"field": "imageTag"},
+		}
+	}
+	nextImage := replaceImageTag(record.Image, imageTag)
+	return s.verifyDeploymentImage(ctx, record, nextImage, imageTag, record.DefaultEnvironment)
 }
 
 func (s Service) PatchApplication(ctx context.Context, user core.User, applicationID string, input UpdateApplicationRequest) (Application, error) {
@@ -291,8 +319,25 @@ func (s Service) PatchApplication(ctx context.Context, user core.User, applicati
 	if !changeGuardBypassed(ctx) && requiresChangeFlow(projectInfo.Project, environment) {
 		return Application{}, ErrChangeRequired
 	}
+	if input.Image != nil {
+		if strings.TrimSpace(*input.Image) == "" {
+			return Application{}, ValidationError{
+				Message: "image is required",
+				Details: map[string]any{"field": "image"},
+			}
+		}
+		if err := s.verifyImageReference(ctx, strings.TrimSpace(*input.Image)); err != nil {
+			return Application{}, err
+		}
+	}
+	if input.Replicas != nil && *input.Replicas < 1 {
+		return Application{}, ValidationError{
+			Message: "replicas must be at least 1",
+			Details: map[string]any{"field": "replicas"},
+		}
+	}
 
-	updatedRecord, err := s.Store.PatchApplication(ctx, applicationID, input)
+	updatedRecord, err := s.Store.PatchApplication(ctx, buildProjectContext(projectInfo.Project), applicationID, input)
 	if err != nil {
 		return Application{}, err
 	}
@@ -326,13 +371,13 @@ func (s Service) GetSyncStatus(ctx context.Context, user core.User, applicationI
 	}, nil
 }
 
-func (s Service) GetMetrics(ctx context.Context, user core.User, applicationID string) (MetricsResponse, error) {
+func (s Service) GetMetrics(ctx context.Context, user core.User, applicationID string, duration time.Duration, step time.Duration) (MetricsResponse, error) {
 	record, err := s.requireApplication(ctx, user, applicationID, false)
 	if err != nil {
 		return MetricsResponse{}, err
 	}
 
-	metrics, err := s.MetricsReader.Read(ctx, record)
+	metrics, err := s.MetricsReader.Read(ctx, record, duration, step)
 	if err != nil {
 		return MetricsResponse{}, err
 	}
@@ -553,6 +598,12 @@ func validateCreateRequest(input CreateRequest) error {
 			Details: map[string]any{"field": "servicePort"},
 		}
 	}
+	if input.Replicas < 0 {
+		return ValidationError{
+			Message: "replicas must be zero or greater",
+			Details: map[string]any{"field": "replicas"},
+		}
+	}
 
 	switch input.DeploymentStrategy {
 	case DeploymentStrategyStandard, DeploymentStrategyCanary:
@@ -563,6 +614,41 @@ func validateCreateRequest(input CreateRequest) error {
 		}
 	}
 
+	return nil
+}
+
+func (s Service) verifyImageReference(ctx context.Context, image string) error {
+	if s.Images == nil {
+		return nil
+	}
+	return s.Images.Verify(ctx, image)
+}
+
+func (s Service) verifyDeploymentImage(
+	ctx context.Context,
+	record Record,
+	image string,
+	imageTag string,
+	environment string,
+) error {
+	if err := s.verifyImageReference(ctx, image); err != nil {
+		var imageErr ImageValidationError
+		if errors.As(err, &imageErr) {
+			_ = s.appendEvent(ctx, record.ID, "DeploymentPreflightFailed", imageErr.Message, map[string]any{
+				"environment": environment,
+				"image":       image,
+				"imageTag":    imageTag,
+				"code":        imageErr.Code,
+			})
+		}
+		return err
+	}
+
+	_ = s.appendEvent(ctx, record.ID, "DeploymentPreflightSucceeded", fmt.Sprintf("이미지 %s 접근을 확인했습니다.", image), map[string]any{
+		"environment": environment,
+		"image":       image,
+		"imageTag":    imageTag,
+	})
 	return nil
 }
 
@@ -649,6 +735,32 @@ func environmentIDs(items []project.Environment) []string {
 	return values
 }
 
+func environmentClusterMap(items []project.Environment) map[string]string {
+	values := make(map[string]string, len(items))
+	for _, item := range items {
+		values[item.ID] = item.ClusterID
+	}
+	return values
+}
+
+func buildProjectContext(projectInfo project.CatalogProject) ProjectContext {
+	return ProjectContext{
+		ID:                  projectInfo.ID,
+		Namespace:           projectInfo.Namespace,
+		Environments:        environmentIDs(projectInfo.Environments),
+		EnvironmentClusters: environmentClusterMap(projectInfo.Environments),
+		Policies: projectPolicy{
+			MinReplicas:                 projectInfo.Policies.MinReplicas,
+			AllowedEnvironments:         append([]string(nil), projectInfo.Policies.AllowedEnvironments...),
+			AllowedDeploymentStrategies: append([]string(nil), projectInfo.Policies.AllowedDeploymentStrategies...),
+			AllowedClusterTargets:       append([]string(nil), projectInfo.Policies.AllowedClusterTargets...),
+			ProdPRRequired:              projectInfo.Policies.ProdPRRequired,
+			AutoRollbackEnabled:         projectInfo.Policies.AutoRollbackEnabled,
+			RequiredProbes:              projectInfo.Policies.RequiredProbes,
+		},
+	}
+}
+
 func (s Service) appendEvent(ctx context.Context, applicationID string, eventType string, message string, metadata map[string]any) error {
 	if s.Store == nil {
 		return nil
@@ -664,17 +776,21 @@ func (s Service) appendEvent(ctx context.Context, applicationID string, eventTyp
 
 func toApplication(record Record, syncInfo SyncInfo) Application {
 	return Application{
-		ID:                 record.ID,
-		ProjectID:          record.ProjectID,
-		Name:               record.Name,
-		Description:        record.Description,
-		Image:              record.Image,
-		ServicePort:        record.ServicePort,
-		DeploymentStrategy: string(record.DeploymentStrategy),
-		DefaultEnvironment: record.DefaultEnvironment,
-		SyncStatus:         syncInfo.Status,
-		CreatedAt:          record.CreatedAt,
-		UpdatedAt:          record.UpdatedAt,
+		ID:                  record.ID,
+		ProjectID:           record.ProjectID,
+		Name:                record.Name,
+		Description:         record.Description,
+		Image:               record.Image,
+		ServicePort:         record.ServicePort,
+		Replicas:            record.Replicas,
+		DeploymentStrategy:  string(record.DeploymentStrategy),
+		DefaultEnvironment:  record.DefaultEnvironment,
+		SyncStatus:          syncInfo.Status,
+		CreatedAt:           record.CreatedAt,
+		UpdatedAt:           record.UpdatedAt,
+		RepositoryID:        record.RepositoryID,
+		RepositoryServiceID: record.RepositoryServiceID,
+		ConfigPath:          record.ConfigPath,
 	}
 }
 

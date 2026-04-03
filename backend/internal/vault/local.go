@@ -72,6 +72,30 @@ func (s LocalStore) Finalize(ctx context.Context, staged application.StagedSecre
 	return nil
 }
 
+func (s LocalStore) Get(ctx context.Context, logicalPath string) (map[string]string, error) {
+	if strings.TrimSpace(s.RootDir) == "" {
+		return nil, fmt.Errorf("local vault root directory is required")
+	}
+
+	path := pathToFile(s.RootDir, logicalPath)
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read local secret: %w", err)
+	}
+
+	var document struct {
+		Data map[string]string `json:"data"`
+	}
+	if err := json.Unmarshal(data, &document); err != nil {
+		return nil, fmt.Errorf("decode local secret: %w", err)
+	}
+
+	return document.Data, nil
+}
+
 func (s LocalStore) writeDocument(path string, document map[string]any) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create local vault directory: %w", err)

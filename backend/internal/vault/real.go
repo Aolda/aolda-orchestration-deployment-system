@@ -166,6 +166,49 @@ func (s RealStore) doJSON(ctx context.Context, method string, endpoint string, b
 	return fmt.Errorf("vault API returned %s", message)
 }
 
+func (s RealStore) Get(ctx context.Context, logicalPath string) (map[string]string, error) {
+	endpoint, err := s.kvEndpoint(logicalPath, "data")
+	if err != nil {
+		return nil, err
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, fmt.Errorf("build vault request: %w", err)
+	}
+
+	req.Header.Set("X-Vault-Token", s.Token)
+	if strings.TrimSpace(s.Namespace) != "" {
+		req.Header.Set("X-Vault-Namespace", s.Namespace)
+	}
+
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("send vault request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil // Not found is not an error here, but can be handled by caller
+	}
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, fmt.Errorf("vault API returned %s: %s", resp.Status, string(body))
+	}
+
+	var payload struct {
+		Data struct {
+			Data map[string]string `json:"data"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, fmt.Errorf("decode vault response: %w", err)
+	}
+
+	return payload.Data.Data, nil
+}
+
 func (s RealStore) httpClient() *http.Client {
 	if s.Client != nil {
 		return s.Client

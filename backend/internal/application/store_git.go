@@ -8,7 +8,9 @@ import (
 )
 
 type GitManifestStore struct {
-	Repository *gitops.Repository
+	Repository                 *gitops.Repository
+	FluxKustomizationNamespace string
+	FluxSourceName             string
 }
 
 func (s GitManifestStore) ListApplications(ctx context.Context, projectID string) ([]Record, error) {
@@ -18,7 +20,7 @@ func (s GitManifestStore) ListApplications(ctx context.Context, projectID string
 
 	var records []Record
 	err := s.Repository.WithRead(ctx, func(repoDir string) error {
-		items, err := LocalManifestStore{RepoRoot: repoDir}.ListApplications(ctx, projectID)
+		items, err := s.localStore(repoDir).ListApplications(ctx, projectID)
 		if err != nil {
 			return err
 		}
@@ -39,7 +41,7 @@ func (s GitManifestStore) GetApplication(ctx context.Context, applicationID stri
 
 	var record Record
 	err := s.Repository.WithRead(ctx, func(repoDir string) error {
-		item, err := LocalManifestStore{RepoRoot: repoDir}.GetApplication(ctx, applicationID)
+		item, err := s.localStore(repoDir).GetApplication(ctx, applicationID)
 		if err != nil {
 			return err
 		}
@@ -68,7 +70,7 @@ func (s GitManifestStore) CreateApplication(
 		ctx,
 		fmt.Sprintf("feat: create application %s in %s", input.Name, project.ID),
 		func(repoDir string) error {
-			item, err := LocalManifestStore{RepoRoot: repoDir}.CreateApplication(ctx, project, input, secretPath)
+			item, err := s.localStore(repoDir).CreateApplication(ctx, project, input, secretPath)
 			if err != nil {
 				return err
 			}
@@ -85,6 +87,7 @@ func (s GitManifestStore) CreateApplication(
 
 func (s GitManifestStore) UpdateApplicationImage(
 	ctx context.Context,
+	project ProjectContext,
 	applicationID string,
 	imageTag string,
 	deploymentID string,
@@ -98,7 +101,7 @@ func (s GitManifestStore) UpdateApplicationImage(
 		ctx,
 		fmt.Sprintf("feat: redeploy %s with image tag %s", applicationID, imageTag),
 		func(repoDir string) error {
-			item, err := LocalManifestStore{RepoRoot: repoDir}.UpdateApplicationImage(ctx, applicationID, imageTag, deploymentID)
+			item, err := s.localStore(repoDir).UpdateApplicationImage(ctx, project, applicationID, imageTag, deploymentID)
 			if err != nil {
 				return err
 			}
@@ -113,14 +116,14 @@ func (s GitManifestStore) UpdateApplicationImage(
 	return record, nil
 }
 
-func (s GitManifestStore) PatchApplication(ctx context.Context, applicationID string, input UpdateApplicationRequest) (Record, error) {
+func (s GitManifestStore) PatchApplication(ctx context.Context, project ProjectContext, applicationID string, input UpdateApplicationRequest) (Record, error) {
 	if s.Repository == nil {
 		return Record{}, fmt.Errorf("git manifest repository is not configured")
 	}
 
 	var record Record
 	err := s.Repository.WithWrite(ctx, fmt.Sprintf("feat: update application %s", applicationID), func(repoDir string) error {
-		item, err := LocalManifestStore{RepoRoot: repoDir}.PatchApplication(ctx, applicationID, input)
+		item, err := s.localStore(repoDir).PatchApplication(ctx, project, applicationID, input)
 		if err != nil {
 			return err
 		}
@@ -139,7 +142,7 @@ func (s GitManifestStore) ListDeployments(ctx context.Context, applicationID str
 	}
 	var items []DeploymentRecord
 	err := s.Repository.WithRead(ctx, func(repoDir string) error {
-		deployments, err := LocalManifestStore{RepoRoot: repoDir}.ListDeployments(ctx, applicationID)
+		deployments, err := s.localStore(repoDir).ListDeployments(ctx, applicationID)
 		if err != nil {
 			return err
 		}
@@ -158,7 +161,7 @@ func (s GitManifestStore) GetDeployment(ctx context.Context, applicationID strin
 	}
 	var deployment DeploymentRecord
 	err := s.Repository.WithRead(ctx, func(repoDir string) error {
-		item, err := LocalManifestStore{RepoRoot: repoDir}.GetDeployment(ctx, applicationID, deploymentID)
+		item, err := s.localStore(repoDir).GetDeployment(ctx, applicationID, deploymentID)
 		if err != nil {
 			return err
 		}
@@ -177,7 +180,7 @@ func (s GitManifestStore) UpdateDeployment(ctx context.Context, applicationID st
 	}
 	var updated DeploymentRecord
 	err := s.Repository.WithWrite(ctx, fmt.Sprintf("feat: update deployment %s", deployment.DeploymentID), func(repoDir string) error {
-		item, err := LocalManifestStore{RepoRoot: repoDir}.UpdateDeployment(ctx, applicationID, deployment)
+		item, err := s.localStore(repoDir).UpdateDeployment(ctx, applicationID, deployment)
 		if err != nil {
 			return err
 		}
@@ -196,7 +199,7 @@ func (s GitManifestStore) GetRollbackPolicy(ctx context.Context, applicationID s
 	}
 	var policy RollbackPolicy
 	err := s.Repository.WithRead(ctx, func(repoDir string) error {
-		item, err := LocalManifestStore{RepoRoot: repoDir}.GetRollbackPolicy(ctx, applicationID)
+		item, err := s.localStore(repoDir).GetRollbackPolicy(ctx, applicationID)
 		if err != nil {
 			return err
 		}
@@ -215,7 +218,7 @@ func (s GitManifestStore) SaveRollbackPolicy(ctx context.Context, applicationID 
 	}
 	var saved RollbackPolicy
 	err := s.Repository.WithWrite(ctx, fmt.Sprintf("feat: update rollback policy for %s", applicationID), func(repoDir string) error {
-		item, err := LocalManifestStore{RepoRoot: repoDir}.SaveRollbackPolicy(ctx, applicationID, policy)
+		item, err := s.localStore(repoDir).SaveRollbackPolicy(ctx, applicationID, policy)
 		if err != nil {
 			return err
 		}
@@ -234,7 +237,7 @@ func (s GitManifestStore) ListEvents(ctx context.Context, applicationID string) 
 	}
 	var items []Event
 	err := s.Repository.WithRead(ctx, func(repoDir string) error {
-		events, err := LocalManifestStore{RepoRoot: repoDir}.ListEvents(ctx, applicationID)
+		events, err := s.localStore(repoDir).ListEvents(ctx, applicationID)
 		if err != nil {
 			return err
 		}
@@ -252,6 +255,14 @@ func (s GitManifestStore) AppendEvent(ctx context.Context, applicationID string,
 		return fmt.Errorf("git manifest repository is not configured")
 	}
 	return s.Repository.WithWrite(ctx, fmt.Sprintf("feat: append application event %s", event.ID), func(repoDir string) error {
-		return LocalManifestStore{RepoRoot: repoDir}.AppendEvent(ctx, applicationID, event)
+		return s.localStore(repoDir).AppendEvent(ctx, applicationID, event)
 	})
+}
+
+func (s GitManifestStore) localStore(repoDir string) LocalManifestStore {
+	return LocalManifestStore{
+		RepoRoot:                   repoDir,
+		FluxKustomizationNamespace: s.FluxKustomizationNamespace,
+		FluxSourceName:             s.FluxSourceName,
+	}
 }

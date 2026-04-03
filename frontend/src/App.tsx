@@ -1,1998 +1,1306 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Alert,
+  AppShell,
+  Avatar,
   Badge,
   Button,
-  Card,
   Container,
-  Divider,
+  Drawer,
   Grid,
   Group,
   Loader,
   NumberInput,
-  Paper,
-  Select,
+  PasswordInput,
+  ScrollArea,
+  SegmentedControl,
   SimpleGrid,
   Stack,
   Switch,
+  Table,
+  Tabs,
   Text,
   TextInput,
-  Textarea,
-  Title,
   UnstyledButton,
 } from '@mantine/core'
-import { api, ApiError } from './api/client'
+import { notifications } from '@mantine/notifications'
+import {
+  IconActivity,
+  IconArrowLeft,
+  IconBox,
+  IconCloudCheck,
+  IconGitBranch,
+  IconHistory,
+  IconLayoutDashboard,
+  IconLock,
+  IconPlus,
+  IconRefresh,
+  IconRocket,
+  IconShieldCheck,
+  IconSettings,
+  IconCpu,
+  IconDatabase,
+  IconBolt,
+  IconExternalLink,
+  IconUser,
+} from '@tabler/icons-react'
+import { api } from './api/client'
+import classes from './App.module.css'
+import { ApplicationWizard, type CreateFormState } from './components/ApplicationWizard'
 import type {
-  ApplicationEvent,
   ApplicationMetricsResponse,
   ApplicationSummary,
-  ChangeRecord,
-  ClusterSummary,
-  CreateChangeRequest,
   CurrentUser,
   DeploymentRecord,
   EnvironmentSummary,
+  EventListResponse,
   MetricSeries,
   ProjectPolicy,
   ProjectSummary,
+  RepositorySummary,
   RollbackPolicy,
-  SecretEntry,
   SyncStatus,
   SyncStatusResponse,
 } from './types/api'
-import classes from './App.module.css'
 
-type CreateFormState = {
-  name: string
-  description: string
-  image: string
-  servicePort: number
-  deploymentStrategy: 'Standard' | 'Canary'
-  environment: string
-  secrets: SecretEntry[]
-}
+// --- Internal Components ---
 
-type ProjectSnapshot = {
-  applications: ApplicationSummary[]
-  environments: EnvironmentSummary[]
-  policies: ProjectPolicy
-  clusters: ClusterSummary[]
-}
+const Sparkline = ({ points, color }: { points: { value: number | null }[]; color: string }) => {
+  const validPoints = points.filter((p) => p.value !== null) as { value: number }[]
+  if (validPoints.length < 2) return <div style={{ height: '100%', width: '100%', background: '#f1f5f9', borderRadius: '4px' }} />
 
-type ApplicationSnapshot = {
-  syncStatus: SyncStatusResponse
-  metrics: ApplicationMetricsResponse
-  deployments: DeploymentRecord[]
-  events: ApplicationEvent[]
-  rollbackPolicy: RollbackPolicy
-}
+  const min = Math.min(...validPoints.map((p) => p.value))
+  const max = Math.max(...validPoints.map((p) => p.value))
+  const range = max - min || 1
+  const width = 100
+  const height = 40
+  const padding = 2
 
-function buildInitialCreateForm(
-  environment = '',
-  deploymentStrategy: 'Standard' | 'Canary' = 'Standard',
-): CreateFormState {
-  return {
-    name: '',
-    description: '',
-    image: 'repo/my-app:v1',
-    servicePort: 8080,
-    deploymentStrategy,
-    environment,
-    secrets: [{ key: 'DATABASE_URL', value: '' }],
-  }
-}
-
-const emptyRollbackPolicy: RollbackPolicy = {
-  enabled: false,
-}
-
-export default function App() {
-  const [user, setUser] = useState<CurrentUser | null>(null)
-  const [projects, setProjects] = useState<ProjectSummary[]>([])
-  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
-  const [applications, setApplications] = useState<ApplicationSummary[]>([])
-  const [selectedApplicationId, setSelectedApplicationId] = useState<string | null>(
-    null,
-  )
-  const [environments, setEnvironments] = useState<EnvironmentSummary[]>([])
-  const [clusters, setClusters] = useState<ClusterSummary[]>([])
-  const [projectPolicies, setProjectPolicies] = useState<ProjectPolicy | null>(null)
-  const [policyDraft, setPolicyDraft] = useState<ProjectPolicy | null>(null)
-  const [syncStatus, setSyncStatus] = useState<SyncStatusResponse | null>(null)
-  const [metrics, setMetrics] = useState<ApplicationMetricsResponse | null>(null)
-  const [deployments, setDeployments] = useState<DeploymentRecord[]>([])
-  const [events, setEvents] = useState<ApplicationEvent[]>([])
-  const [rollbackPolicy, setRollbackPolicy] = useState<RollbackPolicy>(emptyRollbackPolicy)
-  const [activeChange, setActiveChange] = useState<ChangeRecord | null>(null)
-  const [bootstrapLoading, setBootstrapLoading] = useState(true)
-  const [projectMetaLoading, setProjectMetaLoading] = useState(false)
-  const [applicationsLoading, setApplicationsLoading] = useState(false)
-  const [detailsLoading, setDetailsLoading] = useState(false)
-  const [historyLoading, setHistoryLoading] = useState(false)
-  const [submittingCreate, setSubmittingCreate] = useState(false)
-  const [submittingDeploy, setSubmittingDeploy] = useState(false)
-  const [submittingChange, setSubmittingChange] = useState(false)
-  const [savingPolicies, setSavingPolicies] = useState(false)
-  const [savingRollback, setSavingRollback] = useState(false)
-  const [promotingDeploymentId, setPromotingDeploymentId] = useState<string | null>(null)
-  const [abortingDeploymentId, setAbortingDeploymentId] = useState<string | null>(null)
-  const [globalError, setGlobalError] = useState<string | null>(null)
-  const [createForm, setCreateForm] = useState<CreateFormState>(buildInitialCreateForm())
-  const [imageTag, setImageTag] = useState('v2')
-  const [deployEnvironment, setDeployEnvironment] = useState('')
-
-  useEffect(() => {
-    let cancelled = false
-
-    ;(async () => {
-      setBootstrapLoading(true)
-      setGlobalError(null)
-
-      try {
-        const [currentUser, projectResponse] = await Promise.all([
-          api.getCurrentUser(),
-          api.getProjects(),
-        ])
-
-        if (cancelled) {
-          return
-        }
-
-        setUser(currentUser)
-        setProjects(projectResponse.items)
-        setSelectedProjectId(projectResponse.items[0]?.id ?? null)
-      } catch (error) {
-        if (!cancelled) {
-          setGlobalError(toErrorMessage(error))
-        }
-      } finally {
-        if (!cancelled) {
-          setBootstrapLoading(false)
-        }
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [])
-
-  useEffect(() => {
-    if (!selectedProjectId) {
-      setApplications([])
-      setEnvironments([])
-      setClusters([])
-      setProjectPolicies(null)
-      setPolicyDraft(null)
-      setSelectedApplicationId(null)
-      setActiveChange(null)
-      setCreateForm(buildInitialCreateForm())
-      return
-    }
-
-    let cancelled = false
-
-    ;(async () => {
-      setApplicationsLoading(true)
-      setProjectMetaLoading(true)
-      setGlobalError(null)
-      setSelectedApplicationId(null)
-      setSyncStatus(null)
-      setMetrics(null)
-      setDeployments([])
-      setEvents([])
-      setRollbackPolicy(emptyRollbackPolicy)
-
-      try {
-        const snapshot = await loadProjectSnapshot(selectedProjectId)
-        if (cancelled) {
-          return
-        }
-
-        applyProjectSnapshot(snapshot, {
-          resetCreateForm: true,
-        })
-      } catch (error) {
-        if (!cancelled) {
-          setGlobalError(toErrorMessage(error))
-        }
-      } finally {
-        if (!cancelled) {
-          setApplicationsLoading(false)
-          setProjectMetaLoading(false)
-          setActiveChange(null)
-        }
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [selectedProjectId])
-
-  useEffect(() => {
-    if (!selectedApplicationId) {
-      setSyncStatus(null)
-      setMetrics(null)
-      setDeployments([])
-      setEvents([])
-      setRollbackPolicy(emptyRollbackPolicy)
-      setDeployEnvironment(resolveDefaultEnvironment(environments)?.id ?? '')
-      return
-    }
-
-    let cancelled = false
-
-    ;(async () => {
-      setDetailsLoading(true)
-      setHistoryLoading(true)
-      setGlobalError(null)
-
-      try {
-        const snapshot = await loadApplicationSnapshot(selectedApplicationId)
-        if (cancelled) {
-          return
-        }
-
-        setSyncStatus(snapshot.syncStatus)
-        setMetrics(snapshot.metrics)
-        setDeployments(snapshot.deployments)
-        setEvents(snapshot.events)
-        setRollbackPolicy(snapshot.rollbackPolicy)
-        setDeployEnvironment(
-          snapshot.deployments[0]?.environment ??
-            resolveDefaultEnvironment(environments)?.id ??
-            '',
-        )
-      } catch (error) {
-        if (!cancelled) {
-          setGlobalError(toErrorMessage(error))
-        }
-      } finally {
-        if (!cancelled) {
-          setDetailsLoading(false)
-          setHistoryLoading(false)
-        }
-      }
-    })()
-
-    return () => {
-      cancelled = true
-    }
-  }, [environments, selectedApplicationId])
-
-  const selectedProject = projects.find((project) => project.id === selectedProjectId) ?? null
-  const selectedApplication =
-    applications.find((application) => application.id === selectedApplicationId) ?? null
-  const canMutateSelectedProject = canMutateProject(selectedProject?.role)
-  const canAdminSelectedProject = selectedProject?.role === 'admin'
-  const selectedCreateEnvironment =
-    environments.find((environment) => environment.id === createForm.environment) ??
-    resolveDefaultEnvironment(environments) ??
-    null
-  const selectedDeployEnvironment =
-    environments.find((environment) => environment.id === deployEnvironment) ??
-    null
-  const latestDeployment = deployments[0] ?? null
-  const latestDeploymentEnvironment =
-    latestDeployment?.environment ??
-    selectedDeployEnvironment?.id ??
-    resolveDefaultEnvironment(environments)?.id ??
-    ''
-  const latestCluster =
-    clusters.find((cluster) => cluster.id === selectedDeployEnvironment?.clusterId) ?? null
-  const activeChangeAppId = inferChangeApplicationId(activeChange)
-
-  async function loadProjectSnapshot(projectId: string): Promise<ProjectSnapshot> {
-    const [applicationResponse, environmentResponse, policiesResponse, clusterResponse] =
-      await Promise.all([
-        api.getApplications(projectId),
-        api.getProjectEnvironments(projectId),
-        api.getProjectPolicies(projectId),
-        api.getClusters(),
-      ])
-
-    return {
-      applications: applicationResponse.items,
-      environments: environmentResponse.items,
-      policies: policiesResponse,
-      clusters: clusterResponse.items,
-    }
-  }
-
-  async function loadApplicationSnapshot(applicationId: string): Promise<ApplicationSnapshot> {
-    const [syncResponse, metricsResponse, deploymentResponse, eventsResponse, rollbackResponse] =
-      await Promise.all([
-        api.getSyncStatus(applicationId),
-        api.getMetrics(applicationId),
-        api.getDeployments(applicationId),
-        api.getEvents(applicationId),
-        api.getRollbackPolicy(applicationId),
-      ])
-
-    let deploymentItems = deploymentResponse.items
-    if (deploymentItems[0]) {
-      const latest = await api.getDeployment(applicationId, deploymentItems[0].deploymentId)
-      deploymentItems = [latest, ...deploymentItems.slice(1)]
-    }
-
-    return {
-      syncStatus: syncResponse,
-      metrics: metricsResponse,
-      deployments: deploymentItems,
-      events: eventsResponse.items,
-      rollbackPolicy: normalizeRollbackPolicy(rollbackResponse),
-    }
-  }
-
-  function applyProjectSnapshot(
-    snapshot: ProjectSnapshot,
-    options: { preferredApplicationId?: string | null; resetCreateForm?: boolean } = {},
-  ) {
-    const defaultEnvironmentId = resolveDefaultEnvironment(snapshot.environments)?.id ?? ''
-    const preferredStrategy = resolvePreferredStrategy(snapshot.policies)
-
-    setApplications(snapshot.applications)
-    setEnvironments(snapshot.environments)
-    setClusters(snapshot.clusters)
-    setProjectPolicies(snapshot.policies)
-    setPolicyDraft(snapshot.policies)
-    setSelectedApplicationId((current) => {
-      if (
-        options.preferredApplicationId &&
-        snapshot.applications.some((item) => item.id === options.preferredApplicationId)
-      ) {
-        return options.preferredApplicationId
-      }
-      if (
-        !options.preferredApplicationId &&
-        current &&
-        snapshot.applications.some((item) => item.id === current)
-      ) {
-        return current
-      }
-      return snapshot.applications[0]?.id ?? null
+  const pathData = validPoints
+    .map((p, i) => {
+      const x = (i / (validPoints.length - 1)) * width
+      const y = height - ((p.value - min) / range) * (height - padding * 2) - padding
+      return `${i === 0 ? 'M' : 'L'} ${x} ${y}`
     })
-    setCreateForm((current) => {
-      if (options.resetCreateForm) {
-        return buildInitialCreateForm(defaultEnvironmentId, preferredStrategy)
-      }
-
-      const nextEnvironment = snapshot.environments.some(
-        (item) => item.id === current.environment,
-      )
-        ? current.environment
-        : defaultEnvironmentId
-      const nextStrategy = snapshot.policies.allowedDeploymentStrategies.includes(
-        current.deploymentStrategy,
-      )
-        ? current.deploymentStrategy
-        : preferredStrategy
-
-      return {
-        ...current,
-        environment: nextEnvironment,
-        deploymentStrategy: nextStrategy,
-      }
-    })
-  }
-
-  function applyApplicationSnapshot(snapshot: ApplicationSnapshot) {
-    setSyncStatus(snapshot.syncStatus)
-    setMetrics(snapshot.metrics)
-    setDeployments(snapshot.deployments)
-    setEvents(snapshot.events)
-    setRollbackPolicy(snapshot.rollbackPolicy)
-    setDeployEnvironment(
-      snapshot.deployments[0]?.environment ?? resolveDefaultEnvironment(environments)?.id ?? '',
-    )
-  }
-
-  async function refreshApplicationDetails(applicationId: string) {
-    setDetailsLoading(true)
-    setHistoryLoading(true)
-
-    try {
-      const snapshot = await loadApplicationSnapshot(applicationId)
-      applyApplicationSnapshot(snapshot)
-    } finally {
-      setDetailsLoading(false)
-      setHistoryLoading(false)
-    }
-  }
-
-  async function refreshApplications(preferredApplicationId?: string | null) {
-    if (!selectedProjectId) {
-      return
-    }
-
-    setApplicationsLoading(true)
-
-    try {
-      const applicationResponse = await api.getApplications(selectedProjectId)
-      setApplications(applicationResponse.items)
-      setSelectedApplicationId((current) => {
-        if (
-          preferredApplicationId &&
-          applicationResponse.items.some((item) => item.id === preferredApplicationId)
-        ) {
-          return preferredApplicationId
-        }
-        if (
-          !preferredApplicationId &&
-          current &&
-          applicationResponse.items.some((item) => item.id === current)
-        ) {
-          return current
-        }
-        return applicationResponse.items[0]?.id ?? null
-      })
-    } finally {
-      setApplicationsLoading(false)
-    }
-  }
-
-  async function refreshPolicies() {
-    if (!selectedProjectId) {
-      return
-    }
-
-    setProjectMetaLoading(true)
-
-    try {
-      const policiesResponse = await api.getProjectPolicies(selectedProjectId)
-      setProjectPolicies(policiesResponse)
-      setPolicyDraft(policiesResponse)
-    } finally {
-      setProjectMetaLoading(false)
-    }
-  }
-
-  async function createChange(body: CreateChangeRequest) {
-    if (!selectedProjectId) {
-      return null
-    }
-
-    const change = await api.createChange(selectedProjectId, body)
-    setActiveChange(change)
-    return change
-  }
-
-  async function handleCreateApplication() {
-    if (!selectedProjectId || !canMutateSelectedProject) {
-      return
-    }
-
-    const request = {
-      name: createForm.name.trim(),
-      description: createForm.description.trim(),
-      image: createForm.image.trim(),
-      servicePort: createForm.servicePort,
-      deploymentStrategy: createForm.deploymentStrategy,
-      environment: createForm.environment,
-      secrets: createForm.secrets.filter(
-        (secret) => secret.key.trim() !== '' || secret.value.trim() !== '',
-      ),
-    } as const
-
-    setSubmittingCreate(true)
-    setGlobalError(null)
-
-    try {
-      if (selectedCreateEnvironment?.writeMode === 'pull_request') {
-        await createChange({
-          operation: 'CreateApplication',
-          ...request,
-        })
-        return
-      }
-
-      const created = await api.createApplication(selectedProjectId, request)
-      await refreshApplications(created.id)
-      await refreshApplicationDetails(created.id)
-      setCreateForm(
-        buildInitialCreateForm(
-          resolveDefaultEnvironment(environments)?.id ?? '',
-          resolvePreferredStrategy(projectPolicies),
-        ),
-      )
-    } catch (error) {
-      if (error instanceof ApiError && error.code === 'CHANGE_REVIEW_REQUIRED') {
-        try {
-          await createChange({
-            operation: 'CreateApplication',
-            ...request,
-          })
-        } catch (changeError) {
-          setGlobalError(toErrorMessage(changeError))
-        }
-      } else {
-        setGlobalError(toErrorMessage(error))
-      }
-    } finally {
-      setSubmittingCreate(false)
-    }
-  }
-
-  async function handleRedeploy() {
-    if (!selectedApplicationId || !canMutateSelectedProject) {
-      return
-    }
-
-    const environment = deployEnvironment || latestDeploymentEnvironment
-
-    setSubmittingDeploy(true)
-    setGlobalError(null)
-
-    try {
-      if (resolveEnvironmentWriteMode(environments, environment) === 'pull_request') {
-        await createChange({
-          operation: 'Redeploy',
-          applicationId: selectedApplicationId,
-          imageTag: imageTag.trim(),
-          environment,
-        })
-        return
-      }
-
-      await api.createDeployment(selectedApplicationId, imageTag.trim(), environment)
-      await Promise.all([
-        refreshApplications(selectedApplicationId),
-        refreshApplicationDetails(selectedApplicationId),
-      ])
-    } catch (error) {
-      if (error instanceof ApiError && error.code === 'CHANGE_REVIEW_REQUIRED') {
-        try {
-          await createChange({
-            operation: 'Redeploy',
-            applicationId: selectedApplicationId,
-            imageTag: imageTag.trim(),
-            environment,
-          })
-        } catch (changeError) {
-          setGlobalError(toErrorMessage(changeError))
-        }
-      } else {
-        setGlobalError(toErrorMessage(error))
-      }
-    } finally {
-      setSubmittingDeploy(false)
-    }
-  }
-
-  async function handleSavePolicies() {
-    if (!selectedProjectId || !policyDraft || !canAdminSelectedProject) {
-      return
-    }
-
-    setSavingPolicies(true)
-    setGlobalError(null)
-
-    try {
-      const updated = await api.updateProjectPolicies(selectedProjectId, policyDraft)
-      setProjectPolicies(updated)
-      setPolicyDraft(updated)
-    } catch (error) {
-      setGlobalError(toErrorMessage(error))
-    } finally {
-      setSavingPolicies(false)
-    }
-  }
-
-  async function handleCreatePolicyChange() {
-    if (!policyDraft || !canAdminSelectedProject) {
-      return
-    }
-
-    setSubmittingChange(true)
-    setGlobalError(null)
-
-    try {
-      await createChange({
-        operation: 'UpdatePolicies',
-        environment: resolvePreferredChangeEnvironment(environments),
-        policies: policyDraft,
-      })
-    } catch (error) {
-      setGlobalError(toErrorMessage(error))
-    } finally {
-      setSubmittingChange(false)
-    }
-  }
-
-  async function handleChangeAction(action: 'submit' | 'approve' | 'merge') {
-    if (!activeChange) {
-      return
-    }
-
-    setSubmittingChange(true)
-    setGlobalError(null)
-
-    try {
-      let updated: ChangeRecord
-
-      switch (action) {
-        case 'submit':
-          updated = await api.submitChange(activeChange.id)
-          break
-        case 'approve':
-          updated = await api.approveChange(activeChange.id)
-          break
-        default:
-          updated = await api.mergeChange(activeChange.id)
-          break
-      }
-
-      setActiveChange(updated)
-
-      if (action === 'merge') {
-        if (updated.operation === 'UpdatePolicies') {
-          await refreshPolicies()
-          return
-        }
-
-        const nextApplicationId = inferChangeApplicationId(updated)
-        await refreshApplications(nextApplicationId)
-        if (nextApplicationId) {
-          setSelectedApplicationId(nextApplicationId)
-          await refreshApplicationDetails(nextApplicationId)
-        } else if (selectedApplicationId) {
-          await refreshApplicationDetails(selectedApplicationId)
-        }
-      }
-    } catch (error) {
-      setGlobalError(toErrorMessage(error))
-    } finally {
-      setSubmittingChange(false)
-    }
-  }
-
-  async function handlePromoteDeployment() {
-    if (!selectedApplicationId || !latestDeployment || !canMutateSelectedProject) {
-      return
-    }
-
-    setPromotingDeploymentId(latestDeployment.deploymentId)
-    setGlobalError(null)
-
-    try {
-      await api.promoteDeployment(selectedApplicationId, latestDeployment.deploymentId)
-      await refreshApplicationDetails(selectedApplicationId)
-      await refreshApplications(selectedApplicationId)
-    } catch (error) {
-      setGlobalError(toErrorMessage(error))
-    } finally {
-      setPromotingDeploymentId(null)
-    }
-  }
-
-  async function handleAbortDeployment() {
-    if (!selectedApplicationId || !latestDeployment || !canMutateSelectedProject) {
-      return
-    }
-
-    setAbortingDeploymentId(latestDeployment.deploymentId)
-    setGlobalError(null)
-
-    try {
-      await api.abortDeployment(selectedApplicationId, latestDeployment.deploymentId)
-      await refreshApplicationDetails(selectedApplicationId)
-      await refreshApplications(selectedApplicationId)
-    } catch (error) {
-      setGlobalError(toErrorMessage(error))
-    } finally {
-      setAbortingDeploymentId(null)
-    }
-  }
-
-  async function handleSaveRollbackPolicy() {
-    if (!selectedApplicationId || !canMutateSelectedProject) {
-      return
-    }
-
-    setSavingRollback(true)
-    setGlobalError(null)
-
-    try {
-      const saved = await api.saveRollbackPolicy(selectedApplicationId, rollbackPolicy)
-      setRollbackPolicy(normalizeRollbackPolicy(saved))
-      await refreshApplicationDetails(selectedApplicationId)
-    } catch (error) {
-      setGlobalError(toErrorMessage(error))
-    } finally {
-      setSavingRollback(false)
-    }
-  }
-
-  function updateSecret(index: number, field: keyof SecretEntry, value: string) {
-    setCreateForm((current) => ({
-      ...current,
-      secrets: current.secrets.map((secret, itemIndex) =>
-        itemIndex === index ? { ...secret, [field]: value } : secret,
-      ),
-    }))
-  }
-
-  function addSecretRow() {
-    setCreateForm((current) => ({
-      ...current,
-      secrets: [...current.secrets, { key: '', value: '' }],
-    }))
-  }
-
-  function removeSecretRow(index: number) {
-    setCreateForm((current) => ({
-      ...current,
-      secrets: current.secrets.filter((_, itemIndex) => itemIndex !== index),
-    }))
-  }
-
-  function updatePolicyDraft(
-    field: keyof ProjectPolicy,
-    value: boolean | number | string[] | Array<'Standard' | 'Canary'>,
-  ) {
-    setPolicyDraft((current) => {
-      if (!current) {
-        return current
-      }
-      return {
-        ...current,
-        [field]: value,
-      }
-    })
-  }
-
-  if (bootstrapLoading) {
-    return (
-      <div className={classes.loadingShell}>
-        <Loader color="lagoon.5" size="lg" />
-      </div>
-    )
-  }
+    .join(' ')
 
   return (
-    <div className={classes.page}>
-      <Container size="xl" className={classes.container}>
-        <Stack gap="xl">
-          <Paper className={classes.masthead} radius="xl" shadow="sm">
-            <div className={classes.mastheadGrid}>
-              <div className={classes.mastheadCopy}>
-                <Text className={classes.kicker}>AODS Phase 4 Portal</Text>
-                <Title order={1} className={classes.heading}>
-                  Git-backed rollout control with review flows and guardrails
-                </Title>
-                <Text className={classes.lead}>
-                  Projects stay sourced from <code>platform/projects.yaml</code>, clusters from{' '}
-                  <code>platform/clusters.yaml</code>, rollout state stays GitOps-first, and
-                  operating risk is constrained through policies, canary control, and change
-                  review gates.
-                </Text>
-                <Group gap="sm" className={classes.userGroup}>
-                  <Badge size="lg" radius="sm" color="lagoon.6" variant="filled">
-                    {user?.displayName || user?.username}
-                  </Badge>
-                  <Badge size="lg" radius="sm" color="sand.6" variant="light">
-                    {user?.groups.length ?? 0} groups
-                  </Badge>
-                </Group>
-              </div>
+    <svg viewBox={`0 0 ${width} ${height}`} style={{ width: '100%', height: '100%', display: 'block' }}>
+      <path d={pathData} fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  )
+}
 
-              <SimpleGrid cols={{ base: 1, sm: 4 }} spacing="md">
-                <StatCard label="Accessible Projects" value={String(projects.length)} />
-                <StatCard label="Clusters In Catalog" value={String(clusters.length)} />
-                <StatCard label="Applications In View" value={String(applications.length)} />
-                <StatCard label="Selected Sync Status" value={syncStatus?.status ?? 'Unknown'} />
-              </SimpleGrid>
-            </div>
-          </Paper>
+const SyncStatusBadge = ({ status }: { status: SyncStatus }) => {
+  const config = {
+    Synced: { color: 'green', label: '정상', icon: <IconCloudCheck size={14} /> },
+    Syncing: { color: 'yellow', label: '동기화 중', icon: <IconRefresh size={14} className={classes.liveIndicator} /> },
+    Degraded: { color: 'red', label: '문제 발생', icon: <IconBox size={14} /> },
+    Unknown: { color: 'gray', label: '확인 불가', icon: <IconBox size={14} /> },
+  }
+  const { color, label, icon } = config[status] || config.Unknown
+  return (
+    <Badge variant="light" color={color} leftSection={icon} radius="sm">
+      {label}
+    </Badge>
+  )
+}
 
-          {globalError ? (
-            <Alert color="red" variant="light" title="Platform response">
-              {globalError}
-            </Alert>
-          ) : null}
+const MetricCard = ({ label, value, unit, points, color, active, onClick }: { label: string; value: string; unit: string; points?: { value: number | null }[]; color: string; active?: boolean; onClick?: () => void }) => (
+  <div 
+    className={`${classes.metricCard} ${active ? classes.activeMetricCard : ''}`} 
+    onClick={onClick}
+    style={{ cursor: onClick ? 'pointer' : 'default' }}
+  >
+    <Text className={classes.metricLabel}>{label}</Text>
+    <Group align="baseline" gap={4}>
+      <Text className={classes.metricValue}>{value}</Text>
+      {unit && <Text size="xs" c="dimmed" fw={700}>{unit}</Text>}
+    </Group>
+    {points && (
+      <div className={classes.sparklineWrapper}>
+        <Sparkline points={points} color={color} />
+      </div>
+    )}
+  </div>
+)
 
-          <section>
-            <Group justify="space-between" align="end" mb="md">
-              <div>
-                <Text className={classes.sectionEyebrow}>Project Catalog</Text>
-                <Title order={2} className={classes.sectionTitle}>
-                  Authorized projects from the GitHub-backed control catalog
-                </Title>
-              </div>
-              <Text className={classes.sectionMeta}>
-                Default branch remains the control plane source of truth.
-              </Text>
-            </Group>
+const MetricDataTable = ({ series }: { series: { key: string; label: string; unit: string; points: { timestamp: string; value: number | null }[] } | undefined }) => {
+  if (!series || !series.points) return null
 
-            <SimpleGrid cols={{ base: 1, md: 3 }} spacing="md">
-              {projects.map((project) => (
-                <UnstyledButton
-                  key={project.id}
-                  onClick={() => setSelectedProjectId(project.id)}
-                  className={classes.buttonReset}
-                >
-                  <Card
-                    radius="lg"
-                    className={
-                      project.id === selectedProjectId
-                        ? `${classes.selectCard} ${classes.selectCardActive}`
-                        : classes.selectCard
-                    }
-                  >
-                    <Group justify="space-between" align="start" mb="xs">
-                      <div>
-                        <Text className={classes.cardTitle}>{project.name}</Text>
-                        <Text className={classes.cardMeta}>{project.namespace}</Text>
-                      </div>
-                      <Badge color={roleColor(project.role)} variant="light" radius="sm">
-                        {project.role}
-                      </Badge>
-                    </Group>
-                    <Text className={classes.cardBody}>{project.description}</Text>
-                  </Card>
-                </UnstyledButton>
-              ))}
-            </SimpleGrid>
-          </section>
+  const reversedPoints = [...series.points].reverse().filter(p => p.value !== null) as { timestamp: string; value: number }[]
 
-          {selectedProject ? (
-            <section>
-              <Group justify="space-between" align="end" mb="md">
-                <div>
-                  <Text className={classes.sectionEyebrow}>Project Guardrails</Text>
-                  <Title order={2} className={classes.sectionTitle}>
-                    Environments, clusters, and policy controls for {selectedProject.name}
-                  </Title>
-                </div>
-                {projectMetaLoading ? <Loader size="sm" color="lagoon.5" /> : null}
-              </Group>
-
-              <Grid gutter="xl">
-                <Grid.Col span={{ base: 12, lg: 4 }}>
-                  <Paper className={classes.formPanel} radius="lg">
-                    <Stack gap="md">
-                      <div>
-                        <Text className={classes.sectionEyebrow}>Environments</Text>
-                        <Text className={classes.sectionMeta}>
-                          Write mode and cluster targets per rollout lane.
-                        </Text>
-                      </div>
-                      <Stack gap="sm">
-                        {environments.map((environment) => {
-                          const cluster = clusters.find(
-                            (item) => item.id === environment.clusterId,
-                          )
-                          return (
-                            <Card key={environment.id} radius="lg" className={classes.detailCard}>
-                              <Group justify="space-between" align="start" mb="xs">
-                                <div>
-                                  <Text className={classes.cardTitle}>{environment.name}</Text>
-                                  <Text className={classes.cardMeta}>
-                                    {environment.id} · {cluster?.name ?? environment.clusterId}
-                                  </Text>
-                                </div>
-                                <Group gap="xs">
-                                  {environment.default ? (
-                                    <Badge color="lagoon.6" variant="filled" radius="sm">
-                                      default
-                                    </Badge>
-                                  ) : null}
-                                  <Badge
-                                    color={writeModeColor(environment.writeMode)}
-                                    variant="light"
-                                    radius="sm"
-                                  >
-                                    {environment.writeMode}
-                                  </Badge>
-                                </Group>
-                              </Group>
-                              <Text className={classes.cardBody}>
-                                Cluster target: {environment.clusterId}
-                              </Text>
-                            </Card>
-                          )
-                        })}
-                      </Stack>
-
-                      <Divider color="rgba(36, 57, 55, 0.12)" />
-
-                      <div>
-                        <Text className={classes.sectionEyebrow}>Cluster Catalog</Text>
-                        <Group gap="xs" mt="sm" className={classes.wrapRow}>
-                          {clusters.map((cluster) => (
-                            <Badge
-                              key={cluster.id}
-                              color={cluster.default ? 'lagoon.6' : 'gray.6'}
-                              variant={cluster.default ? 'filled' : 'light'}
-                              radius="sm"
-                            >
-                              {cluster.name}
-                            </Badge>
-                          ))}
-                        </Group>
-                      </div>
-                    </Stack>
-                  </Paper>
-                </Grid.Col>
-
-                <Grid.Col span={{ base: 12, lg: 8 }}>
-                  <Paper className={classes.formPanel} radius="lg">
-                    <Stack gap="md">
-                      <div>
-                        <Text className={classes.sectionEyebrow}>Policy Controls</Text>
-                        <Text className={classes.sectionMeta}>
-                          Project defaults constrain what future changes may do.
-                        </Text>
-                      </div>
-
-                      {policyDraft ? (
-                        <>
-                          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-                            <NumberInput
-                              label="Minimum replicas"
-                              min={1}
-                              value={policyDraft.minReplicas}
-                              disabled={!canAdminSelectedProject}
-                              onChange={(value) =>
-                                updatePolicyDraft('minReplicas', Math.max(Number(value) || 1, 1))
-                              }
-                            />
-                            <TextInput
-                              label="Allowed environments"
-                              value={stringifyList(policyDraft.allowedEnvironments)}
-                              disabled={!canAdminSelectedProject}
-                              onChange={(event) =>
-                                updatePolicyDraft(
-                                  'allowedEnvironments',
-                                  parseCommaList(event.currentTarget.value),
-                                )
-                              }
-                            />
-                            <TextInput
-                              label="Allowed cluster targets"
-                              value={stringifyList(policyDraft.allowedClusterTargets)}
-                              disabled={!canAdminSelectedProject}
-                              onChange={(event) =>
-                                updatePolicyDraft(
-                                  'allowedClusterTargets',
-                                  parseCommaList(event.currentTarget.value),
-                                )
-                              }
-                            />
-                            <TextInput
-                              label="Allowed strategies"
-                              value={stringifyList(policyDraft.allowedDeploymentStrategies)}
-                              disabled={!canAdminSelectedProject}
-                              onChange={(event) =>
-                                updatePolicyDraft(
-                                  'allowedDeploymentStrategies',
-                                  parseCommaList(event.currentTarget.value).filter(isStrategy),
-                                )
-                              }
-                            />
-                          </SimpleGrid>
-
-                          <SimpleGrid cols={{ base: 1, md: 3 }} spacing="md">
-                            <Switch
-                              checked={policyDraft.requiredProbes}
-                              disabled={!canAdminSelectedProject}
-                              label="Require probes"
-                              onChange={(event) =>
-                                updatePolicyDraft('requiredProbes', event.currentTarget.checked)
-                              }
-                            />
-                            <Switch
-                              checked={policyDraft.prodPRRequired}
-                              disabled={!canAdminSelectedProject}
-                              label="Require PR for prod"
-                              onChange={(event) =>
-                                updatePolicyDraft('prodPRRequired', event.currentTarget.checked)
-                              }
-                            />
-                            <Switch
-                              checked={policyDraft.autoRollbackEnabled}
-                              disabled={!canAdminSelectedProject}
-                              label="Enable auto rollback"
-                              onChange={(event) =>
-                                updatePolicyDraft(
-                                  'autoRollbackEnabled',
-                                  event.currentTarget.checked,
-                                )
-                              }
-                            />
-                          </SimpleGrid>
-
-                          {!canAdminSelectedProject ? (
-                            <Alert color="sand" variant="light" title="Admin role required">
-                              Only admins can change project policies. Deployers and viewers can
-                              still inspect the current guardrails.
-                            </Alert>
-                          ) : null}
-
-                          <Group className={classes.actionRow}>
-                            <Button
-                              color="lagoon.6"
-                              radius="md"
-                              loading={savingPolicies}
-                              disabled={!canAdminSelectedProject}
-                              onClick={handleSavePolicies}
-                            >
-                              Save policy directly
-                            </Button>
-                            <Button
-                              color="sand.6"
-                              variant="light"
-                              radius="md"
-                              loading={submittingChange}
-                              disabled={!canAdminSelectedProject}
-                              onClick={handleCreatePolicyChange}
-                            >
-                              Open policy change
-                            </Button>
-                          </Group>
-                        </>
-                      ) : (
-                        <Text className={classes.emptyBody}>No policy data available yet.</Text>
-                      )}
-                    </Stack>
-                  </Paper>
-                </Grid.Col>
-              </Grid>
-            </section>
-          ) : null}
-
-          <Divider color="rgba(36, 57, 55, 0.12)" />
-
-          <Grid gutter="xl">
-            <Grid.Col span={{ base: 12, lg: 5 }}>
-              <Stack gap="lg">
-                <section>
-                  <Group justify="space-between" align="end" mb="md">
-                    <div>
-                      <Text className={classes.sectionEyebrow}>Applications</Text>
-                      <Title order={2} className={classes.sectionTitle}>
-                        {selectedProject?.name ?? 'Select a project'}
-                      </Title>
-                    </div>
-                    {applicationsLoading ? <Loader size="sm" color="lagoon.5" /> : null}
-                  </Group>
-
-                  <Stack gap="sm">
-                    {applications.map((application) => (
-                      <UnstyledButton
-                        key={application.id}
-                        onClick={() => setSelectedApplicationId(application.id)}
-                        className={classes.buttonReset}
-                      >
-                        <Card
-                          radius="lg"
-                          className={
-                            application.id === selectedApplicationId
-                              ? `${classes.selectCard} ${classes.selectCardActive}`
-                              : classes.selectCard
-                          }
-                        >
-                          <Group justify="space-between" align="start" mb="xs">
-                            <div>
-                              <Text className={classes.cardTitle}>{application.name}</Text>
-                              <Text className={classes.cardMeta}>{application.image}</Text>
-                            </div>
-                            <Badge
-                              color={syncStatusColor(application.syncStatus)}
-                              variant="light"
-                              radius="sm"
-                            >
-                              {application.syncStatus}
-                            </Badge>
-                          </Group>
-                          <Group gap="xs" className={classes.wrapRow}>
-                            <Badge color="lagoon.6" variant="light" radius="sm">
-                              {application.deploymentStrategy}
-                            </Badge>
-                            {activeChangeAppId === application.id && activeChange ? (
-                              <Badge
-                                color={changeStatusColor(activeChange.status)}
-                                variant="light"
-                                radius="sm"
-                              >
-                                change {activeChange.status}
-                              </Badge>
-                            ) : null}
-                          </Group>
-                        </Card>
-                      </UnstyledButton>
-                    ))}
-
-                    {!applicationsLoading && applications.length === 0 ? (
-                      <Paper className={classes.emptyState} radius="lg">
-                        <Text className={classes.emptyHeadline}>No apps yet</Text>
-                        <Text className={classes.emptyBody}>
-                          Create the first standard or canary deployment to populate the GitOps
-                          tree and deployment history.
-                        </Text>
-                      </Paper>
-                    ) : null}
-                  </Stack>
-                </section>
-
-                <section>
-                  <Text className={classes.sectionEyebrow}>Create Application</Text>
-                  <Title order={3} className={classes.sectionTitle}>
-                    Direct deploy or open a reviewed change
-                  </Title>
-
-                  <Paper className={classes.formPanel} radius="lg">
-                    <Stack gap="md">
-                      {!canMutateSelectedProject && selectedProject ? (
-                        <Alert color="sand" variant="light" title="Read-only project">
-                          {selectedProject.role} role users can inspect apps, but only deployers
-                          and admins can create or redeploy them.
-                        </Alert>
-                      ) : null}
-
-                      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-                        <TextInput
-                          label="App name"
-                          placeholder="my-app"
-                          value={createForm.name}
-                          disabled={!canMutateSelectedProject}
-                          onChange={(event) => {
-                            const value = event.currentTarget.value
-                            setCreateForm((current) => ({
-                              ...current,
-                              name: value,
-                            }))
-                          }}
-                        />
-                        <Select
-                          label="Environment"
-                          data={environments.map((environment) => ({
-                            value: environment.id,
-                            label: `${environment.name} (${environment.writeMode})`,
-                          }))}
-                          value={createForm.environment}
-                          disabled={!canMutateSelectedProject}
-                          onChange={(value) =>
-                            setCreateForm((current) => ({
-                              ...current,
-                              environment: value ?? '',
-                            }))
-                          }
-                        />
-                      </SimpleGrid>
-
-                      <Textarea
-                        label="Description"
-                        placeholder="Internal service for batch processing"
-                        autosize
-                        minRows={2}
-                        value={createForm.description}
-                        disabled={!canMutateSelectedProject}
-                        onChange={(event) => {
-                          const value = event.currentTarget.value
-                          setCreateForm((current) => ({
-                            ...current,
-                            description: value,
-                          }))
-                        }}
-                      />
-
-                      <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-                        <TextInput
-                          label="Container image"
-                          placeholder="repo/my-app:v1"
-                          value={createForm.image}
-                          disabled={!canMutateSelectedProject}
-                          onChange={(event) => {
-                            const value = event.currentTarget.value
-                            setCreateForm((current) => ({
-                              ...current,
-                              image: value,
-                            }))
-                          }}
-                        />
-                        <Select
-                          label="Deployment strategy"
-                          data={allowedStrategies(projectPolicies).map((strategy) => ({
-                            value: strategy,
-                            label: strategy,
-                          }))}
-                          value={createForm.deploymentStrategy}
-                          disabled={!canMutateSelectedProject}
-                          onChange={(value) => {
-                            if (!value || !isStrategy(value)) {
-                              return
-                            }
-                            setCreateForm((current) => ({
-                              ...current,
-                              deploymentStrategy: value,
-                            }))
-                          }}
-                        />
-                      </SimpleGrid>
-
-                      <NumberInput
-                        label="Service port"
-                        min={1}
-                        max={65535}
-                        value={createForm.servicePort}
-                        disabled={!canMutateSelectedProject}
-                        onChange={(value) =>
-                          setCreateForm((current) => ({
-                            ...current,
-                            servicePort: Number(value) || 0,
-                          }))
-                        }
-                      />
-
-                      <div>
-                        <Group justify="space-between" mb="xs">
-                          <Text className={classes.secretLabel}>Secrets</Text>
-                          <Button
-                            size="xs"
-                            variant="subtle"
-                            color="lagoon.6"
-                            disabled={!canMutateSelectedProject}
-                            onClick={addSecretRow}
-                          >
-                            Add secret
-                          </Button>
-                        </Group>
-
-                        <Stack gap="sm">
-                          {createForm.secrets.map((secret, index) => (
-                            <div key={`${index}-${secret.key}`} className={classes.secretRow}>
-                              <TextInput
-                                label="Key"
-                                placeholder="DATABASE_URL"
-                                value={secret.key}
-                                disabled={!canMutateSelectedProject}
-                                onChange={(event) =>
-                                  updateSecret(index, 'key', event.currentTarget.value)
-                                }
-                              />
-                              <Textarea
-                                label="Value"
-                                placeholder="postgres://..."
-                                autosize
-                                minRows={1}
-                                value={secret.value}
-                                disabled={!canMutateSelectedProject}
-                                onChange={(event) =>
-                                  updateSecret(index, 'value', event.currentTarget.value)
-                                }
-                              />
-                              <Button
-                                variant="light"
-                                color="red"
-                                onClick={() => removeSecretRow(index)}
-                                disabled={
-                                  !canMutateSelectedProject ||
-                                  createForm.secrets.length === 1
-                                }
-                              >
-                                Remove
-                              </Button>
-                            </div>
-                          ))}
-                        </Stack>
-                      </div>
-
-                      {selectedCreateEnvironment ? (
-                        <Alert
-                          color={
-                            selectedCreateEnvironment.writeMode === 'pull_request'
-                              ? 'sand'
-                              : 'lagoon'
-                          }
-                          variant="light"
-                          title={
-                            selectedCreateEnvironment.writeMode === 'pull_request'
-                              ? 'Reviewed change required'
-                              : 'Direct push allowed'
-                          }
-                        >
-                          {selectedCreateEnvironment.name} targets{' '}
-                          {selectedCreateEnvironment.clusterId} and uses{' '}
-                          {selectedCreateEnvironment.writeMode}.
-                        </Alert>
-                      ) : null}
-
-                      <Button
-                        color="lagoon.6"
-                        radius="md"
-                        loading={submittingCreate}
-                        disabled={!selectedProjectId || !canMutateSelectedProject}
-                        onClick={handleCreateApplication}
-                      >
-                        {selectedCreateEnvironment?.writeMode === 'pull_request'
-                          ? 'Open application change'
-                          : 'Create application'}
-                      </Button>
-                    </Stack>
-                  </Paper>
-                </section>
-
-                <section>
-                  <Text className={classes.sectionEyebrow}>Change Flow</Text>
-                  <Title order={3} className={classes.sectionTitle}>
-                    Draft, approve, and merge a selected change
-                  </Title>
-
-                  <Paper className={classes.formPanel} radius="lg">
-                    {activeChange ? (
-                      <Stack gap="md">
-                        <Group justify="space-between" align="start">
-                          <div>
-                            <Text className={classes.cardTitle}>{activeChange.summary}</Text>
-                            <Text className={classes.cardMeta}>
-                              {activeChange.operation} · {activeChange.environment}
-                            </Text>
-                          </div>
-                          <Badge
-                            color={changeStatusColor(activeChange.status)}
-                            variant="filled"
-                            radius="sm"
-                          >
-                            {activeChange.status}
-                          </Badge>
-                        </Group>
-
-                        <Group gap="xs" className={classes.wrapRow}>
-                          <Badge
-                            color={writeModeColor(activeChange.writeMode)}
-                            variant="light"
-                            radius="sm"
-                          >
-                            {activeChange.writeMode}
-                          </Badge>
-                          <Badge color="gray.6" variant="light" radius="sm">
-                            created by {activeChange.createdBy}
-                          </Badge>
-                          {activeChange.approvedBy ? (
-                            <Badge color="lagoon.6" variant="light" radius="sm">
-                              approved by {activeChange.approvedBy}
-                            </Badge>
-                          ) : null}
-                          {activeChange.mergedBy ? (
-                            <Badge color="sand.6" variant="light" radius="sm">
-                              merged by {activeChange.mergedBy}
-                            </Badge>
-                          ) : null}
-                        </Group>
-
-                        <div>
-                          <Text className={classes.detailLabel}>Diff preview</Text>
-                          <Stack gap="xs" mt="sm">
-                            {activeChange.diffPreview.map((line) => (
-                              <Text key={line} className={classes.monoLine}>
-                                {line}
-                              </Text>
-                            ))}
-                          </Stack>
-                        </div>
-
-                        <Group className={classes.actionRow}>
-                          {activeChange.status === 'Draft' ? (
-                            <Button
-                              color="sand.6"
-                              variant="light"
-                              radius="md"
-                              loading={submittingChange}
-                              disabled={!canMutateSelectedProject}
-                              onClick={() => handleChangeAction('submit')}
-                            >
-                              Submit change
-                            </Button>
-                          ) : null}
-
-                          {activeChange.status === 'Submitted' ? (
-                            <Button
-                              color="lagoon.6"
-                              radius="md"
-                              loading={submittingChange}
-                              disabled={!canAdminSelectedProject}
-                              onClick={() => handleChangeAction('approve')}
-                            >
-                              Approve change
-                            </Button>
-                          ) : null}
-
-                          {activeChange.status !== 'Merged' &&
-                          (activeChange.writeMode === 'direct' ||
-                            activeChange.status === 'Approved') ? (
-                            <Button
-                              color="coral.6"
-                              variant="light"
-                              radius="md"
-                              loading={submittingChange}
-                              disabled={!canMutateSelectedProject}
-                              onClick={() => handleChangeAction('merge')}
-                            >
-                              Merge change
-                            </Button>
-                          ) : null}
-                        </Group>
-                      </Stack>
-                    ) : (
-                      <div className={classes.emptyState}>
-                        <Text className={classes.emptyHeadline}>No active change selected</Text>
-                        <Text className={classes.emptyBody}>
-                          Open a change from application creation, redeploy, or policy editing to
-                          drive the reviewed flow from here.
-                        </Text>
-                      </div>
-                    )}
-                  </Paper>
-                </section>
-              </Stack>
-            </Grid.Col>
-
-            <Grid.Col span={{ base: 12, lg: 7 }}>
-              <Stack gap="lg">
-                <section>
-                  <Text className={classes.sectionEyebrow}>Application Detail</Text>
-                  <Title order={2} className={classes.sectionTitle}>
-                    {selectedApplication?.name ?? 'Pick an application'}
-                  </Title>
-
-                  <Paper className={classes.detailPanel} radius="lg">
-                    {selectedApplication ? (
-                      <Stack gap="lg">
-                        <Group justify="space-between" align="start">
-                          <div>
-                            <Text className={classes.cardTitle}>{selectedApplication.name}</Text>
-                            <Text className={classes.cardMeta}>{selectedApplication.image}</Text>
-                          </div>
-                          <Badge
-                            color={syncStatusColor(syncStatus?.status ?? selectedApplication.syncStatus)}
-                            variant="filled"
-                            radius="sm"
-                          >
-                            {syncStatus?.status ?? selectedApplication.syncStatus}
-                          </Badge>
-                        </Group>
-
-                        <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="md">
-                          <Card radius="lg" className={classes.detailCard}>
-                            <Text className={classes.detailLabel}>Deployment Strategy</Text>
-                            <Text className={classes.detailValue}>
-                              {selectedApplication.deploymentStrategy}
-                            </Text>
-                          </Card>
-                          <Card radius="lg" className={classes.detailCard}>
-                            <Text className={classes.detailLabel}>Current Environment</Text>
-                            <Text className={classes.detailValue}>
-                              {latestDeploymentEnvironment || 'n/a'}
-                            </Text>
-                          </Card>
-                          <Card radius="lg" className={classes.detailCard}>
-                            <Text className={classes.detailLabel}>Latest Cluster</Text>
-                            <Text className={classes.detailValue}>
-                              {latestCluster?.name ?? latestCluster?.id ?? 'n/a'}
-                            </Text>
-                          </Card>
-                        </SimpleGrid>
-
-                        <Card radius="lg" className={classes.detailCard}>
-                          <Text className={classes.detailLabel}>Latest Sync Message</Text>
-                          <Text className={classes.detailBody}>
-                            {syncStatus?.message ?? 'Waiting for sync insight'}
-                          </Text>
-                        </Card>
-
-                        <div>
-                          <Group justify="space-between" align="center" mb="sm">
-                            <Title order={3} className={classes.sectionTitle}>
-                              Metrics Snapshot
-                            </Title>
-                            {detailsLoading ? <Loader size="sm" color="lagoon.5" /> : null}
-                          </Group>
-                          {metrics?.metrics.length ? (
-                            <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                              {metrics.metrics.map((series) => (
-                                <MetricCard key={series.key} series={series} />
-                              ))}
-                            </SimpleGrid>
-                          ) : (
-                            <Paper className={classes.emptyState} radius="lg">
-                              <Text className={classes.emptyHeadline}>No metric series yet</Text>
-                              <Text className={classes.emptyBody}>
-                                Prometheus is reachable, but this application does not have scrape
-                                data yet.
-                              </Text>
-                            </Paper>
-                          )}
-                        </div>
-
-                        <Divider color="rgba(36, 57, 55, 0.12)" />
-
-                        <div>
-                          <Text className={classes.sectionEyebrow}>Deployment Control</Text>
-                          <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md" mb="md">
-                            <Select
-                              label="Target environment"
-                              data={environments.map((environment) => ({
-                                value: environment.id,
-                                label: `${environment.name} (${environment.writeMode})`,
-                              }))}
-                              value={deployEnvironment}
-                              disabled={!canMutateSelectedProject}
-                              onChange={(value) => setDeployEnvironment(value ?? '')}
-                            />
-                            <TextInput
-                              label="New image tag"
-                              placeholder="v2"
-                              value={imageTag}
-                              disabled={!canMutateSelectedProject}
-                              onChange={(event) => setImageTag(event.currentTarget.value)}
-                            />
-                          </SimpleGrid>
-                          <Group className={classes.actionRow}>
-                            <Button
-                              color="lagoon.6"
-                              radius="md"
-                              loading={submittingDeploy}
-                              disabled={!canMutateSelectedProject || !selectedApplication}
-                              onClick={handleRedeploy}
-                            >
-                              {selectedDeployEnvironment?.writeMode === 'pull_request'
-                                ? 'Open redeploy change'
-                                : 'Trigger redeploy'}
-                            </Button>
-                            {selectedDeployEnvironment ? (
-                              <Badge
-                                color={writeModeColor(selectedDeployEnvironment.writeMode)}
-                                variant="light"
-                                radius="sm"
-                              >
-                                {selectedDeployEnvironment.name} uses{' '}
-                                {selectedDeployEnvironment.writeMode}
-                              </Badge>
-                            ) : null}
-                          </Group>
-                        </div>
-
-                        {selectedApplication.deploymentStrategy === 'Canary' && latestDeployment ? (
-                          <>
-                            <Divider color="rgba(36, 57, 55, 0.12)" />
-                            <div>
-                              <Text className={classes.sectionEyebrow}>Canary Rollout</Text>
-                              <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md" mb="md">
-                                <Card radius="lg" className={classes.detailCard}>
-                                  <Text className={classes.detailLabel}>Rollout Phase</Text>
-                                  <Text className={classes.detailValue}>
-                                    {latestDeployment.rolloutPhase || latestDeployment.status}
-                                  </Text>
-                                </Card>
-                                <Card radius="lg" className={classes.detailCard}>
-                                  <Text className={classes.detailLabel}>Traffic Weight</Text>
-                                  <Text className={classes.detailValue}>
-                                    {latestDeployment.canaryWeight ?? 0}%
-                                  </Text>
-                                </Card>
-                              </SimpleGrid>
-                              <Card radius="lg" className={classes.detailCard}>
-                                <Text className={classes.detailLabel}>Rollout Message</Text>
-                                <Text className={classes.detailBody}>
-                                  {latestDeployment.message || 'Rollout detail is not available yet.'}
-                                </Text>
-                              </Card>
-                              <Group className={classes.actionRow} mt="md">
-                                <Button
-                                  color="lagoon.6"
-                                  radius="md"
-                                  loading={
-                                    promotingDeploymentId === latestDeployment.deploymentId
-                                  }
-                                  disabled={!canMutateSelectedProject}
-                                  onClick={handlePromoteDeployment}
-                                >
-                                  Promote canary
-                                </Button>
-                                <Button
-                                  color="coral.6"
-                                  variant="light"
-                                  radius="md"
-                                  loading={
-                                    abortingDeploymentId === latestDeployment.deploymentId
-                                  }
-                                  disabled={!canMutateSelectedProject}
-                                  onClick={handleAbortDeployment}
-                                >
-                                  Abort canary
-                                </Button>
-                              </Group>
-                            </div>
-                          </>
-                        ) : null}
-
-                        <Divider color="rgba(36, 57, 55, 0.12)" />
-
-                        <div>
-                          <Text className={classes.sectionEyebrow}>Rollback Policy</Text>
-                          <Text className={classes.sectionMeta}>
-                            Project auto rollback is{' '}
-                            {projectPolicies?.autoRollbackEnabled ? 'enabled' : 'disabled'}.
-                          </Text>
-                          <SimpleGrid cols={{ base: 1, md: 3 }} spacing="md" mt="md">
-                            <Switch
-                              checked={rollbackPolicy.enabled}
-                              disabled={!canMutateSelectedProject}
-                              label="Enable policy"
-                              onChange={(event) =>
-                                setRollbackPolicy((current) => ({
-                                  ...current,
-                                  enabled: event.currentTarget.checked,
-                                }))
-                              }
-                            />
-                            <NumberInput
-                              label="Max error rate (%)"
-                              min={0}
-                              decimalScale={2}
-                              value={rollbackPolicy.maxErrorRate ?? ''}
-                              disabled={!canMutateSelectedProject}
-                              onChange={(value) =>
-                                setRollbackPolicy((current) => ({
-                                  ...current,
-                                  maxErrorRate:
-                                    value === '' ? undefined : Number(value) || undefined,
-                                }))
-                              }
-                            />
-                            <NumberInput
-                              label="Min request rate"
-                              min={0}
-                              decimalScale={2}
-                              value={rollbackPolicy.minRequestRate ?? ''}
-                              disabled={!canMutateSelectedProject}
-                              onChange={(value) =>
-                                setRollbackPolicy((current) => ({
-                                  ...current,
-                                  minRequestRate:
-                                    value === '' ? undefined : Number(value) || undefined,
-                                }))
-                              }
-                            />
-                          </SimpleGrid>
-                          <NumberInput
-                            label="Max p95 latency (ms)"
-                            min={0}
-                            value={rollbackPolicy.maxLatencyP95Ms ?? ''}
-                            disabled={!canMutateSelectedProject}
-                            onChange={(value) =>
-                              setRollbackPolicy((current) => ({
-                                ...current,
-                                maxLatencyP95Ms:
-                                  value === '' ? undefined : Number(value) || undefined,
-                              }))
-                            }
-                            mt="md"
-                          />
-                          <Button
-                            color="sand.6"
-                            variant="light"
-                            radius="md"
-                            mt="md"
-                            loading={savingRollback}
-                            disabled={!canMutateSelectedProject}
-                            onClick={handleSaveRollbackPolicy}
-                          >
-                            Save rollback policy
-                          </Button>
-                        </div>
-                      </Stack>
-                    ) : (
-                      <div className={classes.emptyState}>
-                        <Text className={classes.emptyHeadline}>No application selected</Text>
-                        <Text className={classes.emptyBody}>
-                          Choose an application on the left to inspect rollout state, metrics,
-                          rollback policy, and change-managed redeploy controls.
-                        </Text>
-                      </div>
-                    )}
-                  </Paper>
-                </section>
-
-                <Grid gutter="xl">
-                  <Grid.Col span={{ base: 12, lg: 6 }}>
-                    <section>
-                      <Group justify="space-between" align="center" mb="md">
-                        <div>
-                          <Text className={classes.sectionEyebrow}>Deployment History</Text>
-                          <Title order={3} className={classes.sectionTitle}>
-                            Timeline of rollout attempts
-                          </Title>
-                        </div>
-                        {historyLoading ? <Loader size="sm" color="lagoon.5" /> : null}
-                      </Group>
-
-                      <Stack gap="sm">
-                        {deployments.map((deployment, index) => (
-                          <Card
-                            key={deployment.deploymentId}
-                            radius="lg"
-                            className={
-                              index === 0
-                                ? `${classes.detailCard} ${classes.selectCardActive}`
-                                : classes.detailCard
-                            }
-                          >
-                            <Group justify="space-between" align="start" mb="xs">
-                              <div>
-                                <Text className={classes.cardTitle}>{deployment.imageTag}</Text>
-                                <Text className={classes.cardMeta}>
-                                  {deployment.environment} · {deployment.deploymentId}
-                                </Text>
-                              </div>
-                              <Badge
-                                color={deploymentStatusColor(deployment)}
-                                variant="light"
-                                radius="sm"
-                              >
-                                {deployment.rolloutPhase || deployment.status}
-                              </Badge>
-                            </Group>
-                            <Text className={classes.cardBody}>
-                              {deployment.message || deployment.image}
-                            </Text>
-                          </Card>
-                        ))}
-
-                        {!historyLoading && deployments.length === 0 ? (
-                          <Paper className={classes.emptyState} radius="lg">
-                            <Text className={classes.emptyHeadline}>No deployment history yet</Text>
-                            <Text className={classes.emptyBody}>
-                              The application history will appear here after create or redeploy.
-                            </Text>
-                          </Paper>
-                        ) : null}
-                      </Stack>
-                    </section>
-                  </Grid.Col>
-
-                  <Grid.Col span={{ base: 12, lg: 6 }}>
-                    <section>
-                      <Group justify="space-between" align="center" mb="md">
-                        <div>
-                          <Text className={classes.sectionEyebrow}>Event Feed</Text>
-                          <Title order={3} className={classes.sectionTitle}>
-                            Audit-style application events
-                          </Title>
-                        </div>
-                        {historyLoading ? <Loader size="sm" color="lagoon.5" /> : null}
-                      </Group>
-
-                      <Stack gap="sm">
-                        {events.map((event) => (
-                          <Card key={event.id} radius="lg" className={classes.detailCard}>
-                            <Group justify="space-between" align="start" mb="xs">
-                              <div>
-                                <Text className={classes.cardTitle}>{event.type}</Text>
-                                <Text className={classes.cardMeta}>
-                                  {formatTimestamp(event.createdAt)}
-                                </Text>
-                              </div>
-                            </Group>
-                            <Text className={classes.cardBody}>{event.message}</Text>
-                          </Card>
-                        ))}
-
-                        {!historyLoading && events.length === 0 ? (
-                          <Paper className={classes.emptyState} radius="lg">
-                            <Text className={classes.emptyHeadline}>No events yet</Text>
-                            <Text className={classes.emptyBody}>
-                              Create, deploy, promote, abort, and rollback policy actions will
-                              append audit events here.
-                            </Text>
-                          </Paper>
-                        ) : null}
-                      </Stack>
-                    </section>
-                  </Grid.Col>
-                </Grid>
-              </Stack>
-            </Grid.Col>
-          </Grid>
-        </Stack>
-      </Container>
+  return (
+    <div className={classes.surfaceCard} style={{ marginTop: '20px' }}>
+      <Group justify="space-between" mb="md">
+        <Text fw={800} size="sm">{series.label} 상세 데이터</Text>
+        <Badge variant="light" color="lagoon.6">{series.unit}</Badge>
+      </Group>
+      <ScrollArea h={300} offsetScrollbars>
+        <Table className={classes.dataTable}>
+          <Table.Thead>
+            <Table.Tr>
+              <Table.Th style={{ width: '220px' }}>수집 시각</Table.Th>
+              <Table.Th>실시간 수치</Table.Th>
+            </Table.Tr>
+          </Table.Thead>
+          <Table.Tbody>
+            {reversedPoints.map((p, idx: number) => (
+              <Table.Tr key={idx}>
+                <Table.Td>
+                  <Text size="xs" ff="monospace">
+                    {new Date(p.timestamp).toLocaleTimeString('ko-KR', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </Text>
+                </Table.Td>
+                <Table.Td>
+                  <Text size="sm" fw={700} c="lagoon.9">
+                    {p.value?.toFixed(keyToDecimal(series.key))}
+                  </Text>
+                </Table.Td>
+              </Table.Tr>
+            ))}
+          </Table.Tbody>
+        </Table>
+      </ScrollArea>
     </div>
   )
 }
 
-type StatCardProps = {
-  label: string
-  value: string
+function keyToDecimal(key: string): number {
+  if (key === 'cpu_usage') return 3
+  if (key === 'error_rate') return 2
+  return 1
 }
 
-function StatCard({ label, value }: StatCardProps) {
+// --- Login Form Component ---
+
+const LoginForm = ({ onLogin }: { onLogin: () => void }) => {
+  const [username, setUsername] = useState('admin')
+  const [password, setPassword] = useState('admin')
+  const [error, setError] = useState('')
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault()
+    if (username === 'admin' && password === 'admin') {
+      onLogin()
+    } else {
+      setError('아이디 또는 비밀번호가 올바르지 않습니다.')
+    }
+  }
+
   return (
-    <Card radius="lg" className={classes.statCard}>
-      <Text className={classes.statLabel}>{label}</Text>
-      <Text className={classes.statValue}>{value}</Text>
-    </Card>
+    <div className={classes.authShell}>
+      <div className={classes.loginCard}>
+        <Stack gap="xl">
+          <div style={{ textAlign: 'center' }}>
+            <Badge size="lg" variant="light" color="lagoon.6" mb="md">AOLDA PORTAL</Badge>
+            <Text size="xl" fw={900}>내부 배포 관리 플랫폼</Text>
+            <Text size="sm" c="dimmed" mt={4}>관리자 계정으로 로그인이 필요합니다.</Text>
+          </div>
+
+          <form onSubmit={handleSubmit}>
+            <Stack gap="md">
+              <TextInput label="사용자 아이디" value={username} onChange={(e) => setUsername(e.target.value)} placeholder="admin" required leftSection={<IconUser size={16} />} />
+              <PasswordInput label="비밀번호" value={password} onChange={(e) => setPassword(e.target.value)} placeholder="admin" required leftSection={<IconLock size={16} />} />
+              {error && <Alert color="red">{error}</Alert>}
+              <Button fullWidth size="md" color="lagoon.6" type="submit" mt="md">로그인</Button>
+            </Stack>
+          </form>
+        </Stack>
+      </div>
+    </div>
   )
 }
 
-type MetricCardProps = {
-  series: MetricSeries
-}
+// --- Main App Component ---
 
-function MetricCard({ series }: MetricCardProps) {
+export default function App() {
+  const [isLoggedIn, setIsLoggedIn] = useState(false)
+  const [currentUser, setCurrentUser] = useState<CurrentUser | null>(null)
+  const [projects, setProjects] = useState<ProjectSummary[]>([])
+  const [selectedProjectId, setSelectedProjectId] = useState<string | null>(null)
+  const [applications, setApplications] = useState<ApplicationSummary[]>([])
+  const [environments, setEnvironments] = useState<EnvironmentSummary[]>([])
+  const [repositories, setRepositories] = useState<RepositorySummary[]>([])
+  const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(null)
+  const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  // Application Details State
+  const [appDetails, setAppDetails] = useState<{
+    metrics: ApplicationMetricsResponse | null
+    syncStatus: SyncStatusResponse | null
+    deployments: DeploymentRecord[]
+    events: EventListResponse['items']
+    rollbackPolicy: RollbackPolicy | null
+  }>({ metrics: null, syncStatus: null, deployments: [], events: [], rollbackPolicy: null })
+  const [projectInsightMetrics, setProjectInsightMetrics] = useState<MetricSeries[]>([])
+
+  const [wizardOpened, setWizardOpened] = useState(false)
+  const [projectSettingsOpened, setProjectSettingsOpened] = useState(false)
+  const [isDeploying, setIsDeploying] = useState(false)
+  const [savingRollbackPolicy, setSavingRollbackPolicy] = useState(false)
+  const [emergencyActionLoading, setEmergencyActionLoading] = useState<'abort' | 'rollback' | null>(null)
+  const [metricRange, setMetricRange] = useState('15m')
+  const [selectedMetricKey, setSelectedMetricKey] = useState<string>('cpu_usage')
+  const [deployImageTag, setDeployImageTag] = useState('')
+  const [rollbackPolicyDraft, setRollbackPolicyDraft] = useState<RollbackPolicy>({
+    enabled: false,
+  })
+  const projectRefreshSeq = useRef(0)
+  const appDetailsRequestSeq = useRef(0)
+
+  // Fetch Bootstrap Data
+  useEffect(() => {
+    if (!isLoggedIn) return
+    const fetchProjects = async () => {
+      try {
+        const [meRes, projectRes] = await Promise.allSettled([api.getCurrentUser(), api.getProjects()])
+        if (meRes.status === 'fulfilled') {
+          setCurrentUser(meRes.value)
+        }
+        if (projectRes.status !== 'fulfilled') {
+          throw projectRes.reason
+        }
+        setProjects(projectRes.value.items)
+        setSelectedProjectId((current) => {
+          if (current && projectRes.value.items.some((project) => project.id === current)) {
+            return current
+          }
+          return projectRes.value.items[0]?.id ?? null
+        })
+      } catch {
+        notifications.show({ title: '오류', message: '프로젝트 목록을 가져오지 못했습니다.', color: 'red' })
+      } finally {
+        setLoading(false)
+      }
+    }
+    fetchProjects()
+  }, [isLoggedIn])
+
+  // Fetch Applications when project changes
+  useEffect(() => {
+    if (!selectedProjectId) return
+    const fetchApps = async () => {
+      const requestSeq = ++projectRefreshSeq.current
+      try {
+        const [appRes, envRes, repoRes, policyRes] = await Promise.allSettled([
+          api.getApplications(selectedProjectId),
+          api.getProjectEnvironments(selectedProjectId),
+          api.getProjectRepositories(selectedProjectId),
+          api.getProjectPolicies(selectedProjectId),
+        ])
+        if (requestSeq !== projectRefreshSeq.current) {
+          return
+        }
+
+        if (appRes.status === 'fulfilled') {
+          setApplications(appRes.value.items)
+
+          const metricsResponses = await Promise.allSettled(
+            appRes.value.items.map((application) => api.getMetrics(application.id, '15m')),
+          )
+          const series = metricsResponses
+            .filter(
+              (result): result is PromiseFulfilledResult<ApplicationMetricsResponse> =>
+                result.status === 'fulfilled',
+            )
+            .flatMap((result) => result.value.metrics)
+          setProjectInsightMetrics(aggregateMetricSeries(series))
+        } else {
+          console.error('Failed to refresh applications', appRes.reason)
+        }
+
+        if (envRes.status === 'fulfilled') {
+          setEnvironments(envRes.value.items)
+        } else {
+          console.error('Failed to refresh environments', envRes.reason)
+        }
+
+        if (repoRes.status === 'fulfilled') {
+          setRepositories(repoRes.value.items)
+        } else {
+          console.error('Failed to refresh repositories', repoRes.reason)
+        }
+
+        if (policyRes.status === 'fulfilled') {
+          setProjectPolicy(policyRes.value)
+        } else {
+          console.error('Failed to refresh project policies', policyRes.reason)
+        }
+
+        if (
+          appRes.status === 'rejected' &&
+          envRes.status === 'rejected' &&
+          repoRes.status === 'rejected' &&
+          policyRes.status === 'rejected'
+        ) {
+          notifications.show({ title: '오류', message: '데이터를 가져오지 못했습니다.', color: 'red' })
+        }
+      } catch (err) {
+        console.error('Failed to refresh project data', err)
+      }
+    }
+    fetchApps()
+    const ival = setInterval(fetchApps, 5000)
+    return () => clearInterval(ival)
+  }, [selectedProjectId])
+
+  // Fetch Application Details when app changes or sidebar opens
+  const fetchAppDetails = useCallback(async (appId: string) => {
+    const requestSeq = ++appDetailsRequestSeq.current
+    try {
+      const [metrics, syncStatus, deployments, events, rollback] = await Promise.allSettled([
+        api.getMetrics(appId, metricRange),
+        api.getSyncStatus(appId),
+        api.getDeployments(appId),
+        api.getEvents(appId),
+        api.getRollbackPolicy(appId),
+      ])
+
+      if (requestSeq !== appDetailsRequestSeq.current) {
+        return
+      }
+
+      setAppDetails((current) => ({
+        metrics: metrics.status === 'fulfilled' ? metrics.value : current.metrics,
+        syncStatus: syncStatus.status === 'fulfilled' ? syncStatus.value : current.syncStatus,
+        deployments: deployments.status === 'fulfilled' ? deployments.value.items : current.deployments,
+        events: events.status === 'fulfilled' ? events.value.items : current.events,
+        rollbackPolicy: rollback.status === 'fulfilled' ? rollback.value : current.rollbackPolicy,
+      }))
+
+      if (rollback.status === 'fulfilled') {
+        setRollbackPolicyDraft({
+          enabled: rollback.value.enabled,
+          maxErrorRate: rollback.value.maxErrorRate,
+          maxLatencyP95Ms: rollback.value.maxLatencyP95Ms,
+          minRequestRate: rollback.value.minRequestRate,
+        })
+      }
+    } catch (err) {
+      console.error('Failed to fetch app details', err)
+    }
+  }, [metricRange])
+
+  useEffect(() => {
+    if (!selectedAppId) return
+    fetchAppDetails(selectedAppId)
+    const ival = setInterval(() => fetchAppDetails(selectedAppId), 5000)
+    return () => clearInterval(ival)
+  }, [selectedAppId, metricRange, fetchAppDetails])
+
+  useEffect(() => {
+    setDeployImageTag('')
+  }, [selectedAppId])
+
+  const selectedProject = useMemo(() => projects.find((p) => p.id === selectedProjectId), [projects, selectedProjectId])
+  const selectedApp = useMemo(() => applications.find((a) => a.id === selectedAppId), [applications, selectedAppId])
+
+  const handleCreateApp = async (form: CreateFormState) => {
+    if (!selectedProjectId) return
+    try {
+      await api.createApplication(selectedProjectId, {
+        name: form.name,
+        image: form.image,
+        servicePort: form.servicePort,
+        deploymentStrategy: form.deploymentStrategy,
+        environment: form.environment || 'dev',
+        secrets: form.secrets.filter(s => s.key && s.value)
+      })
+      notifications.show({ title: '성공', message: '애플리케이션이 생성되었습니다.', color: 'green' })
+      setWizardOpened(false)
+      const res = await api.getApplications(selectedProjectId)
+      setApplications(res.items)
+    } catch {
+      notifications.show({ title: '생성 실패', message: '요청이 거부되었습니다.', color: 'red' })
+    }
+  }
+
+  const handleDeploy = async (tag: string) => {
+    if (!selectedAppId) return
+    setIsDeploying(true)
+    try {
+      await api.createDeployment(selectedAppId, tag)
+      notifications.show({ title: '성공', message: '배포가 시작되었습니다.', color: 'green' })
+      setDeployImageTag('')
+      await fetchAppDetails(selectedAppId)
+    } catch {
+      notifications.show({ title: '배포 실패', message: '이미지 태그를 확인해주세요.', color: 'red' })
+    } finally {
+      setIsDeploying(false)
+    }
+  }
+
+  const handleSaveRollbackPolicy = async () => {
+    if (!selectedAppId) return
+    setSavingRollbackPolicy(true)
+    try {
+      const saved = await api.saveRollbackPolicy(selectedAppId, rollbackPolicyDraft)
+      setAppDetails((current) => ({ ...current, rollbackPolicy: saved }))
+      setRollbackPolicyDraft(saved)
+      notifications.show({ title: '성공', message: '롤백 정책이 저장되었습니다.', color: 'green' })
+    } catch {
+      notifications.show({ title: '저장 실패', message: '롤백 정책을 저장하지 못했습니다.', color: 'red' })
+    } finally {
+      setSavingRollbackPolicy(false)
+    }
+  }
+
+  const handleAbortLatestDeployment = async () => {
+    const latestDeployment = appDetails.deployments[0]
+    if (!selectedAppId || !latestDeployment) return
+    setEmergencyActionLoading('abort')
+    try {
+      await api.abortDeployment(selectedAppId, latestDeployment.deploymentId)
+      notifications.show({ title: '성공', message: '현재 배포를 중단했습니다.', color: 'green' })
+      await fetchAppDetails(selectedAppId)
+    } catch {
+      notifications.show({ title: '중단 실패', message: '현재 배포를 중단하지 못했습니다.', color: 'red' })
+    } finally {
+      setEmergencyActionLoading(null)
+    }
+  }
+
+  const handleRollbackToPreviousRevision = async () => {
+    const previousDeployment = appDetails.deployments[1]
+    if (!selectedAppId || !previousDeployment) return
+    setEmergencyActionLoading('rollback')
+    try {
+      await api.createDeployment(selectedAppId, previousDeployment.imageTag, previousDeployment.environment)
+      notifications.show({ title: '성공', message: '직전 버전으로 롤백을 요청했습니다.', color: 'green' })
+      await fetchAppDetails(selectedAppId)
+    } catch {
+      notifications.show({ title: '롤백 실패', message: '직전 버전 롤백을 요청하지 못했습니다.', color: 'red' })
+    } finally {
+      setEmergencyActionLoading(null)
+    }
+  }
+
+  if (!isLoggedIn) return <LoginForm onLogin={() => setIsLoggedIn(true)} />
+
+  if (loading) return (
+    <div style={{ height: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <Loader size="xl" color="lagoon.6" />
+    </div>
+  )
+
   return (
-    <Card radius="lg" className={classes.metricCard}>
-      <Text className={classes.detailLabel}>{series.label}</Text>
-      <Text className={classes.metricValue}>{latestMetricValue(series)}</Text>
-      <Text className={classes.detailBody}>
-        Last sample: {series.points.at(-1)?.timestamp.slice(11, 16) ?? 'n/a'}
-      </Text>
-    </Card>
+    <AppShell
+      header={{ height: 72 }}
+      padding="md"
+    >
+      <AppShell.Header style={{ borderBottom: '1px solid #e2e8f0', background: 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(12px)' }}>
+        <Container fluid h="100%" px="xl">
+          <Group justify="space-between" h="100%">
+            <Group gap="xs">
+              <div style={{ background: '#1d66d6', color: 'white', padding: '6px 10px', borderRadius: '8px', fontWeight: 900 }}>AODS</div>
+              <div>
+                <Text fw={800} size="sm">Aolda Orchestration System</Text>
+                <Text size="xs" c="dimmed">Internal Deployment Console</Text>
+              </div>
+            </Group>
+            <Group gap="lg">
+              <Group gap="xs">
+                <Avatar radius="xl" size="sm" color="lagoon.6"><IconUser size={16} /></Avatar>
+                <Stack gap={0}>
+                  <Text size="xs" fw={700}>
+                    {currentUser?.displayName || currentUser?.username || '관리자'}
+                  </Text>
+                  {currentUser?.id ? (
+                    <Text size="xs" c="dimmed">{currentUser.id}</Text>
+                  ) : null}
+                </Stack>
+              </Group>
+              <Button variant="light" color="gray" size="xs" leftSection={<IconArrowLeft size={14} />} onClick={() => setIsLoggedIn(false)}>로그아웃</Button>
+            </Group>
+          </Group>
+        </Container>
+      </AppShell.Header>
+
+      <AppShell.Main>
+        <Container fluid className={classes.page} px="xl">
+          <Stack gap="xl">
+            {/* Masthead */}
+            <div className={classes.masthead}>
+              <Text className={classes.kicker}>CLUSTER DASHBOARD</Text>
+              <Text className={classes.title}>플랫폼 운영 현황</Text>
+              <Text className={classes.description}>실시간 GitOps 동기화 상태와 인프라 메트릭을 추적합니다.</Text>
+            </div>
+
+            {/* Project Selection Tabs */}
+            <Group justify="space-between">
+              <Tabs variant="pills" value={selectedProjectId} onChange={setSelectedProjectId} color="lagoon.6">
+                <Tabs.List>
+                  {projects.map((p) => (
+                    <Tabs.Tab key={p.id} value={p.id} leftSection={<IconLayoutDashboard size={16} />}>
+                      {p.name}
+                    </Tabs.Tab>
+                  ))}
+                </Tabs.List>
+              </Tabs>
+              <Button leftSection={<IconPlus size={16} />} color="lagoon.6" radius="md" onClick={() => setWizardOpened(true)}>새 애플리케이션</Button>
+            </Group>
+
+            {/* Application Section with Insights Sidebar */}
+            <Grid gutter="xl">
+              <Grid.Col span={{ base: 12, lg: 8 }}>
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="lg">
+                  {applications.map((app) => (
+                    <UnstyledButton key={app.id} onClick={() => setSelectedAppId(app.id)} className={classes.appItem}>
+                      <div className={classes.surfaceCard}>
+                        <Stack gap="md">
+                          <Group justify="space-between" align="start">
+                            <Stack gap={2}>
+                              <Text className={classes.cardTitle}>{app.name}</Text>
+                              <Text className={classes.cardMeta}>{app.image}</Text>
+                            </Stack>
+                            <SyncStatusBadge status={app.syncStatus} />
+                          </Group>
+
+                          <SimpleGrid cols={2} spacing="sm">
+                            <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '12px', border: '1px solid #f1f5f9' }}>
+                              <Text size="xs" c="dimmed" fw={700}>STRATEGY</Text>
+                              <Text size="sm" fw={800} c="lagoon.9">{app.deploymentStrategy === 'Canary' ? '카나리아' : '표준 배포'}</Text>
+                            </div>
+                            <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '12px', border: '1px solid #f1f5f9' }}>
+                              <Text size="xs" c="dimmed" fw={700}>NAMESPACE</Text>
+                              <Text size="sm" fw={800} c="lagoon.9">{selectedProject?.namespace || 'default'}</Text>
+                            </div>
+                          </SimpleGrid>
+                        </Stack>
+                      </div>
+                    </UnstyledButton>
+                  ))}
+                </SimpleGrid>
+              </Grid.Col>
+
+              <Grid.Col span={{ base: 12, lg: 4 }}>
+                <div className={classes.sidebarSection}>
+                  <div className={classes.insightsCard}>
+                    <Group justify="space-between" mb="lg">
+                      <Text fw={800} size="sm" className={classes.sectionEyebrow} style={{ margin: 0 }}>Project Insights</Text>
+                      <Badge variant="dot" color={projectHealthColor(applications)}>
+                        {projectHealthLabel(applications)}
+                      </Badge>
+                    </Group>
+
+                    <SimpleGrid cols={2} spacing="sm" mb="xl">
+                      <div className={classes.statBadge}>
+                        <Text className={classes.statLabel}>Total Apps</Text>
+                        <Text className={classes.statValue}>{applications.length}</Text>
+                      </div>
+                      <div className={classes.statBadge}>
+                        <Text className={classes.statLabel}>Synced</Text>
+                        <Text className={classes.statValue}>{applications.filter(a => a.syncStatus === 'Synced').length}</Text>
+                      </div>
+                    </SimpleGrid>
+
+                    <Stack gap="lg">
+                      <div>
+                        <Group justify="space-between" mb={8}>
+                          <Group gap={6}>
+                            <IconCpu size={14} color="#64748b" />
+                            <Text size="xs" fw={700} c="dimmed">CPU ALLOCATION</Text>
+                          </Group>
+                          <Text size="xs" fw={800}>{formatInsightValue(projectInsightMetrics, 'cpu_usage')}</Text>
+                        </Group>
+                        <div className={classes.metricProgress}>
+                          <div className={classes.metricBar} style={{ width: `${metricSeriesWidth(projectInsightMetrics, 'cpu_usage')}%` }}></div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <Group justify="space-between" mb={8}>
+                          <Group gap={6}>
+                            <IconDatabase size={14} color="#64748b" />
+                            <Text size="xs" fw={700} c="dimmed">MEMORY USAGE</Text>
+                          </Group>
+                          <Text size="xs" fw={800}>{formatInsightValue(projectInsightMetrics, 'memory_usage')}</Text>
+                        </Group>
+                        <div className={classes.metricProgress}>
+                          <div className={classes.metricBar} style={{ width: `${metricSeriesWidth(projectInsightMetrics, 'memory_usage')}%`, background: '#f59e0b' }}></div>
+                        </div>
+                      </div>
+
+                      <div>
+                        <Group justify="space-between" mb={8}>
+                          <Group gap={6}>
+                            <IconBolt size={14} color="#64748b" />
+                            <Text size="xs" fw={700} c="dimmed">TRAFFIC SCALE</Text>
+                          </Group>
+                          <Text size="xs" fw={800}>{formatInsightValue(projectInsightMetrics, 'request_rate')}</Text>
+                        </Group>
+                        <div className={classes.metricProgress}>
+                          <div className={classes.metricBar} style={{ width: `${metricSeriesWidth(projectInsightMetrics, 'request_rate')}%`, background: '#10b981' }}></div>
+                        </div>
+                      </div>
+                    </Stack>
+                  </div>
+
+                  <div className={classes.surfaceCard} style={{ padding: '24px' }}>
+                    <Text fw={800} size="sm" mb="md">Operational Shortcuts</Text>
+                    <Stack gap="xs">
+                      <Button
+                        variant="light"
+                        color="gray"
+                        fullWidth
+                        justify="space-between"
+                        rightSection={<IconExternalLink size={14} />}
+                        radius="md"
+                        onClick={() => setProjectSettingsOpened(true)}
+                      >
+                        Project Repository
+                      </Button>
+                      <Button variant="light" color="gray" fullWidth justify="space-between" rightSection={<IconExternalLink size={14} />} radius="md">
+                        Project Documentation
+                      </Button>
+                      <Button
+                        variant="light"
+                        color="gray"
+                        fullWidth
+                        justify="space-between"
+                        rightSection={<IconSettings size={14} />}
+                        radius="md"
+                        onClick={() => setProjectSettingsOpened(true)}
+                      >
+                        Project Settings
+                      </Button>
+                    </Stack>
+                  </div>
+                </div>
+              </Grid.Col>
+            </Grid>
+          </Stack>
+        </Container>
+      </AppShell.Main>
+
+      {/* Application Operations Drawer */}
+      <Drawer
+        opened={!!selectedAppId}
+        onClose={() => {
+          setSelectedAppId(null)
+          setDeployImageTag('')
+        }}
+        position="right"
+        size="75%"
+        title={
+          <Group gap="sm">
+            <IconRocket size={20} color="#1d66d6" />
+            <Text fw={900}>{selectedApp?.name} 운영 센터</Text>
+          </Group>
+        }
+        styles={{ title: { fontSize: '1.2rem' }, body: { padding: 0 } }}
+      >
+        <ScrollArea h="calc(100vh - 80px)">
+          <Tabs defaultValue="status" color="lagoon.6" styles={{ tab: { padding: '16px 20px' } }}>
+            <Tabs.List>
+              <Tabs.Tab value="status" leftSection={<IconActivity size={16} />}>상태 및 지표</Tabs.Tab>
+              <Tabs.Tab value="deploy" leftSection={<IconRocket size={16} />}>배포 제어</Tabs.Tab>
+              <Tabs.Tab value="history" leftSection={<IconHistory size={16} />}>배포 이력</Tabs.Tab>
+              <Tabs.Tab value="rules" leftSection={<IconShieldCheck size={16} />}>운영 규칙</Tabs.Tab>
+            </Tabs.List>
+
+            <Tabs.Panel value="status" p="xl">
+              <Stack gap="xl">
+                <Group justify="space-between" align="center">
+                  <Text className={classes.sectionEyebrow}>인프라 실시간 지표</Text>
+                  <SegmentedControl
+                    value={metricRange}
+                    onChange={setMetricRange}
+                    data={[
+                      { label: '5분', value: '5m' },
+                      { label: '15분', value: '15m' },
+                      { label: '1시간', value: '1h' },
+                    ]}
+                    color="lagoon.6"
+                    radius="md"
+                  />
+                </Group>
+                
+                <SimpleGrid cols={4} spacing="xl">
+                  <MetricCard
+                    label="CPU USAGE"
+                    value={formatLatestMetric(appDetails.metrics, 'cpu_usage')}
+                    unit={latestMetricUnit(appDetails.metrics, 'cpu_usage')}
+                    points={appDetails.metrics?.metrics?.find(m => m.key === 'cpu_usage')?.points}
+                    color="#1d66d6"
+                    active={selectedMetricKey === 'cpu_usage'}
+                    onClick={() => setSelectedMetricKey('cpu_usage')}
+                  />
+                  <MetricCard
+                    label="MEMORY"
+                    value={formatLatestMetric(appDetails.metrics, 'memory_usage')}
+                    unit="MiB"
+                    points={appDetails.metrics?.metrics?.find(m => m.key === 'memory_usage')?.points}
+                    color="#0b3d7f"
+                    active={selectedMetricKey === 'memory_usage'}
+                    onClick={() => setSelectedMetricKey('memory_usage')}
+                  />
+                  <MetricCard
+                    label="TRAFFIC"
+                    value={formatLatestMetric(appDetails.metrics, 'request_rate')}
+                    unit="rpm"
+                    points={appDetails.metrics?.metrics?.find(m => m.key === 'request_rate')?.points}
+                    color="#10b981"
+                    active={selectedMetricKey === 'request_rate'}
+                    onClick={() => setSelectedMetricKey('request_rate')}
+                  />
+                  <MetricCard
+                    label="LATENCY P95"
+                    value={formatLatestMetric(appDetails.metrics, 'latency_p95')}
+                    unit="ms"
+                    points={appDetails.metrics?.metrics?.find(m => m.key === 'latency_p95')?.points}
+                    color="#f59e0b"
+                    active={selectedMetricKey === 'latency_p95'}
+                    onClick={() => setSelectedMetricKey('latency_p95')}
+                  />
+                </SimpleGrid>
+
+                <MetricDataTable series={appDetails.metrics?.metrics?.find(m => m.key === selectedMetricKey)} />
+
+                <Text className={classes.sectionEyebrow}>최근 시스템 이벤트</Text>
+                <div className={classes.surfaceCard}>
+                  {appDetails.events.length === 0 ? (
+                    <Text size="sm" c="dimmed" ta="center">최근 수집된 이벤트가 없습니다.</Text>
+                  ) : (
+                    <div className={classes.progressList}>
+                      {appDetails.events.map((ev, idx) => (
+                        <div key={idx} className={classes.progressItem}>
+                          <div className={classes.progressMarker}>
+                            <IconActivity size={16} />
+                          </div>
+                          <div>
+                            <Text className={classes.progressTitle}>{ev.type}</Text>
+                            <Text className={classes.progressDetail}>{ev.message}</Text>
+                            <Text size="xs" c="dimmed" mt={4}>{new Date(ev.createdAt).toLocaleString()}</Text>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </Stack>
+            </Tabs.Panel>
+
+            <Tabs.Panel value="deploy" p="xl">
+              <Stack gap="lg">
+                <div className={classes.surfaceCard}>
+                  <Text fw={800} mb={4}>새 버전 배포</Text>
+                  <Text size="sm" c="dimmed" mb="lg">대상 이미지 태그를 입력하여 즉시 배포를 시작합니다.</Text>
+                  <Stack gap="md">
+                    <TextInput
+                      label="TARGET IMAGE TAG"
+                      placeholder="e.g. v1.2.3"
+                      value={deployImageTag}
+                      onChange={(event) => setDeployImageTag(event.currentTarget.value)}
+                      id="deploy_tag_input"
+                    />
+                    <Button
+                      fullWidth
+                      size="md"
+                      color="lagoon.6"
+                      loading={isDeploying}
+                      disabled={!deployImageTag.trim()}
+                      onClick={() => handleDeploy(deployImageTag.trim())}
+                    >
+                      배포 트리거 실행
+                    </Button>
+                  </Stack>
+                </div>
+
+                <div className={classes.surfaceCard}>
+                  <Text className={classes.sectionEyebrow} mb="md">배포 진행률</Text>
+                  <div className={classes.progressList}>
+                    <div className={`${classes.progressItem} ${deploymentStageClass(appDetails.deployments.length > 0 ? 'complete' : 'pending', classes)}`}>
+                      <div className={classes.progressMarker}><IconGitBranch size={16} /></div>
+                      <div>
+                        <Text className={classes.progressTitle}>Git Commit Pushed</Text>
+                        <Text className={classes.progressDetail}>
+                          {appDetails.deployments[0]
+                            ? `${appDetails.deployments[0].imageTag} 버전 요청이 저장되었습니다.`
+                            : '배포 이력이 아직 없습니다.'}
+                        </Text>
+                      </div>
+                    </div>
+                    <div className={`${classes.progressItem} ${deploymentStageClass(syncStageState(appDetails.syncStatus?.status), classes)}`}>
+                      <div className={classes.progressMarker}><IconRefresh size={16} /></div>
+                      <div>
+                        <Text className={classes.progressTitle}>Flux Syncing</Text>
+                        <Text className={classes.progressDetail}>
+                          {appDetails.syncStatus?.message || '동기화 상태를 아직 수집하지 못했습니다.'}
+                        </Text>
+                      </div>
+                    </div>
+                    <div className={`${classes.progressItem} ${deploymentStageClass(rolloutStageState(appDetails.deployments[0]), classes)}`}>
+                      <div className={classes.progressMarker}><IconBox size={16} /></div>
+                      <div>
+                        <Text className={classes.progressTitle}>Canary Monitoring</Text>
+                        <Text className={classes.progressDetail}>
+                          {rolloutStageMessage(appDetails.deployments[0])}
+                        </Text>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </Stack>
+            </Tabs.Panel>
+
+            <Tabs.Panel value="history" p="xl">
+              <Stack gap="md">
+                <Table striped highlightOnHover>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>배포 ID</Table.Th>
+                      <Table.Th>이미지 태그</Table.Th>
+                      <Table.Th>상태</Table.Th>
+                      <Table.Th>완료 시각</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {appDetails.deployments.map(d => (
+                      <Table.Tr key={d.deploymentId}>
+                        <Table.Td><Text size="xs" ff="monospace">{d.deploymentId.slice(0, 8)}</Text></Table.Td>
+                        <Table.Td><Badge variant="outline" size="sm">{d.imageTag}</Badge></Table.Td>
+                        <Table.Td><Badge color={d.status === 'Completed' ? 'green' : 'gray'}>{d.status}</Badge></Table.Td>
+                        <Table.Td><Text size="xs" c="dimmed">{new Date(d.updatedAt).toLocaleString('ko-KR')}</Text></Table.Td>
+                      </Table.Tr>
+                    ))}
+                  </Table.Tbody>
+                </Table>
+              </Stack>
+            </Tabs.Panel>
+
+            <Tabs.Panel value="rules" p="xl">
+              <Stack gap="lg">
+                <div className={classes.surfaceCard}>
+                  <Group justify="space-between" mb="md">
+                    <Stack gap={0}>
+                      <Text fw={800}>자동 롤백 정책</Text>
+                      <Text size="sm" c="dimmed">장애 발생 시 자동으로 이전 안정 버전으로 되돌립니다.</Text>
+                    </Stack>
+                    <Switch
+                      size="lg"
+                      color="lagoon.6"
+                      checked={rollbackPolicyDraft.enabled}
+                      onChange={(event) =>
+                        setRollbackPolicyDraft((current) => ({
+                          ...current,
+                          enabled: event.currentTarget.checked,
+                        }))
+                      }
+                    />
+                  </Group>
+                  <SimpleGrid cols={2} spacing="md">
+                    <NumberInput
+                      label="최대 에러율 (%)"
+                      value={rollbackPolicyDraft.maxErrorRate ?? undefined}
+                      onChange={(value) =>
+                        setRollbackPolicyDraft((current) => ({
+                          ...current,
+                          maxErrorRate: toOptionalNumber(value),
+                        }))
+                      }
+                    />
+                    <NumberInput
+                      label="최대 지연시간 P95 (ms)"
+                      value={rollbackPolicyDraft.maxLatencyP95Ms ?? undefined}
+                      onChange={(value) =>
+                        setRollbackPolicyDraft((current) => ({
+                          ...current,
+                          maxLatencyP95Ms: toOptionalNumber(value),
+                        }))
+                      }
+                    />
+                  </SimpleGrid>
+                  <Button
+                    fullWidth
+                    variant="light"
+                    color="lagoon.6"
+                    mt="xl"
+                    leftSection={<IconSettings size={16} />}
+                    loading={savingRollbackPolicy}
+                    onClick={handleSaveRollbackPolicy}
+                  >
+                    사용자 정의 규칙 저장
+                  </Button>
+                </div>
+
+                <div className={classes.surfaceCard} style={{ background: '#fef2f2', borderColor: '#fee2e2' }}>
+                  <Group gap="sm" mb="sm">
+                    <IconShieldCheck size={20} color="#dc2626" />
+                    <Text fw={800} c="#b91c1c">긴급 조치</Text>
+                  </Group>
+                  <Text size="xs" c="#991b1b" mb="md">현재 활성 배포를 중단하거나 즉시 롤백이 필요할 때 사용하세요.</Text>
+                  <Group grow>
+                    <Button
+                      variant="white"
+                      color="red"
+                      size="xs"
+                      loading={emergencyActionLoading === 'abort'}
+                      disabled={!appDetails.deployments[0]}
+                      onClick={handleAbortLatestDeployment}
+                    >
+                      배포 강제 중단
+                    </Button>
+                    <Button
+                      variant="filled"
+                      color="red"
+                      size="xs"
+                      loading={emergencyActionLoading === 'rollback'}
+                      disabled={!appDetails.deployments[1]}
+                      onClick={handleRollbackToPreviousRevision}
+                    >
+                      직전 버전 롤백
+                    </Button>
+                  </Group>
+                </div>
+              </Stack>
+            </Tabs.Panel>
+          </Tabs>
+        </ScrollArea>
+      </Drawer>
+
+      {/* New Application Wizard Drawer */}
+      <Drawer
+        opened={wizardOpened}
+        onClose={() => setWizardOpened(false)}
+        position="right"
+        size="520px"
+        title={<Text fw={900} size="lg">새 애플리케이션 생성</Text>}
+      >
+        <ApplicationWizard
+          environments={environments.map((e) => ({ id: e.id, name: e.name })) || []}
+          allowedStrategies={projectPolicy?.allowedDeploymentStrategies || ['Standard', 'Canary']}
+          initialState={{
+            name: '',
+            description: '',
+            image: '',
+            servicePort: 80,
+            deploymentStrategy: 'Standard',
+            environment: environments.find((environment) => environment.default)?.id || environments[0]?.id || 'dev',
+            secrets: [{ key: '', value: '' }]
+          }}
+          onSubmit={handleCreateApp}
+          onCancel={() => setWizardOpened(false)}
+          submitting={false}
+        />
+      </Drawer>
+
+      <Drawer
+        opened={projectSettingsOpened}
+        onClose={() => setProjectSettingsOpened(false)}
+        position="right"
+        size="640px"
+        title={<Text fw={900} size="lg">{selectedProject?.name || '프로젝트'} 설정</Text>}
+      >
+        <Stack gap="lg">
+          <div className={classes.surfaceCard}>
+            <Text className={classes.sectionEyebrow} mb="md">연결된 저장소</Text>
+            {repositories.length > 0 ? (
+              <Table striped highlightOnHover>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>이름</Table.Th>
+                    <Table.Th>설명</Table.Th>
+                    <Table.Th>저장소 주소</Table.Th>
+                    <Table.Th>바로가기</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {repositories.map((repository) => (
+                    <Table.Tr key={repository.id}>
+                      <Table.Td>{repository.name}</Table.Td>
+                      <Table.Td>{repository.description || '-'}</Table.Td>
+                      <Table.Td>
+                        <Text size="sm" ff="monospace">{repository.url}</Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Button
+                          variant="light"
+                          color="lagoon.6"
+                          size="xs"
+                          rightSection={<IconExternalLink size={12} />}
+                          onClick={() => window.open(repository.url, '_blank', 'noopener,noreferrer')}
+                        >
+                          열기
+                        </Button>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            ) : (
+              <Text size="sm" c="dimmed">현재 프로젝트에 연결된 저장소가 없습니다.</Text>
+            )}
+          </div>
+
+          <div className={classes.surfaceCard}>
+            <Text className={classes.sectionEyebrow} mb="md">기본 정보</Text>
+            <SimpleGrid cols={2} spacing="md">
+              <div>
+                <Text size="xs" c="dimmed" fw={700}>프로젝트 ID</Text>
+                <Text size="sm" fw={800}>{selectedProject?.id || '-'}</Text>
+              </div>
+              <div>
+                <Text size="xs" c="dimmed" fw={700}>네임스페이스</Text>
+                <Text size="sm" fw={800}>{selectedProject?.namespace || '-'}</Text>
+              </div>
+            </SimpleGrid>
+          </div>
+
+          <div className={classes.surfaceCard}>
+            <Text className={classes.sectionEyebrow} mb="md">운영 환경</Text>
+            {environments.length > 0 ? (
+              <Table striped highlightOnHover>
+                <Table.Thead>
+                  <Table.Tr>
+                    <Table.Th>이름</Table.Th>
+                    <Table.Th>클러스터</Table.Th>
+                    <Table.Th>반영 방식</Table.Th>
+                    <Table.Th>기본</Table.Th>
+                  </Table.Tr>
+                </Table.Thead>
+                <Table.Tbody>
+                  {environments.map((environment) => (
+                    <Table.Tr key={environment.id}>
+                      <Table.Td>{environment.name}</Table.Td>
+                      <Table.Td>{environment.clusterId}</Table.Td>
+                      <Table.Td>{environment.writeMode === 'pull_request' ? '변경 요청' : '직접 반영'}</Table.Td>
+                      <Table.Td>
+                        <Badge color={environment.default ? 'lagoon.6' : 'gray'} variant="light">
+                          {environment.default ? '기본' : '일반'}
+                        </Badge>
+                      </Table.Td>
+                    </Table.Tr>
+                  ))}
+                </Table.Tbody>
+              </Table>
+            ) : (
+              <Text size="sm" c="dimmed">운영 환경 정보를 아직 불러오지 못했습니다.</Text>
+            )}
+          </div>
+
+          <div className={classes.surfaceCard}>
+            <Text className={classes.sectionEyebrow} mb="md">배포 정책</Text>
+            {projectPolicy ? (
+              <SimpleGrid cols={2} spacing="md">
+                <div>
+                  <Text size="xs" c="dimmed" fw={700}>최소 복제본 수</Text>
+                  <Text size="sm" fw={800}>{projectPolicy.minReplicas}</Text>
+                </div>
+                <div>
+                  <Text size="xs" c="dimmed" fw={700}>프로브 필수</Text>
+                  <Text size="sm" fw={800}>{projectPolicy.requiredProbes ? '예' : '아니오'}</Text>
+                </div>
+                <div>
+                  <Text size="xs" c="dimmed" fw={700}>운영 환경 변경 요청 필수</Text>
+                  <Text size="sm" fw={800}>{projectPolicy.prodPRRequired ? '예' : '아니오'}</Text>
+                </div>
+                <div>
+                  <Text size="xs" c="dimmed" fw={700}>자동 롤백</Text>
+                  <Text size="sm" fw={800}>{projectPolicy.autoRollbackEnabled ? '예' : '아니오'}</Text>
+                </div>
+                <div>
+                  <Text size="xs" c="dimmed" fw={700}>허용 환경</Text>
+                  <Text size="sm" fw={800}>
+                    {projectPolicy.allowedEnvironments.length > 0
+                      ? projectPolicy.allowedEnvironments.join(', ')
+                      : '-'}
+                  </Text>
+                </div>
+                <div>
+                  <Text size="xs" c="dimmed" fw={700}>허용 배포 전략</Text>
+                  <Text size="sm" fw={800}>
+                    {projectPolicy.allowedDeploymentStrategies.length > 0
+                      ? projectPolicy.allowedDeploymentStrategies
+                          .map((strategy) => (strategy === 'Canary' ? '카나리아' : '표준 배포'))
+                          .join(', ')
+                      : '-'}
+                  </Text>
+                </div>
+                <div style={{ gridColumn: '1 / -1' }}>
+                  <Text size="xs" c="dimmed" fw={700}>허용 클러스터 대상</Text>
+                  <Text size="sm" fw={800}>
+                    {projectPolicy.allowedClusterTargets.length > 0
+                      ? projectPolicy.allowedClusterTargets.join(', ')
+                      : '-'}
+                  </Text>
+                </div>
+              </SimpleGrid>
+            ) : (
+              <Text size="sm" c="dimmed">프로젝트 정책 정보를 아직 불러오지 못했습니다.</Text>
+            )}
+          </div>
+        </Stack>
+      </Drawer>
+    </AppShell>
   )
 }
 
-function roleColor(role: ProjectSummary['role']) {
-  switch (role) {
-    case 'admin':
-      return 'coral.6'
-    case 'deployer':
-      return 'lagoon.6'
+function formatLatestMetric(metrics: ApplicationMetricsResponse | null, key: string): string {
+  const series = metrics?.metrics?.find(m => m.key === key)
+  if (!series || series.points.length === 0) return '데이터 없음'
+  const val = [...series.points].reverse().find(p => p.value !== null)?.value
+  if (val == null) return '데이터 없음'
+  if (key === 'cpu_usage') {
+    return val < 1 ? `${(val * 1000).toFixed(1)}` : val.toFixed(2)
+  }
+  return val.toFixed(1)
+}
+
+function latestMetricUnit(metrics: ApplicationMetricsResponse | null, key: string) {
+  const series = metrics?.metrics?.find((metric) => metric.key === key)
+  const val = series ? [...series.points].reverse().find((point) => point.value !== null)?.value : null
+  if (key === 'cpu_usage' && val != null && val < 1) {
+    return 'mCPU'
+  }
+  return series?.unit || ''
+}
+
+function aggregateMetricSeries(series: MetricSeries[]): MetricSeries[] {
+  const grouped = new Map<string, MetricSeries[]>()
+  for (const item of series) {
+    const current = grouped.get(item.key) ?? []
+    current.push(item)
+    grouped.set(item.key, current)
+  }
+
+  return Array.from(grouped.entries()).map(([key, items]) => {
+    const template = items[0]
+    const maxLength = Math.max(...items.map((item) => item.points.length))
+    const points = Array.from({ length: maxLength }, (_, index) => {
+      const candidates = items
+        .map((item) => item.points[index])
+        .filter((point): point is MetricSeries['points'][number] => Boolean(point))
+      const timestamp = candidates[0]?.timestamp ?? new Date().toISOString()
+      const values = candidates
+        .map((point) => point.value)
+        .filter((value): value is number => value !== null)
+      const total = values.reduce((sum, value) => sum + value, 0)
+      return {
+        timestamp,
+        value: values.length > 0 ? total : null,
+      }
+    })
+    return {
+      key,
+      label: template.label,
+      unit: template.unit,
+      points,
+    }
+  })
+}
+
+function findMetricSeries(series: MetricSeries[], key: string) {
+  return series.find((item) => item.key === key)
+}
+
+function formatInsightValue(series: MetricSeries[], key: string) {
+  const item = findMetricSeries(series, key)
+  const value = item ? latestMetricNumber(item) : null
+  if (value === null) return '데이터 없음'
+  switch (key) {
+    case 'cpu_usage':
+      return value < 1 ? `${(value * 1000).toFixed(1)} mCPU` : `${value.toFixed(2)} cores`
+    case 'memory_usage':
+      return `${value.toFixed(1)} MiB`
+    case 'request_rate':
+      return `${value.toFixed(1)} RPM`
     default:
-      return 'sand.6'
+      return value.toFixed(1)
   }
 }
 
-function canMutateProject(role: ProjectSummary['role'] | undefined) {
-  return role === 'deployer' || role === 'admin'
+function latestMetricNumber(series: MetricSeries) {
+  const value = [...series.points].reverse().find((point) => point.value !== null)?.value
+  return value ?? null
 }
 
-function syncStatusColor(status: SyncStatus) {
+function metricSeriesWidth(series: MetricSeries[], key: string) {
+  const item = findMetricSeries(series, key)
+  if (!item) return 0
+  const values = item.points
+    .map((point) => point.value)
+    .filter((value): value is number => value !== null)
+  if (values.length === 0) return 0
+  const current = values.at(-1) ?? 0
+  const max = Math.max(...values)
+  if (max <= 0) return 0
+  return Math.max(6, Math.min(100, (current / max) * 100))
+}
+
+function projectHealthColor(applications: ApplicationSummary[]) {
+  if (applications.some((application) => application.syncStatus === 'Degraded')) return 'red'
+  if (applications.some((application) => application.syncStatus === 'Syncing')) return 'yellow'
+  if (applications.some((application) => application.syncStatus === 'Synced')) return 'green'
+  return 'gray'
+}
+
+function projectHealthLabel(applications: ApplicationSummary[]) {
+  if (applications.some((application) => application.syncStatus === 'Degraded')) return 'Issue'
+  if (applications.some((application) => application.syncStatus === 'Syncing')) return 'Syncing'
+  if (applications.some((application) => application.syncStatus === 'Synced')) return 'Healthy'
+  return 'Unknown'
+}
+
+function syncStageState(status?: SyncStatus) {
   switch (status) {
     case 'Synced':
-      return 'lagoon.6'
+      return 'complete'
     case 'Syncing':
-      return 'sand.6'
+      return 'active'
     case 'Degraded':
-      return 'coral.6'
+      return 'error'
     default:
-      return 'gray.6'
+      return 'pending'
   }
 }
 
-function changeStatusColor(status: ChangeRecord['status']) {
-  switch (status) {
-    case 'Merged':
-      return 'lagoon.6'
-    case 'Approved':
-      return 'coral.6'
-    case 'Submitted':
-      return 'sand.6'
-    default:
-      return 'gray.6'
-  }
+function rolloutStageState(deployment?: DeploymentRecord) {
+  if (!deployment) return 'pending'
+  if (deployment.status === 'Aborted') return 'error'
+  if (deployment.status === 'Completed' || deployment.status === 'Promoted') return 'complete'
+  if (deployment.status === 'Created') return 'active'
+  return 'pending'
 }
 
-function writeModeColor(mode: EnvironmentSummary['writeMode']) {
-  return mode === 'pull_request' ? 'sand.6' : 'lagoon.6'
-}
-
-function deploymentStatusColor(deployment: DeploymentRecord) {
-  if (deployment.syncStatus) {
-    return syncStatusColor(deployment.syncStatus)
+function rolloutStageMessage(deployment?: DeploymentRecord) {
+  if (!deployment) return '대기 중...'
+  if (deployment.rolloutPhase) return deployment.rolloutPhase
+  if (deployment.message) return deployment.message
+  if (deployment.status === 'Completed' || deployment.status === 'Promoted') {
+    return '새 버전 반영이 완료되었습니다.'
   }
   if (deployment.status === 'Aborted') {
-    return 'coral.6'
+    return '배포가 중단되었습니다.'
   }
-  if (deployment.status === 'Promoted') {
-    return 'lagoon.6'
-  }
-  return 'sand.6'
+  return '배포 상태를 수집 중입니다.'
 }
 
-function latestMetricValue(series: MetricSeries) {
-  const latest = [...series.points].reverse().find((point) => point.value !== null)
-  if (!latest?.value && latest?.value !== 0) {
-    return 'No data'
-  }
-
-  if (series.unit === '%') {
-    return `${latest.value.toFixed(2)}${series.unit}`
-  }
-
-  if (series.unit === 'cores') {
-    return `${latest.value.toFixed(2)} ${series.unit}`
-  }
-
-  return `${Math.round(latest.value)} ${series.unit}`
-}
-
-function resolveDefaultEnvironment(environments: EnvironmentSummary[]) {
-  return environments.find((environment) => environment.default) ?? environments[0] ?? null
-}
-
-function resolvePreferredStrategy(policy: ProjectPolicy | null) {
-  if (!policy || policy.allowedDeploymentStrategies.length === 0) {
-    return 'Standard' as const
-  }
-  if (policy.allowedDeploymentStrategies.includes('Standard')) {
-    return 'Standard' as const
-  }
-  return policy.allowedDeploymentStrategies[0] === 'Canary' ? 'Canary' : 'Standard'
-}
-
-function allowedStrategies(policy: ProjectPolicy | null) {
-  if (!policy || policy.allowedDeploymentStrategies.length === 0) {
-    return ['Standard', 'Canary'] as const
-  }
-  return policy.allowedDeploymentStrategies.filter(isStrategy)
-}
-
-function parseCommaList(value: string) {
-  return value
-    .split(',')
-    .map((item) => item.trim())
-    .filter(Boolean)
-}
-
-function stringifyList(values: string[]) {
-  return values.join(', ')
-}
-
-function normalizeRollbackPolicy(policy: RollbackPolicy | null | undefined): RollbackPolicy {
-  return {
-    enabled: policy?.enabled ?? false,
-    maxErrorRate: policy?.maxErrorRate,
-    maxLatencyP95Ms: policy?.maxLatencyP95Ms,
-    minRequestRate: policy?.minRequestRate,
+function deploymentStageClass(
+  state: 'complete' | 'active' | 'pending' | 'error',
+  styleClasses: Record<string, string>,
+) {
+  switch (state) {
+    case 'complete':
+      return styleClasses.progressComplete
+    case 'active':
+      return styleClasses.progressActive
+    case 'error':
+      return styleClasses.progressError
+    default:
+      return styleClasses.progressPending
   }
 }
 
-function resolveEnvironmentWriteMode(environments: EnvironmentSummary[], environmentId: string) {
-  return environments.find((environment) => environment.id === environmentId)?.writeMode ?? 'direct'
-}
-
-function resolvePreferredChangeEnvironment(environments: EnvironmentSummary[]) {
-  return (
-    environments.find((environment) => environment.writeMode === 'pull_request')?.id ??
-    resolveDefaultEnvironment(environments)?.id ??
-    'prod'
-  )
-}
-
-function inferChangeApplicationId(change: ChangeRecord | null) {
-  if (!change) {
-    return null
+function toOptionalNumber(value: string | number) {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : undefined
   }
-  if (change.applicationId) {
-    return change.applicationId
+  if (value.trim() === '') {
+    return undefined
   }
-  if (change.operation === 'CreateApplication' && change.request?.name) {
-    return `${change.projectId}__${change.request.name}`
-  }
-  return null
-}
-
-function isStrategy(value: string): value is 'Standard' | 'Canary' {
-  return value === 'Standard' || value === 'Canary'
-}
-
-function formatTimestamp(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) {
-    return value
-  }
-  return date.toLocaleString()
-}
-
-function toErrorMessage(error: unknown) {
-  if (error instanceof ApiError) {
-    return `${error.code}: ${error.message}`
-  }
-
-  if (error instanceof Error) {
-    return error.message
-  }
-
-  return 'An unexpected error occurred.'
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : undefined
 }

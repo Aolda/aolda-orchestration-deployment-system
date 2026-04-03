@@ -22,6 +22,16 @@ Phase 1에서 프로젝트와 앱의 authoritative source는 **GitHub 기본 브
 ```yaml
 platform:
   projects.yaml
+  flux:
+    bootstrap:
+      {clusterId}:
+        kustomization.yaml
+        root-kustomization.yaml
+    clusters:
+      {clusterId}:
+        kustomization.yaml
+        applications:
+          {projectId}-{appName}.yaml
 
 apps:
   {projectId}:
@@ -39,6 +49,7 @@ apps:
 ```
 
 `platform/projects.yaml` 은 UI와 API가 참조하는 프로젝트 카탈로그다.
+`platform/flux/clusters/{clusterId}` 는 cluster bootstrap 후 Flux 가 child `Kustomization` 을 읽는 root 경로다.
 
 ---
 

@@ -24,13 +24,17 @@ type SecretEntry struct {
 }
 
 type CreateRequest struct {
-	Name               string             `json:"name"`
-	Description        string             `json:"description,omitempty"`
-	Image              string             `json:"image"`
-	ServicePort        int                `json:"servicePort"`
-	DeploymentStrategy DeploymentStrategy `json:"deploymentStrategy"`
-	Environment        string             `json:"environment,omitempty"`
-	Secrets            []SecretEntry      `json:"secrets,omitempty"`
+	Name                string             `json:"name"`
+	Description         string             `json:"description,omitempty"`
+	Image               string             `json:"image"`
+	ServicePort         int                `json:"servicePort"`
+	Replicas            int                `json:"replicas,omitempty"`
+	DeploymentStrategy  DeploymentStrategy `json:"deploymentStrategy"`
+	Environment         string             `json:"environment,omitempty"`
+	Secrets             []SecretEntry      `json:"secrets,omitempty"`
+	RepositoryID        string             `json:"repositoryId,omitempty"`
+	RepositoryServiceID string             `json:"repositoryServiceId,omitempty"`
+	ConfigPath          string             `json:"configPath,omitempty"`
 }
 
 type CreateDeploymentRequest struct {
@@ -39,34 +43,43 @@ type CreateDeploymentRequest struct {
 }
 
 type UpdateApplicationRequest struct {
-	Description        *string             `json:"description,omitempty"`
-	ServicePort        *int                `json:"servicePort,omitempty"`
-	DeploymentStrategy *DeploymentStrategy `json:"deploymentStrategy,omitempty"`
-	Environment        *string             `json:"environment,omitempty"`
+	Description         *string             `json:"description,omitempty"`
+	Image               *string             `json:"image,omitempty"`
+	ServicePort         *int                `json:"servicePort,omitempty"`
+	Replicas            *int                `json:"replicas,omitempty"`
+	DeploymentStrategy  *DeploymentStrategy `json:"deploymentStrategy,omitempty"`
+	Environment         *string             `json:"environment,omitempty"`
+	RepositoryID        *string             `json:"repositoryId,omitempty"`
+	RepositoryServiceID *string             `json:"repositoryServiceId,omitempty"`
+	ConfigPath          *string             `json:"configPath,omitempty"`
 }
 
 type Record struct {
-	ID                 string
-	ProjectID          string
-	Namespace          string
-	Name               string
-	Description        string
-	Image              string
-	ServicePort        int
-	Replicas           int
-	RequiredProbes     bool
-	DeploymentStrategy DeploymentStrategy
-	DefaultEnvironment string
-	CreatedAt          time.Time
-	UpdatedAt          time.Time
-	SecretPath         string
+	ID                  string
+	ProjectID           string
+	Namespace           string
+	Name                string
+	Description         string
+	Image               string
+	ServicePort         int
+	Replicas            int
+	RequiredProbes      bool
+	DeploymentStrategy  DeploymentStrategy
+	DefaultEnvironment  string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	SecretPath          string
+	RepositoryID        string
+	RepositoryServiceID string
+	ConfigPath          string
 }
 
 type ProjectContext struct {
-	ID           string
-	Namespace    string
-	Environments []string
-	Policies     projectPolicy
+	ID                  string
+	Namespace           string
+	Environments        []string
+	EnvironmentClusters map[string]string
+	Policies            projectPolicy
 }
 
 type projectPolicy struct {
@@ -88,17 +101,21 @@ type Summary struct {
 }
 
 type Application struct {
-	ID                 string     `json:"id"`
-	ProjectID          string     `json:"projectId"`
-	Name               string     `json:"name"`
-	Description        string     `json:"description,omitempty"`
-	Image              string     `json:"image"`
-	ServicePort        int        `json:"servicePort"`
-	DeploymentStrategy string     `json:"deploymentStrategy"`
-	DefaultEnvironment string     `json:"defaultEnvironment,omitempty"`
-	SyncStatus         SyncStatus `json:"syncStatus,omitempty"`
-	CreatedAt          time.Time  `json:"createdAt,omitempty"`
-	UpdatedAt          time.Time  `json:"updatedAt,omitempty"`
+	ID                  string     `json:"id"`
+	ProjectID           string     `json:"projectId"`
+	Name                string     `json:"name"`
+	Description         string     `json:"description,omitempty"`
+	Image               string     `json:"image"`
+	ServicePort         int        `json:"servicePort"`
+	Replicas            int        `json:"replicas"`
+	DeploymentStrategy  string     `json:"deploymentStrategy"`
+	DefaultEnvironment  string     `json:"defaultEnvironment,omitempty"`
+	SyncStatus          SyncStatus `json:"syncStatus,omitempty"`
+	CreatedAt           time.Time  `json:"createdAt,omitempty"`
+	UpdatedAt           time.Time  `json:"updatedAt,omitempty"`
+	RepositoryID        string     `json:"repositoryId,omitempty"`
+	RepositoryServiceID string     `json:"repositoryServiceId,omitempty"`
+	ConfigPath          string     `json:"configPath,omitempty"`
 }
 
 type DeploymentResponse struct {
@@ -107,27 +124,29 @@ type DeploymentResponse struct {
 	ImageTag      string `json:"imageTag"`
 	Environment   string `json:"environment,omitempty"`
 	Status        string `json:"status"`
+	CommitSHA     string `json:"commitSha,omitempty"`
 }
 
 type DeploymentRecord struct {
-	DeploymentID        string             `json:"deploymentId"`
-	ApplicationID       string             `json:"applicationId"`
-	ProjectID           string             `json:"projectId"`
-	ApplicationName     string             `json:"applicationName"`
-	Environment         string             `json:"environment"`
-	Image               string             `json:"image"`
-	ImageTag            string             `json:"imageTag"`
-	DeploymentStrategy  DeploymentStrategy `json:"deploymentStrategy"`
-	Status              string             `json:"status"`
-	SyncStatus          SyncStatus         `json:"syncStatus,omitempty"`
-	RolloutPhase        string             `json:"rolloutPhase,omitempty"`
-	CurrentStep         *int               `json:"currentStep,omitempty"`
-	CanaryWeight        *int               `json:"canaryWeight,omitempty"`
-	StableRevision      string             `json:"stableRevision,omitempty"`
-	CanaryRevision      string             `json:"canaryRevision,omitempty"`
-	Message             string             `json:"message,omitempty"`
-	CreatedAt           time.Time          `json:"createdAt"`
-	UpdatedAt           time.Time          `json:"updatedAt"`
+	DeploymentID       string             `json:"deploymentId"`
+	ApplicationID      string             `json:"applicationId"`
+	ProjectID          string             `json:"projectId"`
+	ApplicationName    string             `json:"applicationName"`
+	Environment        string             `json:"environment"`
+	Image              string             `json:"image"`
+	ImageTag           string             `json:"imageTag"`
+	DeploymentStrategy DeploymentStrategy `json:"deploymentStrategy"`
+	Status             string             `json:"status"`
+	SyncStatus         SyncStatus         `json:"syncStatus,omitempty"`
+	RolloutPhase       string             `json:"rolloutPhase,omitempty"`
+	CurrentStep        *int               `json:"currentStep,omitempty"`
+	CanaryWeight       *int               `json:"canaryWeight,omitempty"`
+	StableRevision     string             `json:"stableRevision,omitempty"`
+	CanaryRevision     string             `json:"canaryRevision,omitempty"`
+	Message            string             `json:"message,omitempty"`
+	CommitSHA          string             `json:"commitSha,omitempty"`
+	CreatedAt          time.Time          `json:"createdAt"`
+	UpdatedAt          time.Time          `json:"updatedAt"`
 }
 
 type DeploymentListResponse struct {

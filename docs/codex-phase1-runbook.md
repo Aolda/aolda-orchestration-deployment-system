@@ -125,12 +125,15 @@ make check
 ```bash
 export AODS_GIT_MODE=git
 export AODS_GIT_REPO_DIR=/tmp/aods-managed-gitops
+export AODS_GIT_SYNC_TTL=3s
 export AODS_GIT_BRANCH=main
 export AODS_GIT_AUTHOR_NAME="AODS Bot"
 export AODS_GIT_AUTHOR_EMAIL="aods-bot@local"
 export AODS_GITHUB_USERNAME="your-github-username"
 export AODS_GITHUB_TOKEN="github_pat_xxx"
 export AODS_GIT_REMOTE="https://${AODS_GITHUB_USERNAME}:${AODS_GITHUB_TOKEN}@github.com/Aolda/aods-manifest.git"
+export AODS_IMAGE_CHECK_MODE=anonymous
+export AODS_IMAGE_CHECK_TIMEOUT="5s"
 ```
 
 Vault는 GitHub-first 초기 단계에서는 local adapter 를 유지해도 된다.
@@ -153,6 +156,8 @@ export AODS_VAULT_REQUEST_TIMEOUT="5s"
 
 * `git` 모드 startup preflight 는 `platform/projects.yaml` 이 target GitOps repo 에 없으면 즉시 실패한다.
 * credential helper 를 쓰지 않는다면 `AODS_GIT_REMOTE` 에 tokenized HTTPS remote 를 넣어야 한다.
+* `AODS_IMAGE_CHECK_MODE=anonymous` 이면 create/redeploy/change 생성 전에 레지스트리 manifest 접근을 먼저 확인한다.
+* 사전 확인 결과는 `IMAGE_NOT_FOUND`, `IMAGE_AUTH_REQUIRED`, `IMAGE_CHECK_FAILED` 로 구분돼 사용자에게 그대로 노출된다.
 
 실제 Kubernetes sync-status reader 를 붙일 때는 아래 env 를 추가한다.
 
@@ -161,8 +166,14 @@ export AODS_K8S_MODE=kubeconfig
 export AODS_K8S_KUBECONFIG="$HOME/.kube/config"
 export AODS_K8S_CONTEXT="your-kube-context"
 export AODS_FLUX_KUSTOMIZATION_NAMESPACE="flux-system"
+export AODS_FLUX_SOURCE_NAME="aods-manifest"
 export AODS_K8S_REQUEST_TIMEOUT="5s"
 ```
+
+주의:
+
+* 앱 생성과 환경 전환은 GitOps repo 안의 `platform/flux/clusters/{clusterId}/` 아래에 Flux child `Kustomization` manifest 를 자동 생성하거나 갱신한다.
+* cluster 에는 1회 bootstrap 으로 `platform/flux/bootstrap/{clusterId}/root-kustomization.yaml` 을 apply 해두면, 이후 앱 create/redeploy 가 별도 수동 `Kustomization` 생성 없이 자동 연결된다.
 
 실제 Prometheus metrics reader 를 붙일 때는 아래 env 를 추가한다.
 
@@ -177,7 +188,9 @@ export AODS_PROMETHEUS_STEP="5m"
 주의:
 
 * local backend 가 in-cluster Prometheus service 를 직접 볼 수 없다면 `kubectl port-forward -n monitoring svc/kube-prometheus-stack-prometheus 19090:9090` 같은 터널이 필요하다.
-* 앱/서비스 메트릭이 cluster Prometheus 에 실제로 scrape 되지 않는 환경이면, real adapter 는 `null` 값 point 들을 반환하고 API 자체는 200 으로 유지한다.
+* 앱 생성 시 base manifest 아래에 `ServiceMonitor` 가 자동 생성되어 Flux 경로를 통해 cluster Prometheus scrape 대상에 붙는다.
+* CPU/메모리 값은 Prometheus container series 가 비어 있어도 Kubernetes `metrics.k8s.io` 값을 마지막 point 에 채워서 대시보드가 완전히 비지 않게 한다.
+* 요청 수/에러율/지연시간은 앱 또는 mesh 가 Prometheus-compatible metrics 를 실제로 노출해야 채워진다. 단순 nginx 처럼 `/metrics` 가 없으면 해당 series 는 `null` 로 유지될 수 있다.
 
 ## 7. Implementation Order
 

@@ -29,9 +29,13 @@ export type CreateApplicationRequest = {
   description?: string
   image: string
   servicePort: number
+  replicas?: number
   deploymentStrategy: 'Standard' | 'Canary'
   environment?: string
   secrets?: SecretEntry[]
+  repositoryId?: string
+  repositoryServiceId?: string
+  configPath?: string
 }
 
 export type SyncStatus = 'Unknown' | 'Syncing' | 'Synced' | 'Degraded'
@@ -43,11 +47,15 @@ export type Application = {
   description?: string
   image: string
   servicePort: number
+  replicas: number
   deploymentStrategy: 'Standard' | 'Canary'
   defaultEnvironment?: string
   syncStatus?: SyncStatus
   createdAt?: string
   updatedAt?: string
+  repositoryId?: string
+  repositoryServiceId?: string
+  configPath?: string
 }
 
 export type ApplicationSummary = {
@@ -69,9 +77,14 @@ export type CreateDeploymentRequest = {
 
 export type UpdateApplicationRequest = {
   description?: string
+  image?: string
   servicePort?: number
+  replicas?: number
   deploymentStrategy?: 'Standard' | 'Canary'
   environment?: string
+  repositoryId?: string
+  repositoryServiceId?: string
+  configPath?: string
 }
 
 export type EnvironmentSummary = {
@@ -84,6 +97,18 @@ export type EnvironmentSummary = {
 
 export type EnvironmentListResponse = {
   items: EnvironmentSummary[]
+}
+
+export type RepositorySummary = {
+  id: string
+  name: string
+  url: string
+  description?: string
+  configFile?: string
+}
+
+export type RepositoryListResponse = {
+  items: RepositorySummary[]
 }
 
 export type ProjectPolicy = {
