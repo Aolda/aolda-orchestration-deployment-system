@@ -26,7 +26,22 @@ import {
   isOIDCAuthEnabled,
 } from '../auth/oidc'
 
-const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080'
+const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080').trim()
+
+function buildApiUrl(path: string) {
+  const normalizedBase = apiBaseUrl.replace(/\/+$/, '')
+  const normalizedPath = path.startsWith('/') ? path : `/${path}`
+
+  if (normalizedBase.endsWith('/api/v1') && normalizedPath.startsWith('/api/v1/')) {
+    return `${normalizedBase}${normalizedPath.slice('/api/v1'.length)}`
+  }
+
+  if (normalizedBase.endsWith('/api') && normalizedPath.startsWith('/api/')) {
+    return `${normalizedBase}${normalizedPath.slice('/api'.length)}`
+  }
+
+  return `${normalizedBase}${normalizedPath}`
+}
 
 export class ApiError extends Error {
   code: string
@@ -50,7 +65,7 @@ async function request<T>(path: string, init?: RequestInit) {
     }
   }
 
-  const response = await fetch(`${apiBaseUrl}${path}`, {
+  const response = await fetch(buildApiUrl(path), {
     ...init,
     headers,
   })
