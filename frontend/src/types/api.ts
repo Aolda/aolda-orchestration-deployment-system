@@ -104,6 +104,7 @@ export type RepositorySummary = {
   name: string
   url: string
   description?: string
+  access: 'public' | 'private'
   branch?: string
   configFile?: string
 }

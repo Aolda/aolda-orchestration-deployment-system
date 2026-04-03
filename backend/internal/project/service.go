@@ -3,6 +3,7 @@ package project
 import (
 	"context"
 	"errors"
+	"strings"
 
 	"github.com/aolda/aods-backend/internal/core"
 )
@@ -93,6 +94,7 @@ type RepositorySummary struct {
 	Name        string `json:"name"`
 	URL         string `json:"url"`
 	Description string `json:"description,omitempty"`
+	Access      string `json:"access"`
 	Branch      string `json:"branch,omitempty"`
 	ConfigFile  string `json:"configFile,omitempty"`
 }
@@ -217,6 +219,7 @@ func (s Service) ListRepositories(ctx context.Context, user core.User, projectID
 			Name:        repo.Name,
 			URL:         repo.URL,
 			Description: repo.Description,
+			Access:      repositoryAccess(repo),
 			Branch:      repo.Branch,
 			ConfigFile:  repo.ConfigFile,
 		})
@@ -389,6 +392,13 @@ func normalizeAllowedStrategies(values []string) []string {
 		return []string{"Rollout", "Canary"}
 	}
 	return items
+}
+
+func repositoryAccess(repo Repository) string {
+	if strings.TrimSpace(repo.AuthSecretPath) != "" {
+		return "private"
+	}
+	return "public"
 }
 
 func toPolicySummary(policy PolicySet) PolicySummary {
