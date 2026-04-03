@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import type { ChangeEvent } from 'react'
+import { useRef, useState } from 'react'
 import {
   Stepper,
   Button,
@@ -40,6 +41,9 @@ export function ApplicationWizard({
 }: ApplicationWizardProps) {
   const [active, setActive] = useState(0)
   const [form, setForm] = useState<CreateFormState>(initialState)
+  const [envBulkText, setEnvBulkText] = useState('')
+  const [envBulkMessage, setEnvBulkMessage] = useState('')
+  const fileInputRef = useRef<HTMLInputElement | null>(null)
 
   const nextStep = () => setActive((current) => (current < 3 ? current + 1 : current))
   const prevStep = () => setActive((current) => (current > 0 ? current - 1 : current))
@@ -54,6 +58,25 @@ export function ApplicationWizard({
 
   const nextStrategy = (value: string | null): CreateFormState['deploymentStrategy'] =>
     value === 'Canary' ? 'Canary' : 'Rollout'
+
+  const applyParsedSecrets = (text: string) => {
+    const parsed = parseEnvEntries(text)
+    if (parsed.length === 0) {
+      setEnvBulkMessage('.env 형식에서 읽을 수 있는 항목이 없습니다.')
+      return
+    }
+    updateForm({ secrets: parsed })
+    setEnvBulkMessage(`${parsed.length}개 항목을 가져왔습니다.`)
+  }
+
+  const handleImportEnvFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+    const text = await file.text()
+    setEnvBulkText(text)
+    applyParsedSecrets(text)
+    event.target.value = ''
+  }
 
   return (
     <Card shadow="sm" p="lg" radius="md" withBorder className="glass-panel">
@@ -116,6 +139,40 @@ export function ApplicationWizard({
             <Text size="sm" c="dimmed">
               이곳에 입력된 값은 HashiCorp Vault에 저장되며 안전하게 파드에 마운트됩니다.
             </Text>
+            <Textarea
+              label=".env 일괄 입력"
+              placeholder={'예:\nDB_HOST=db.internal\nDB_PASSWORD=secret-value\nAPI_KEY="abc123"'}
+              minRows={6}
+              value={envBulkText}
+              onChange={(e) => setEnvBulkText(e.target.value)}
+            />
+            <Group>
+              <Button
+                variant="light"
+                onClick={() => applyParsedSecrets(envBulkText)}
+              >
+                .env 내용 적용
+              </Button>
+              <Button
+                variant="default"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                .env 파일 가져오기
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".env,text/plain"
+                style={{ display: 'none' }}
+                onChange={handleImportEnvFile}
+              />
+            </Group>
+            <Text size="xs" c="dimmed">
+              `KEY=value`, `export KEY=value`, 주석(`#`) 형식을 자동으로 파싱합니다. 같은 키가 여러 번 나오면 마지막 값을 사용합니다.
+            </Text>
+            {envBulkMessage ? (
+              <Text size="sm" c="dimmed">{envBulkMessage}</Text>
+            ) : null}
             {form.secrets.map((secret, index: number) => (
               <Group key={index} grow align="flex-end">
                 <TextInput
@@ -202,4 +259,45 @@ export function ApplicationWizard({
       </Group>
     </Card>
   )
+}
+
+function parseEnvEntries(text: string): { key: string; value: string }[] {
+  const byKey = new Map<string, string>()
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) {
+      continue
+    }
+
+    const normalized = line.startsWith('export ') ? line.slice(7).trim() : line
+    const separatorIndex = normalized.indexOf('=')
+    if (separatorIndex <= 0) {
+      continue
+    }
+
+    const key = normalized.slice(0, separatorIndex).trim()
+    if (!key) {
+      continue
+    }
+
+    let value = normalized.slice(separatorIndex + 1).trim()
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+
+    value = value
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\"/g, '"')
+      .replace(/\\'/g, "'")
+
+    byKey.set(key, value)
+  }
+
+  return Array.from(byKey.entries()).map(([key, value]) => ({ key, value }))
 }
