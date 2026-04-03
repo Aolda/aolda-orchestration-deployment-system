@@ -60,6 +60,11 @@ export function ApplicationWizard({
       <Stepper active={active} onStepClick={setActive} color="lagoon.6" mb="xl">
         <Stepper.Step label="기본 정보" description="애플리케이션 메타데이터">
           <Stack gap="md" mt="md">
+            <Text size="sm" c="dimmed">
+              레포지토리는 public 또는 private 방식으로 연결할 수 있습니다. private 레포지토리는 PAT 기준으로 접근하며,
+              배포 대상 서비스는 <Text span fw={700} ff="monospace">aolda.deploy.json</Text> 형식의 설정 파일을 기준으로 읽습니다.
+              레포지토리 연결 정보는 프로젝트 설정에서 관리합니다.
+            </Text>
             <TextInput
               label="애플리케이션 이름"
               placeholder="예: payment-api"
@@ -74,8 +79,8 @@ export function ApplicationWizard({
               onChange={(e) => updateForm({ description: e.target.value })}
             />
             <TextInput
-              label="이미지 (Repository)"
-              placeholder="예: registry.internal/payment-api"
+              label="이미지"
+              placeholder="예: ghcr.io/aolda/payment-api:1.0.0"
               required
               value={form.image}
               onChange={(e) => updateForm({ image: e.target.value })}
