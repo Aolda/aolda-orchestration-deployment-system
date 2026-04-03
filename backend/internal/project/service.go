@@ -56,6 +56,7 @@ type Repository struct {
 	Name           string `json:"name"`
 	URL            string `json:"url"`
 	Description    string `json:"description,omitempty"`
+	Branch         string `json:"branch,omitempty"`
 	AuthSecretPath string `json:"authSecretPath,omitempty"`
 	ConfigFile     string `json:"configFile,omitempty"`
 }
@@ -92,6 +93,7 @@ type RepositorySummary struct {
 	Name        string `json:"name"`
 	URL         string `json:"url"`
 	Description string `json:"description,omitempty"`
+	Branch      string `json:"branch,omitempty"`
 	ConfigFile  string `json:"configFile,omitempty"`
 }
 
@@ -215,6 +217,7 @@ func (s Service) ListRepositories(ctx context.Context, user core.User, projectID
 			Name:        repo.Name,
 			URL:         repo.URL,
 			Description: repo.Description,
+			Branch:      repo.Branch,
 			ConfigFile:  repo.ConfigFile,
 		})
 	}
@@ -290,8 +293,8 @@ func applyProjectDefaults(project CatalogProject) CatalogProject {
 func applyEnvironmentDefaults(environments []Environment) []Environment {
 	if len(environments) == 0 {
 		return []Environment{{
-			ID:        "prod",
-			Name:      "Production",
+			ID:        "shared",
+			Name:      "Shared",
 			ClusterID: "default",
 			WriteMode: WriteModeDirect,
 			Default:   true,
@@ -345,7 +348,9 @@ func applyPolicyDefaults(policy PolicySet, environments []Environment) PolicySet
 		}
 	}
 	if len(policy.AllowedDeploymentStrategies) == 0 {
-		policy.AllowedDeploymentStrategies = []string{"Standard", "Canary"}
+		policy.AllowedDeploymentStrategies = []string{"Rollout", "Canary"}
+	} else {
+		policy.AllowedDeploymentStrategies = normalizeAllowedStrategies(policy.AllowedDeploymentStrategies)
 	}
 	if len(policy.AllowedClusterTargets) == 0 {
 		for _, environment := range environments {
@@ -364,6 +369,26 @@ func applyPolicyDefaults(policy PolicySet, environments []Environment) PolicySet
 		policy.RequiredProbes = true
 	}
 	return policy
+}
+
+func normalizeAllowedStrategies(values []string) []string {
+	items := make([]string, 0, len(values))
+	for _, value := range values {
+		switch value {
+		case "Standard", "Rollout":
+			if !containsString(items, "Rollout") {
+				items = append(items, "Rollout")
+			}
+		case "Canary":
+			if !containsString(items, "Canary") {
+				items = append(items, "Canary")
+			}
+		}
+	}
+	if len(items) == 0 {
+		return []string{"Rollout", "Canary"}
+	}
+	return items
 }
 
 func toPolicySummary(policy PolicySet) PolicySummary {

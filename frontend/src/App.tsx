@@ -405,7 +405,7 @@ export default function App() {
         image: form.image,
         servicePort: form.servicePort,
         deploymentStrategy: form.deploymentStrategy,
-        environment: form.environment || 'dev',
+        environment: form.environment || 'shared',
         secrets: form.secrets.filter(s => s.key && s.value)
       })
       notifications.show({ title: '성공', message: '애플리케이션이 생성되었습니다.', color: 'green' })
@@ -561,7 +561,7 @@ export default function App() {
                           <SimpleGrid cols={2} spacing="sm">
                             <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '12px', border: '1px solid #f1f5f9' }}>
                               <Text size="xs" c="dimmed" fw={700}>STRATEGY</Text>
-                              <Text size="sm" fw={800} c="lagoon.9">{app.deploymentStrategy === 'Canary' ? '카나리아' : '표준 배포'}</Text>
+                              <Text size="sm" fw={800} c="lagoon.9">{app.deploymentStrategy === 'Canary' ? '카나리아' : '롤아웃'}</Text>
                             </div>
                             <div style={{ background: '#f8fafc', padding: '12px', borderRadius: '12px', border: '1px solid #f1f5f9' }}>
                               <Text size="xs" c="dimmed" fw={700}>NAMESPACE</Text>
@@ -971,14 +971,14 @@ export default function App() {
       >
         <ApplicationWizard
           environments={environments.map((e) => ({ id: e.id, name: e.name })) || []}
-          allowedStrategies={projectPolicy?.allowedDeploymentStrategies || ['Standard', 'Canary']}
+          allowedStrategies={projectPolicy?.allowedDeploymentStrategies || ['Rollout', 'Canary']}
           initialState={{
             name: '',
             description: '',
             image: '',
             servicePort: 80,
-            deploymentStrategy: 'Standard',
-            environment: environments.find((environment) => environment.default)?.id || environments[0]?.id || 'dev',
+            deploymentStrategy: 'Rollout',
+            environment: environments.find((environment) => environment.default)?.id || environments[0]?.id || 'shared',
             secrets: [{ key: '', value: '' }]
           }}
           onSubmit={handleCreateApp}
@@ -1114,7 +1114,7 @@ export default function App() {
                   <Text size="sm" fw={800}>
                     {projectPolicy.allowedDeploymentStrategies.length > 0
                       ? projectPolicy.allowedDeploymentStrategies
-                          .map((strategy) => (strategy === 'Canary' ? '카나리아' : '표준 배포'))
+                          .map((strategy) => (strategy === 'Canary' ? '카나리아' : '롤아웃'))
                           .join(', ')
                       : '-'}
                   </Text>

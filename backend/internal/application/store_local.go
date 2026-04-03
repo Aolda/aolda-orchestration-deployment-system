@@ -89,7 +89,7 @@ func (s LocalManifestStore) CreateApplication(
 		if len(project.Environments) > 0 {
 			defaultEnvironment = project.Environments[0]
 		} else {
-			defaultEnvironment = "prod"
+			defaultEnvironment = "shared"
 		}
 	}
 	record := Record{
@@ -102,7 +102,7 @@ func (s LocalManifestStore) CreateApplication(
 		ServicePort:         input.ServicePort,
 		Replicas:            desiredReplicas(input.Replicas, project.Policies.MinReplicas),
 		RequiredProbes:      project.Policies.RequiredProbes,
-		DeploymentStrategy:  input.DeploymentStrategy,
+		DeploymentStrategy:  NormalizeDeploymentStrategy(input.DeploymentStrategy),
 		DefaultEnvironment:  defaultEnvironment,
 		CreatedAt:           now,
 		UpdatedAt:           now,
@@ -193,8 +193,9 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 			record.Replicas = 1
 		}
 		if record.DefaultEnvironment == "" {
-			record.DefaultEnvironment = "prod"
+			record.DefaultEnvironment = "shared"
 		}
+		record.DeploymentStrategy = NormalizeDeploymentStrategy(record.DeploymentStrategy)
 		return record, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Record{}, err
@@ -270,8 +271,8 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 		ServicePort:         servicePort,
 		Replicas:            maxInt(deployment.Spec.Replicas, 1),
 		RequiredProbes:      requiredProbes,
-		DeploymentStrategy:  inferStrategy(useRollout, annotations["aods.io/deployment-strategy"]),
-		DefaultEnvironment:  "prod",
+		DeploymentStrategy:  NormalizeDeploymentStrategy(inferStrategy(useRollout, annotations["aods.io/deployment-strategy"])),
+		DefaultEnvironment:  "shared",
 		CreatedAt:           createdAt,
 		UpdatedAt:           updatedAt,
 		SecretPath:          secretPath,
@@ -305,7 +306,7 @@ func (s LocalManifestStore) PatchApplication(ctx context.Context, project Projec
 		record.Replicas = *input.Replicas
 	}
 	if input.DeploymentStrategy != nil {
-		record.DeploymentStrategy = *input.DeploymentStrategy
+		record.DeploymentStrategy = NormalizeDeploymentStrategy(*input.DeploymentStrategy)
 	}
 	if input.Environment != nil && strings.TrimSpace(*input.Environment) != "" {
 		record.DefaultEnvironment = strings.TrimSpace(*input.Environment)
@@ -477,7 +478,7 @@ func renderBaseKustomization(record Record) string {
 		"virtualservice.yaml",
 		"destinationrule.yaml",
 	}
-	if record.DeploymentStrategy == DeploymentStrategyCanary {
+	if IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		resources = append(resources, "canary-service.yaml")
 	}
 	if record.SecretPath != "" {
@@ -508,14 +509,14 @@ commonAnnotations:
 }
 
 func workloadFileName(record Record) string {
-	if record.DeploymentStrategy == DeploymentStrategyCanary {
+	if IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		return "rollout.yaml"
 	}
 	return "deployment.yaml"
 }
 
 func renderWorkload(record Record) string {
-	if record.DeploymentStrategy == DeploymentStrategyCanary {
+	if IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		return renderRollout(record)
 	}
 	return renderDeployment(record)
@@ -827,7 +828,7 @@ spec:
 
 func renderVirtualService(record Record) string {
 	host := fmt.Sprintf("%s.%s.svc.cluster.local", record.Name, record.Namespace)
-	if record.DeploymentStrategy == DeploymentStrategyCanary {
+	if IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		return fmt.Sprintf(`apiVersion: networking.istio.io/v1beta1
 kind: VirtualService
 metadata:
@@ -877,7 +878,7 @@ spec:
 
 func renderDestinationRule(record Record) string {
 	host := fmt.Sprintf("%s.%s.svc.cluster.local", record.Name, record.Namespace)
-	if record.DeploymentStrategy == DeploymentStrategyCanary {
+	if IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		return fmt.Sprintf(`apiVersion: networking.istio.io/v1beta1
 kind: DestinationRule
 metadata:
@@ -1001,9 +1002,9 @@ func inferStrategy(useRollout bool, annotation string) DeploymentStrategy {
 		return DeploymentStrategyCanary
 	}
 	if strings.TrimSpace(annotation) == "" {
-		return DeploymentStrategyStandard
+		return DeploymentStrategyRollout
 	}
-	return DeploymentStrategy(annotation)
+	return NormalizeDeploymentStrategy(DeploymentStrategy(annotation))
 }
 
 func maxInt(value int, minimum int) int {
@@ -1032,7 +1033,7 @@ func normalizedEnvironments(environments []string, defaultEnvironment string) []
 		items = append(items, defaultEnvironment)
 	}
 	if len(items) == 0 {
-		items = append(items, "prod")
+		items = append(items, "shared")
 	}
 	sort.Strings(items)
 	return items
@@ -1057,7 +1058,7 @@ func (s LocalManifestStore) writeApplicationFiles(record Record, environments []
 		filepath.Join(applicationDir, "base", "virtualservice.yaml"):    renderVirtualService(record),
 		filepath.Join(applicationDir, "base", "destinationrule.yaml"):   renderDestinationRule(record),
 	}
-	if record.DeploymentStrategy == DeploymentStrategyCanary {
+	if IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		files[filepath.Join(applicationDir, "base", "canary-service.yaml")] = renderCanaryService(record)
 	}
 	if record.SecretPath != "" {
@@ -1077,11 +1078,11 @@ func (s LocalManifestStore) writeApplicationFiles(record Record, environments []
 	}
 
 	alternateWorkload := filepath.Join(applicationDir, "base", "deployment.yaml")
-	if record.DeploymentStrategy == DeploymentStrategyStandard {
+	if !IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		alternateWorkload = filepath.Join(applicationDir, "base", "rollout.yaml")
 	}
 	_ = os.Remove(alternateWorkload)
-	if record.DeploymentStrategy != DeploymentStrategyCanary {
+	if !IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		_ = os.Remove(filepath.Join(applicationDir, "base", "canary-service.yaml"))
 	}
 	if record.SecretPath == "" {

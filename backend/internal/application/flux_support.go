@@ -230,7 +230,7 @@ spec:
 }
 
 func fluxChildWait(record Record) bool {
-	return record.DeploymentStrategy != DeploymentStrategyCanary
+	return !IsCanaryDeploymentStrategy(record.DeploymentStrategy)
 }
 
 func (s LocalManifestStore) fluxKustomizationNamespace() string {
@@ -258,7 +258,7 @@ func fluxChildFileName(record Record) string {
 func fluxOverlayPath(record Record) string {
 	environment := strings.TrimSpace(record.DefaultEnvironment)
 	if environment == "" {
-		environment = "prod"
+		environment = "shared"
 	}
 	return filepath.ToSlash(path.Join("apps", record.ProjectID, record.Name, "overlays", environment))
 }

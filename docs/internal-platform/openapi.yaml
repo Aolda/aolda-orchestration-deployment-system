@@ -198,7 +198,7 @@ paths:
           $ref: '#/components/responses/InternalServerError'
     post:
       summary: Create a new application
-      description: Phase 1 supports Standard deployment only.
+      description: Applications can be created with Rollout or Canary strategies.
       parameters:
         - $ref: '#/components/parameters/ProjectId'
       requestBody:
@@ -691,7 +691,7 @@ components:
         deploymentStrategy:
           type: string
           enum:
-            - Standard
+            - Rollout
             - Canary
         environment:
           type: string
@@ -735,7 +735,7 @@ components:
         deploymentStrategy:
           type: string
           enum:
-            - Standard
+            - Rollout
             - Canary
         defaultEnvironment:
           type: string
@@ -772,7 +772,7 @@ components:
         deploymentStrategy:
           type: string
           enum:
-            - Standard
+            - Rollout
             - Canary
         syncStatus:
           $ref: '#/components/schemas/SyncStatus'
@@ -814,7 +814,7 @@ components:
         deploymentStrategy:
           type: string
           enum:
-            - Standard
+            - Rollout
             - Canary
         environment:
           type: string
@@ -881,7 +881,7 @@ components:
         deploymentStrategy:
           type: string
           enum:
-            - Standard
+            - Rollout
             - Canary
         status:
           type: string
@@ -1036,6 +1036,8 @@ components:
           format: uri
         description:
           type: string
+        branch:
+          type: string
         configFile:
           type: string
     RepositoryListResponse:
@@ -1070,7 +1072,7 @@ components:
           items:
             type: string
             enum:
-              - Standard
+              - Rollout
               - Canary
         allowedClusterTargets:
           type: array
@@ -1182,7 +1184,7 @@ components:
         deploymentStrategy:
           type: string
           enum:
-            - Standard
+            - Rollout
             - Canary
         environment:
           type: string

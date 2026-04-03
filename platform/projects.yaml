@@ -14,34 +14,26 @@ projects:
       - id: project-a-api
         name: API Repository
         url: https://github.com/aolda-demo/project-a-api
+        branch: main
         description: Primary API source code
         authSecretPath: secrets/project-a/github-token
+        configFile: aolda.deploy.json
     environments:
-      - id: dev
-        name: Development
+      - id: shared
+        name: Shared
         clusterId: default
         writeMode: direct
-      - id: staging
-        name: Staging
-        clusterId: default
-        writeMode: direct
-      - id: prod
-        name: Production
-        clusterId: default
-        writeMode: pull_request
         default: true
     policies:
       minReplicas: 2
       allowedEnvironments:
-        - dev
-        - staging
-        - prod
+        - shared
       allowedDeploymentStrategies:
-        - Standard
+        - Rollout
         - Canary
       allowedClusterTargets:
         - default
-      prodPRRequired: true
+      prodPRRequired: false
       autoRollbackEnabled: true
       requiredProbes: true
   - id: project-b

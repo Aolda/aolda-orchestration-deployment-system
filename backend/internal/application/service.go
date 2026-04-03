@@ -117,7 +117,7 @@ func (s Service) ListApplications(ctx context.Context, user core.User, projectID
 			ID:                 record.ID,
 			Name:               record.Name,
 			Image:              record.Image,
-			DeploymentStrategy: string(record.DeploymentStrategy),
+			DeploymentStrategy: string(NormalizeDeploymentStrategy(record.DeploymentStrategy)),
 			SyncStatus:         syncInfo.Status,
 		})
 	}
@@ -144,6 +144,7 @@ func (s Service) CreateApplication(
 	if err := validateCreateRequest(input); err != nil {
 		return Application{}, err
 	}
+	input.DeploymentStrategy = NormalizeDeploymentStrategy(input.DeploymentStrategy)
 	if err := s.verifyImageReference(ctx, strings.TrimSpace(input.Image)); err != nil {
 		return Application{}, err
 	}
@@ -311,7 +312,9 @@ func (s Service) PatchApplication(ctx context.Context, user core.User, applicati
 	}
 	strategy := record.DeploymentStrategy
 	if input.DeploymentStrategy != nil {
-		strategy = *input.DeploymentStrategy
+		normalized := NormalizeDeploymentStrategy(*input.DeploymentStrategy)
+		input.DeploymentStrategy = &normalized
+		strategy = normalized
 	}
 	if err := validateProjectPolicies(projectInfo.Project, environment, strategy); err != nil {
 		return Application{}, err
@@ -415,7 +418,7 @@ func (s Service) GetDeployment(ctx context.Context, user core.User, applicationI
 		return DeploymentRecord{}, err
 	}
 
-	if s.Rollouts != nil && record.DeploymentStrategy == DeploymentStrategyCanary {
+	if s.Rollouts != nil && IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		rollout, err := s.Rollouts.GetRollout(ctx, record)
 		if err == nil {
 			deployment.RolloutPhase = rollout.Phase
@@ -441,7 +444,7 @@ func (s Service) PromoteDeployment(ctx context.Context, user core.User, applicat
 	if err != nil {
 		return DeploymentRecord{}, err
 	}
-	if record.DeploymentStrategy != DeploymentStrategyCanary {
+	if !IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		return DeploymentRecord{}, ValidationError{
 			Message: "only Canary deployments can be promoted",
 			Details: map[string]any{"applicationId": applicationID},
@@ -480,7 +483,7 @@ func (s Service) AbortDeployment(ctx context.Context, user core.User, applicatio
 	if err != nil {
 		return DeploymentRecord{}, err
 	}
-	if record.DeploymentStrategy != DeploymentStrategyCanary {
+	if !IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		return DeploymentRecord{}, ValidationError{
 			Message: "only Canary deployments can be aborted",
 			Details: map[string]any{"applicationId": applicationID},
@@ -605,11 +608,18 @@ func validateCreateRequest(input CreateRequest) error {
 		}
 	}
 
-	switch input.DeploymentStrategy {
-	case DeploymentStrategyStandard, DeploymentStrategyCanary:
+	if strings.TrimSpace(string(input.DeploymentStrategy)) == "" {
+		return ValidationError{
+			Message: "deploymentStrategy is required",
+			Details: map[string]any{"field": "deploymentStrategy"},
+		}
+	}
+
+	switch NormalizeDeploymentStrategy(input.DeploymentStrategy) {
+	case DeploymentStrategyRollout, DeploymentStrategyCanary:
 	default:
 		return ValidationError{
-			Message: "deploymentStrategy must be Standard or Canary",
+			Message: "deploymentStrategy must be Rollout or Canary",
 			Details: map[string]any{"field": "deploymentStrategy"},
 		}
 	}
@@ -690,7 +700,7 @@ func resolveEnvironment(project project.CatalogProject, requested string) string
 			return environment.ID
 		}
 	}
-	return "prod"
+	return "shared"
 }
 
 func validateProjectPolicies(projectInfo project.CatalogProject, environment string, strategy DeploymentStrategy) error {
@@ -700,10 +710,10 @@ func validateProjectPolicies(projectInfo project.CatalogProject, environment str
 			Details: map[string]any{"field": "environment", "environment": environment},
 		}
 	}
-	if !containsValue(projectInfo.Policies.AllowedDeploymentStrategies, string(strategy)) {
+	if !containsNormalizedValue(projectInfo.Policies.AllowedDeploymentStrategies, string(NormalizeDeploymentStrategy(strategy))) {
 		return ValidationError{
 			Message: "deploymentStrategy is not allowed by project policy",
-			Details: map[string]any{"field": "deploymentStrategy", "deploymentStrategy": strategy},
+			Details: map[string]any{"field": "deploymentStrategy", "deploymentStrategy": NormalizeDeploymentStrategy(strategy)},
 		}
 	}
 	return nil
@@ -721,6 +731,15 @@ func requiresChangeFlow(projectInfo project.CatalogProject, environment string) 
 func containsValue(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
+func containsNormalizedValue(values []string, target string) bool {
+	for _, value := range values {
+		if string(NormalizeDeploymentStrategy(DeploymentStrategy(value))) == target {
 			return true
 		}
 	}
@@ -752,13 +771,28 @@ func buildProjectContext(projectInfo project.CatalogProject) ProjectContext {
 		Policies: projectPolicy{
 			MinReplicas:                 projectInfo.Policies.MinReplicas,
 			AllowedEnvironments:         append([]string(nil), projectInfo.Policies.AllowedEnvironments...),
-			AllowedDeploymentStrategies: append([]string(nil), projectInfo.Policies.AllowedDeploymentStrategies...),
+			AllowedDeploymentStrategies: normalizePolicyStrategies(projectInfo.Policies.AllowedDeploymentStrategies),
 			AllowedClusterTargets:       append([]string(nil), projectInfo.Policies.AllowedClusterTargets...),
 			ProdPRRequired:              projectInfo.Policies.ProdPRRequired,
 			AutoRollbackEnabled:         projectInfo.Policies.AutoRollbackEnabled,
 			RequiredProbes:              projectInfo.Policies.RequiredProbes,
 		},
 	}
+}
+
+func normalizePolicyStrategies(values []string) []string {
+	items := make([]string, 0, len(values))
+	for _, value := range values {
+		normalized := NormalizeDeploymentStrategy(DeploymentStrategy(value))
+		if normalized == "" {
+			continue
+		}
+		if containsValue(items, string(normalized)) {
+			continue
+		}
+		items = append(items, string(normalized))
+	}
+	return items
 }
 
 func (s Service) appendEvent(ctx context.Context, applicationID string, eventType string, message string, metadata map[string]any) error {
@@ -783,7 +817,7 @@ func toApplication(record Record, syncInfo SyncInfo) Application {
 		Image:               record.Image,
 		ServicePort:         record.ServicePort,
 		Replicas:            record.Replicas,
-		DeploymentStrategy:  string(record.DeploymentStrategy),
+		DeploymentStrategy:  string(NormalizeDeploymentStrategy(record.DeploymentStrategy)),
 		DefaultEnvironment:  record.DefaultEnvironment,
 		SyncStatus:          syncInfo.Status,
 		CreatedAt:           record.CreatedAt,
