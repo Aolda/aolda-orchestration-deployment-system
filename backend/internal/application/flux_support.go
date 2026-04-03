@@ -219,14 +219,18 @@ metadata:
 spec:
   interval: 1m0s
   prune: true
-  wait: true
+  wait: %t
   timeout: 3m0s
   path: %s
   targetNamespace: %s
   sourceRef:
     kind: GitRepository
     name: %s
-`, yamlScalar(fluxChildName(record)), yamlScalar(s.fluxKustomizationNamespace()), yamlScalar(record.ID), yamlScalar(record.ProjectID), yamlScalar(record.DefaultEnvironment), yamlScalar("./"+fluxOverlayPath(record)), yamlScalar(record.Namespace), yamlScalar(s.fluxSourceName()))
+`, yamlScalar(fluxChildName(record)), yamlScalar(s.fluxKustomizationNamespace()), yamlScalar(record.ID), yamlScalar(record.ProjectID), yamlScalar(record.DefaultEnvironment), fluxChildWait(record), yamlScalar("./"+fluxOverlayPath(record)), yamlScalar(record.Namespace), yamlScalar(s.fluxSourceName()))
+}
+
+func fluxChildWait(record Record) bool {
+	return record.DeploymentStrategy != DeploymentStrategyCanary
 }
 
 func (s LocalManifestStore) fluxKustomizationNamespace() string {
