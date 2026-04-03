@@ -997,12 +997,18 @@ export default function App() {
         <Stack gap="lg">
           <div className={classes.surfaceCard}>
             <Text className={classes.sectionEyebrow} mb="md">연결된 저장소</Text>
+            <Text size="sm" c="dimmed" mb="md">
+              애플리케이션은 레포지토리 기준으로 연결됩니다. 각 레포지토리는 public 또는 private 방식으로 등록할 수 있고,
+              배포 대상 서비스는 설정 파일 형식인 <Text span fw={700} ff="monospace">aolda.deploy.json</Text> 기준으로 읽습니다.
+            </Text>
             {repositories.length > 0 ? (
               <Table striped highlightOnHover>
                 <Table.Thead>
                   <Table.Tr>
                     <Table.Th>이름</Table.Th>
                     <Table.Th>설명</Table.Th>
+                    <Table.Th>접근 방식</Table.Th>
+                    <Table.Th>설정 파일 형식</Table.Th>
                     <Table.Th>저장소 주소</Table.Th>
                     <Table.Th>바로가기</Table.Th>
                   </Table.Tr>
@@ -1012,6 +1018,16 @@ export default function App() {
                     <Table.Tr key={repository.id}>
                       <Table.Td>{repository.name}</Table.Td>
                       <Table.Td>{repository.description || '-'}</Table.Td>
+                      <Table.Td>
+                        <Text size="sm" fw={700}>{repository.access}</Text>
+                      </Table.Td>
+                      <Table.Td>
+                        <Text size="sm" ff="monospace">
+                          {repository.configFile
+                            ? `${repository.configFile.endsWith('.json') ? 'JSON' : '파일'} · ${repository.configFile}`
+                            : '-'}
+                        </Text>
+                      </Table.Td>
                       <Table.Td>
                         <Text size="sm" ff="monospace">{repository.url}</Text>
                       </Table.Td>

@@ -1036,6 +1036,11 @@ components:
           format: uri
         description:
           type: string
+        access:
+          type: string
+          enum:
+            - public
+            - private
         branch:
           type: string
         configFile:
