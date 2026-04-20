@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,17 +14,23 @@ import (
 )
 
 type ImageVerifier interface {
-	Verify(ctx context.Context, image string) error
+	Verify(ctx context.Context, image string, credential *RegistryCredential) error
 }
 
 type NoopImageVerifier struct{}
 
-func (NoopImageVerifier) Verify(context.Context, string) error {
+func (NoopImageVerifier) Verify(context.Context, string, *RegistryCredential) error {
 	return nil
 }
 
 type RegistryImageVerifier struct {
 	Client *http.Client
+}
+
+type RegistryCredential struct {
+	Server   string
+	Username string
+	Password string
 }
 
 type ImageValidationError struct {
@@ -45,7 +52,7 @@ type imageReference struct {
 	Scheme     string
 }
 
-func (v RegistryImageVerifier) Verify(ctx context.Context, image string) error {
+func (v RegistryImageVerifier) Verify(ctx context.Context, image string, credential *RegistryCredential) error {
 	ref, err := parseImageReference(image)
 	if err != nil {
 		return ImageValidationError{
@@ -69,11 +76,30 @@ func (v RegistryImageVerifier) Verify(ctx context.Context, image string) error {
 			return authRequiredError(ref)
 		}
 
+		if credential != nil && credential.matches(ref.Registry) {
+			token, err := v.fetchRegistryToken(ctx, challenge, *credential)
+			if err == nil {
+				status, body, err = v.fetchManifest(ctx, ref, token)
+				if err != nil {
+					return imageCheckFailure(ref, err)
+				}
+				switch status {
+				case http.StatusOK:
+					return nil
+				case http.StatusNotFound:
+					return imageNotFoundError(ref)
+				case http.StatusUnauthorized, http.StatusForbidden:
+					// Fall back to anonymous token exchange below before surfacing auth failure.
+				default:
+					return statusToImageError(ref, status, body.payload)
+				}
+			}
+		}
+
 		token, err := v.fetchAnonymousToken(ctx, challenge)
 		if err != nil {
 			return authRequiredError(ref)
 		}
-
 		status, body, err = v.fetchManifest(ctx, ref, token)
 		if err != nil {
 			return imageCheckFailure(ref, err)
@@ -173,6 +199,19 @@ func parseBearerChallenge(header string) (bearerChallenge, bool) {
 }
 
 func (v RegistryImageVerifier) fetchAnonymousToken(ctx context.Context, challenge bearerChallenge) (string, error) {
+	return v.fetchToken(ctx, challenge, nil)
+}
+
+func (v RegistryImageVerifier) fetchRegistryToken(ctx context.Context, challenge bearerChallenge, credential RegistryCredential) (string, error) {
+	username := strings.TrimSpace(credential.Username)
+	password := credential.Password
+	if username == "" || password == "" {
+		return "", errors.New("registry credentials are incomplete")
+	}
+	return v.fetchToken(ctx, challenge, &credential)
+}
+
+func (v RegistryImageVerifier) fetchToken(ctx context.Context, challenge bearerChallenge, credential *RegistryCredential) (string, error) {
 	client := v.Client
 	if client == nil {
 		client = http.DefaultClient
@@ -196,6 +235,9 @@ func (v RegistryImageVerifier) fetchAnonymousToken(ctx context.Context, challeng
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, tokenURL.String(), nil)
 	if err != nil {
 		return "", err
+	}
+	if credential != nil {
+		req.SetBasicAuth(strings.TrimSpace(credential.Username), credential.Password)
 	}
 
 	resp, err := client.Do(req)
@@ -222,7 +264,14 @@ func (v RegistryImageVerifier) fetchAnonymousToken(ctx context.Context, challeng
 	if payload.AccessToken != "" {
 		return payload.AccessToken, nil
 	}
-	return "", errors.New("anonymous token response did not include a token")
+	return "", errors.New("token response did not include a token")
+}
+
+func (c RegistryCredential) matches(registry string) bool {
+	if strings.TrimSpace(c.Server) == "" {
+		return true
+	}
+	return normalizeRegistryServer(c.Server) == normalizeRegistryServer(registry)
 }
 
 func parseImageReference(image string) (imageReference, error) {
@@ -300,6 +349,65 @@ func registryScheme(host string) string {
 		return "http"
 	}
 	return "https"
+}
+
+func normalizeRegistryServer(value string) string {
+	trimmed := strings.TrimSpace(value)
+	trimmed = strings.TrimPrefix(trimmed, "https://")
+	trimmed = strings.TrimPrefix(trimmed, "http://")
+	return strings.TrimSuffix(trimmed, "/")
+}
+
+func buildDockerConfigJSON(server string, username string, password string) (string, error) {
+	server = normalizeRegistryServer(server)
+	if server == "" {
+		return "", errors.New("registry server is required")
+	}
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return "", errors.New("registry username is required")
+	}
+	if password == "" {
+		return "", errors.New("registry password is required")
+	}
+
+	auth := base64.StdEncoding.EncodeToString([]byte(username + ":" + password))
+	payload := map[string]any{
+		"auths": map[string]map[string]string{
+			server: {
+				"username": username,
+				"password": password,
+				"auth":     auth,
+			},
+		},
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
+}
+
+func registryCredentialFromSecret(values map[string]string) (*RegistryCredential, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+
+	server := normalizeRegistryServer(values["server"])
+	username := strings.TrimSpace(values["username"])
+	password := values["password"]
+	if server == "" && username == "" && password == "" {
+		return nil, nil
+	}
+	if server == "" || username == "" || password == "" {
+		return nil, errors.New("stored registry credential is incomplete")
+	}
+
+	return &RegistryCredential{
+		Server:   server,
+		Username: username,
+		Password: password,
+	}, nil
 }
 
 func imageNotFoundError(ref imageReference) error {

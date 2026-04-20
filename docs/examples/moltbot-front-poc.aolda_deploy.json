@@ -1,0 +1,11 @@
+{
+  "services": [
+    {
+      "serviceId": "moltbot-front-poc",
+      "image": "ghcr.io/jalju0804/moltbot-front-poc:latest",
+      "port": 3000,
+      "replicas": 1,
+      "strategy": "Rollout"
+    }
+  ]
+}

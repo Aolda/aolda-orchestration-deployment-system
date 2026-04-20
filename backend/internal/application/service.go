@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
 	"strings"
 	"time"
@@ -15,6 +16,8 @@ import (
 var (
 	ErrNotFound           = errors.New("application not found")
 	ErrConflict           = errors.New("application conflict")
+	ErrArchived           = errors.New("application archived")
+	ErrAlreadyArchived    = errors.New("application already archived")
 	ErrInvalidID          = errors.New("application id is invalid")
 	ErrRequiresDeployer   = errors.New("deployer permissions are required")
 	ErrRequiresAdmin      = errors.New("admin permissions are required")
@@ -40,6 +43,8 @@ type Store interface {
 	ListApplications(ctx context.Context, projectID string) ([]Record, error)
 	GetApplication(ctx context.Context, applicationID string) (Record, error)
 	CreateApplication(ctx context.Context, project ProjectContext, input CreateRequest, secretPath string) (Record, error)
+	ArchiveApplication(ctx context.Context, applicationID string, archivedBy string) (ApplicationLifecycleResponse, error)
+	DeleteApplication(ctx context.Context, applicationID string) (ApplicationLifecycleResponse, error)
 	UpdateApplicationImage(ctx context.Context, project ProjectContext, applicationID string, imageTag string, deploymentID string) (Record, error)
 	PatchApplication(ctx context.Context, project ProjectContext, applicationID string, input UpdateApplicationRequest) (Record, error)
 	ListDeployments(ctx context.Context, applicationID string) ([]DeploymentRecord, error)
@@ -63,6 +68,16 @@ type MetricsReader interface {
 	Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error)
 }
 
+type NetworkExposureReader interface {
+	Read(ctx context.Context, record Record) (NetworkExposureInfo, error)
+}
+
+type LogsReader interface {
+	ListTargets(ctx context.Context, record Record) ([]ContainerLogTarget, error)
+	Read(ctx context.Context, record Record, tailLines int) ([]ContainerLogStream, error)
+	Stream(ctx context.Context, record Record, podName string, containerName string, tailLines int, emit func(ContainerLogEvent) error) error
+}
+
 type RolloutController interface {
 	GetRollout(ctx context.Context, record Record) (RolloutInfo, error)
 	Promote(ctx context.Context, record Record, full bool) (RolloutInfo, error)
@@ -71,18 +86,24 @@ type RolloutController interface {
 
 type SecretStore interface {
 	Stage(ctx context.Context, requestID string, projectID string, appName string, createdBy string, data map[string]string) (StagedSecret, error)
+	StageAt(ctx context.Context, requestID string, finalPath string, metadata map[string]string, data map[string]string) (StagedSecret, error)
 	Finalize(ctx context.Context, staged StagedSecret, data map[string]string) error
 	Get(ctx context.Context, logicalPath string) (map[string]string, error)
+	Delete(ctx context.Context, logicalPath string) error
 }
 
 type Service struct {
-	Projects      *project.Service
-	Store         Store
-	StatusReader  StatusReader
-	MetricsReader MetricsReader
-	Secrets       SecretStore
-	Rollouts      RolloutController
-	Images        ImageVerifier
+	Projects              *project.Service
+	Store                 Store
+	StatusReader          StatusReader
+	MetricsReader         MetricsReader
+	NetworkExposureReader NetworkExposureReader
+	LogsReader            LogsReader
+	Secrets               SecretStore
+	Rollouts              RolloutController
+	Images                ImageVerifier
+	HTTPClient            *http.Client
+	PollTracker           *RepositoryPollTracker
 }
 
 func (s Service) ListApplications(ctx context.Context, user core.User, projectID string) ([]Summary, error) {
@@ -114,11 +135,14 @@ func (s Service) ListApplications(ctx context.Context, user core.User, projectID
 		}
 
 		items = append(items, Summary{
-			ID:                 record.ID,
-			Name:               record.Name,
-			Image:              record.Image,
-			DeploymentStrategy: string(NormalizeDeploymentStrategy(record.DeploymentStrategy)),
-			SyncStatus:         syncInfo.Status,
+			ID:                  record.ID,
+			Name:                record.Name,
+			Image:               record.Image,
+			DeploymentStrategy:  string(NormalizeDeploymentStrategy(record.DeploymentStrategy)),
+			SyncStatus:          syncInfo.Status,
+			Resources:           record.Resources,
+			MeshEnabled:         record.MeshEnabled,
+			LoadBalancerEnabled: record.LoadBalancerEnabled,
 		})
 	}
 
@@ -141,11 +165,34 @@ func (s Service) CreateApplication(
 		return Application{}, ErrRequiresDeployer
 	}
 
+	if err := s.hydrateRepositorySource(ctx, &input); err != nil {
+		return Application{}, err
+	}
 	if err := validateCreateRequest(input); err != nil {
 		return Application{}, err
 	}
+	if err := normalizeRepositoryMetadata(authorizedProject.Project, &input); err != nil {
+		return Application{}, err
+	}
 	input.DeploymentStrategy = NormalizeDeploymentStrategy(input.DeploymentStrategy)
-	if err := s.verifyImageReference(ctx, strings.TrimSpace(input.Image)); err != nil {
+	normalizeCreateNetworkProfile(&input)
+	if err := validateNetworkProfile(input.DeploymentStrategy, input.MeshEnabled, input.LoadBalancerEnabled); err != nil {
+		return Application{}, err
+	}
+	registryCredential, dockerConfigJSON, err := normalizeRegistryCredentialInput(
+		strings.TrimSpace(input.Image),
+		input.RegistryServer,
+		input.RegistryUsername,
+		input.RegistryToken,
+	)
+	if err != nil {
+		return Application{}, err
+	}
+	if registryCredential != nil {
+		input.RegistryServer = registryCredential.Server
+		input.RegistryUsername = registryCredential.Username
+	}
+	if err := s.verifyImageReference(ctx, strings.TrimSpace(input.Image), registryCredential); err != nil {
 		return Application{}, err
 	}
 	input.Environment = resolveEnvironment(authorizedProject.Project, input.Environment)
@@ -162,14 +209,53 @@ func (s Service) CreateApplication(
 	}
 
 	secretPath := ""
-	var staged StagedSecret
+	stagedSecrets := make([]StagedSecret, 0, 3)
 	if len(secretData) > 0 && s.Secrets != nil {
 		secretPath = core.BuildVaultFinalPath(projectID, input.Name)
-		staged, err = s.Secrets.Stage(ctx, requestID, projectID, input.Name, user.Username, secretData)
+		staged, err := s.Secrets.Stage(ctx, requestID, projectID, input.Name, user.Username, secretData)
 		if err != nil {
 			return Application{}, err
 		}
 		secretPath = staged.FinalPath
+		stagedSecrets = append(stagedSecrets, staged)
+	}
+
+	repositoryToken := strings.TrimSpace(input.RepositoryToken)
+	if repositoryToken != "" && s.Secrets != nil {
+		repositoryTokenPath := core.BuildVaultRepositoryTokenPath(projectID, input.Name)
+		staged, err := s.Secrets.StageAt(ctx, requestID+"_repository", repositoryTokenPath, map[string]string{
+			"projectId": projectID,
+			"appName":   input.Name,
+			"createdBy": user.Username,
+			"kind":      "repository-token",
+		}, map[string]string{
+			"token": repositoryToken,
+		})
+		if err != nil {
+			return Application{}, err
+		}
+		input.RepositoryTokenPath = staged.FinalPath
+		stagedSecrets = append(stagedSecrets, staged)
+	}
+
+	if registryCredential != nil && s.Secrets != nil {
+		registrySecretPath := core.BuildVaultRegistryCredentialPath(projectID, input.Name)
+		staged, err := s.Secrets.StageAt(ctx, requestID+"_registry", registrySecretPath, map[string]string{
+			"projectId": projectID,
+			"appName":   input.Name,
+			"createdBy": user.Username,
+			"kind":      "registry-credential",
+		}, map[string]string{
+			"server":           registryCredential.Server,
+			"username":         registryCredential.Username,
+			"password":         registryCredential.Password,
+			"dockerconfigjson": dockerConfigJSON,
+		})
+		if err != nil {
+			return Application{}, err
+		}
+		input.RegistrySecretPath = staged.FinalPath
+		stagedSecrets = append(stagedSecrets, staged)
 	}
 
 	record, err := s.Store.CreateApplication(ctx, buildProjectContext(authorizedProject.Project), input, secretPath)
@@ -177,17 +263,27 @@ func (s Service) CreateApplication(
 		return Application{}, err
 	}
 	record.RepositoryID = input.RepositoryID
+	record.RepositoryURL = input.RepositoryURL
+	record.RepositoryBranch = input.RepositoryBranch
 	record.RepositoryServiceID = input.RepositoryServiceID
 	record.ConfigPath = input.ConfigPath
-	if record.ConfigPath == "" {
-		record.ConfigPath = "aolda-deploy.yaml"
-	}
-	// We need to re-save to store the new fields because Store.CreateApplication might not handle them yet
-	// Actually, I should update the Store.CreateApplication interface but let's do a patch for now for safety
-	// or better, update the Store interface.
+	record.RepositoryTokenPath = input.RepositoryTokenPath
+	record.RegistrySecretPath = input.RegistrySecretPath
 
-	if len(secretData) > 0 && s.Secrets != nil {
-		if err := s.Secrets.Finalize(ctx, staged, secretData); err != nil {
+	for _, staged := range stagedSecrets {
+		payload := secretData
+		if staged.FinalPath == input.RepositoryTokenPath {
+			payload = map[string]string{"token": repositoryToken}
+		}
+		if staged.FinalPath == input.RegistrySecretPath {
+			payload = map[string]string{
+				"server":           registryCredential.Server,
+				"username":         registryCredential.Username,
+				"password":         registryCredential.Password,
+				"dockerconfigjson": dockerConfigJSON,
+			}
+		}
+		if err := s.Secrets.Finalize(ctx, staged, payload); err != nil {
 			return Application{}, err
 		}
 	}
@@ -202,6 +298,64 @@ func (s Service) CreateApplication(
 	})
 
 	return toApplication(record, syncInfo), nil
+}
+
+func (s Service) PreviewRepositorySource(
+	ctx context.Context,
+	user core.User,
+	projectID string,
+	input PreviewRepositorySourceRequest,
+) (PreviewRepositorySourceResponse, error) {
+	authorizedProject, err := s.Projects.GetAuthorized(ctx, user, projectID)
+	if err != nil {
+		return PreviewRepositorySourceResponse{}, err
+	}
+	if !authorizedProject.Role.CanDeploy() {
+		return PreviewRepositorySourceResponse{}, ErrRequiresDeployer
+	}
+
+	createInput := CreateRequest{
+		Name:                strings.TrimSpace(input.Name),
+		RepositoryURL:       strings.TrimSpace(input.RepositoryURL),
+		RepositoryBranch:    strings.TrimSpace(input.RepositoryBranch),
+		RepositoryToken:     strings.TrimSpace(input.RepositoryToken),
+		RepositoryServiceID: strings.TrimSpace(input.RepositoryServiceID),
+		ConfigPath:          strings.TrimSpace(input.ConfigPath),
+	}
+	if err := normalizeRepositoryMetadata(authorizedProject.Project, &createInput); err != nil {
+		return PreviewRepositorySourceResponse{}, err
+	}
+
+	descriptor, err := s.readRepositoryDescriptor(ctx, createInput)
+	if err != nil {
+		return PreviewRepositorySourceResponse{}, err
+	}
+
+	items := make([]PreviewRepositoryService, 0, len(descriptor.Services))
+	for _, service := range descriptor.Services {
+		items = append(items, PreviewRepositoryService{
+			ServiceID: service.ServiceID,
+			Image:     service.Image,
+			Port:      service.Port,
+			Replicas:  service.Replicas,
+			Strategy:  NormalizeDeploymentStrategy(service.Strategy),
+		})
+	}
+
+	selectedServiceID := ""
+	if resolved, ok := descriptor.resolveService(Record{
+		Name:                createInput.Name,
+		RepositoryServiceID: createInput.RepositoryServiceID,
+	}); ok {
+		selectedServiceID = resolved.ServiceID
+	}
+
+	return PreviewRepositorySourceResponse{
+		ConfigPath:               createInput.ConfigPath,
+		Services:                 items,
+		SelectedServiceID:        selectedServiceID,
+		RequiresServiceSelection: len(items) > 1 && selectedServiceID == "",
+	}, nil
 }
 
 func (s Service) CreateDeployment(
@@ -277,7 +431,21 @@ func (s Service) CreateDeployment(
 }
 
 func (s Service) ValidateImageReference(ctx context.Context, image string) error {
-	return s.verifyImageReference(ctx, strings.TrimSpace(image))
+	return s.verifyImageReference(ctx, strings.TrimSpace(image), nil)
+}
+
+func (s Service) ValidateImageReferenceWithCredential(
+	ctx context.Context,
+	image string,
+	registryServer string,
+	registryUsername string,
+	registryToken string,
+) error {
+	credential, _, err := normalizeRegistryCredentialInput(image, registryServer, registryUsername, registryToken)
+	if err != nil {
+		return err
+	}
+	return s.verifyImageReference(ctx, strings.TrimSpace(image), credential)
 }
 
 func (s Service) ValidateDeploymentImage(ctx context.Context, user core.User, applicationID string, imageTag string) error {
@@ -300,6 +468,38 @@ func (s Service) PatchApplication(ctx context.Context, user core.User, applicati
 	if err != nil {
 		return Application{}, err
 	}
+	networkSettingsChanged := input.MeshEnabled != nil || input.LoadBalancerEnabled != nil
+	if input.Resources != nil || networkSettingsChanged {
+		if _, _, err := s.requireProjectAdmin(ctx, user, applicationID); err != nil {
+			return Application{}, err
+		}
+	}
+	if input.Resources != nil {
+		normalizedResources, err := normalizeResourceRequirements(*input.Resources, false)
+		if err != nil {
+			return Application{}, err
+		}
+		input.Resources = &normalizedResources
+	}
+	if input.DeploymentStrategy != nil {
+		normalized := NormalizeDeploymentStrategy(*input.DeploymentStrategy)
+		input.DeploymentStrategy = &normalized
+	}
+	nextStrategy := record.DeploymentStrategy
+	if input.DeploymentStrategy != nil {
+		nextStrategy = NormalizeDeploymentStrategy(*input.DeploymentStrategy)
+	}
+	nextMeshEnabled := record.MeshEnabled
+	if input.MeshEnabled != nil {
+		nextMeshEnabled = *input.MeshEnabled
+	}
+	nextLoadBalancerEnabled := record.LoadBalancerEnabled
+	if input.LoadBalancerEnabled != nil {
+		nextLoadBalancerEnabled = *input.LoadBalancerEnabled
+	}
+	if err := validateNetworkProfile(nextStrategy, nextMeshEnabled, nextLoadBalancerEnabled); err != nil {
+		return Application{}, err
+	}
 
 	projectInfo, err := s.Projects.GetAuthorized(ctx, user, record.ProjectID)
 	if err != nil {
@@ -312,9 +512,7 @@ func (s Service) PatchApplication(ctx context.Context, user core.User, applicati
 	}
 	strategy := record.DeploymentStrategy
 	if input.DeploymentStrategy != nil {
-		normalized := NormalizeDeploymentStrategy(*input.DeploymentStrategy)
-		input.DeploymentStrategy = &normalized
-		strategy = normalized
+		strategy = *input.DeploymentStrategy
 	}
 	if err := validateProjectPolicies(projectInfo.Project, environment, strategy); err != nil {
 		return Application{}, err
@@ -329,7 +527,11 @@ func (s Service) PatchApplication(ctx context.Context, user core.User, applicati
 				Details: map[string]any{"field": "image"},
 			}
 		}
-		if err := s.verifyImageReference(ctx, strings.TrimSpace(*input.Image)); err != nil {
+		registryCredential, err := s.resolveRecordRegistryCredential(ctx, record)
+		if err != nil {
+			return Application{}, err
+		}
+		if err := s.verifyImageReference(ctx, strings.TrimSpace(*input.Image), registryCredential); err != nil {
 			return Application{}, err
 		}
 	}
@@ -339,10 +541,24 @@ func (s Service) PatchApplication(ctx context.Context, user core.User, applicati
 			Details: map[string]any{"field": "replicas"},
 		}
 	}
+	if input.RepositoryPollIntervalSeconds != nil {
+		if !appHasRepositorySource(record) {
+			return Application{}, ValidationError{
+				Message: "repositoryPollIntervalSeconds requires a repository-backed application",
+				Details: map[string]any{"field": "repositoryPollIntervalSeconds"},
+			}
+		}
+		if err := validateRepositoryPollIntervalSeconds(*input.RepositoryPollIntervalSeconds); err != nil {
+			return Application{}, err
+		}
+	}
 
 	updatedRecord, err := s.Store.PatchApplication(ctx, buildProjectContext(projectInfo.Project), applicationID, input)
 	if err != nil {
 		return Application{}, err
+	}
+	if s.PollTracker != nil && input.RepositoryPollIntervalSeconds != nil {
+		s.PollTracker.Reschedule(updatedRecord, timeNowUTC())
 	}
 	syncInfo, err := s.StatusReader.Read(ctx, updatedRecord)
 	if err != nil {
@@ -353,6 +569,49 @@ func (s Service) PatchApplication(ctx context.Context, user core.User, applicati
 		"strategy":    updatedRecord.DeploymentStrategy,
 	})
 	return toApplication(updatedRecord, syncInfo), nil
+}
+
+func (s Service) ArchiveApplication(ctx context.Context, user core.User, applicationID string) (ApplicationLifecycleResponse, error) {
+	if _, _, err := s.requireProjectAdmin(ctx, user, applicationID); err != nil {
+		return ApplicationLifecycleResponse{}, err
+	}
+
+	result, err := s.Store.ArchiveApplication(ctx, applicationID, user.Username)
+	if err != nil {
+		return ApplicationLifecycleResponse{}, err
+	}
+	archivedAt := ""
+	if result.ArchivedAt != nil {
+		archivedAt = result.ArchivedAt.UTC().Format(time.RFC3339)
+	}
+	_ = s.appendEvent(ctx, applicationID, "ApplicationArchived", "애플리케이션을 보관 처리했습니다.", map[string]any{
+		"archivedAt": archivedAt,
+	})
+	return result, nil
+}
+
+func (s Service) DeleteApplication(ctx context.Context, user core.User, applicationID string) (ApplicationLifecycleResponse, error) {
+	if _, _, err := s.requireProjectAdmin(ctx, user, applicationID); err != nil {
+		return ApplicationLifecycleResponse{}, err
+	}
+
+	result, err := s.Store.DeleteApplication(ctx, applicationID)
+	if err != nil {
+		return ApplicationLifecycleResponse{}, err
+	}
+
+	if s.Secrets != nil {
+		for _, secretPath := range result.secretPaths {
+			if strings.TrimSpace(secretPath) == "" {
+				continue
+			}
+			if err := s.Secrets.Delete(ctx, secretPath); err != nil {
+				return ApplicationLifecycleResponse{}, err
+			}
+		}
+	}
+
+	return result, nil
 }
 
 func (s Service) GetSyncStatus(ctx context.Context, user core.User, applicationID string) (SyncStatusResponse, error) {
@@ -367,11 +626,46 @@ func (s Service) GetSyncStatus(ctx context.Context, user core.User, applicationI
 	}
 
 	return SyncStatusResponse{
-		ApplicationID: record.ID,
-		Status:        syncInfo.Status,
-		Message:       syncInfo.Message,
-		ObservedAt:    syncInfo.ObservedAt,
+		ApplicationID:  record.ID,
+		Status:         syncInfo.Status,
+		Message:        syncInfo.Message,
+		ObservedAt:     syncInfo.ObservedAt,
+		RepositoryPoll: s.PollTracker.Snapshot(record),
 	}, nil
+}
+
+func (s Service) SyncRepositoryNow(ctx context.Context, user core.User, applicationID string) (RepositorySyncResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return RepositorySyncResponse{}, err
+	}
+
+	projectInfo, err := s.Projects.GetAuthorized(ctx, user, record.ProjectID)
+	if err != nil {
+		return RepositorySyncResponse{}, err
+	}
+
+	repoMap := make(map[string]project.Repository, len(projectInfo.Project.Repositories))
+	for _, repo := range projectInfo.Project.Repositories {
+		repoMap[repo.ID] = repo
+	}
+
+	poller := AutoUpdatePoller{
+		Service:  &s,
+		Projects: s.Projects,
+		Interval: s.defaultRepositoryPollInterval(),
+		Client:   s.httpClient(),
+	}
+
+	repo, ok := poller.repositoryForApp(record, repoMap)
+	if !ok {
+		return RepositorySyncResponse{}, ValidationError{
+			Message: "repository sync is only available for repository-backed applications",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+
+	return poller.SyncRepositoryNow(ctx, user, projectInfo.Project, record, repo)
 }
 
 func (s Service) GetMetrics(ctx context.Context, user core.User, applicationID string, duration time.Duration, step time.Duration) (MetricsResponse, error) {
@@ -389,6 +683,172 @@ func (s Service) GetMetrics(ctx context.Context, user core.User, applicationID s
 		ApplicationID: record.ID,
 		Metrics:       metrics,
 	}, nil
+}
+
+func (s Service) GetNetworkExposure(ctx context.Context, user core.User, applicationID string) (NetworkExposureResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, false)
+	if err != nil {
+		return NetworkExposureResponse{}, err
+	}
+	if s.NetworkExposureReader == nil {
+		return NetworkExposureResponse{
+			ApplicationID: record.ID,
+			Enabled:       record.LoadBalancerEnabled,
+			Status:        NetworkExposureStatusPending,
+			Message:       "LoadBalancer 노출 상태 리더가 설정되지 않았습니다.",
+			ObservedAt:    timeNowUTC(),
+		}, nil
+	}
+
+	info, err := s.NetworkExposureReader.Read(ctx, record)
+	if err != nil {
+		return NetworkExposureResponse{
+			ApplicationID: record.ID,
+			Enabled:       record.LoadBalancerEnabled,
+			Status:        NetworkExposureStatusError,
+			Message:       err.Error(),
+			ServiceType:   "LoadBalancer",
+			ObservedAt:    timeNowUTC(),
+		}, nil
+	}
+
+	return NetworkExposureResponse{
+		ApplicationID: record.ID,
+		Enabled:       record.LoadBalancerEnabled,
+		Status:        info.Status,
+		Message:       info.Message,
+		ServiceType:   info.ServiceType,
+		Addresses:     append([]string(nil), info.Addresses...),
+		Ports:         append([]NetworkExposurePort(nil), info.Ports...),
+		LastEvent:     info.LastEvent,
+		ObservedAt:    info.ObservedAt,
+	}, nil
+}
+
+func (s Service) GetContainerLogs(ctx context.Context, user core.User, applicationID string, tailLines int) (ContainerLogsResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, false)
+	if err != nil {
+		return ContainerLogsResponse{}, err
+	}
+	if s.LogsReader == nil {
+		return ContainerLogsResponse{}, ValidationError{
+			Message: "container logs are unavailable because kubernetes api is not configured",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+
+	if tailLines <= 0 {
+		tailLines = 120
+	}
+	if tailLines > 500 {
+		tailLines = 500
+	}
+
+	items, err := s.LogsReader.Read(ctx, record, tailLines)
+	if err != nil {
+		return ContainerLogsResponse{}, err
+	}
+
+	return ContainerLogsResponse{
+		ApplicationID: record.ID,
+		CollectedAt:   timeNowUTC(),
+		TailLines:     tailLines,
+		Items:         items,
+	}, nil
+}
+
+func (s Service) GetContainerLogTargets(ctx context.Context, user core.User, applicationID string) (ContainerLogTargetsResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, false)
+	if err != nil {
+		return ContainerLogTargetsResponse{}, err
+	}
+	if s.LogsReader == nil {
+		return ContainerLogTargetsResponse{}, ValidationError{
+			Message: "container logs are unavailable because kubernetes api is not configured",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+
+	items, err := s.LogsReader.ListTargets(ctx, record)
+	if err != nil {
+		return ContainerLogTargetsResponse{}, err
+	}
+
+	return ContainerLogTargetsResponse{
+		ApplicationID: record.ID,
+		CollectedAt:   timeNowUTC(),
+		Items:         items,
+	}, nil
+}
+
+func (s Service) StreamContainerLogs(
+	ctx context.Context,
+	user core.User,
+	applicationID string,
+	podName string,
+	containerName string,
+	tailLines int,
+	emit func(ContainerLogEvent) error,
+) error {
+	record, err := s.requireApplication(ctx, user, applicationID, false)
+	if err != nil {
+		return err
+	}
+	if s.LogsReader == nil {
+		return ValidationError{
+			Message: "container logs are unavailable because kubernetes api is not configured",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+	if strings.TrimSpace(podName) == "" {
+		return ValidationError{
+			Message: "podName is required to stream container logs",
+			Details: map[string]any{"field": "podName"},
+		}
+	}
+	if strings.TrimSpace(containerName) == "" {
+		return ValidationError{
+			Message: "containerName is required to stream container logs",
+			Details: map[string]any{"field": "containerName"},
+		}
+	}
+
+	if tailLines <= 0 {
+		tailLines = 120
+	}
+	if tailLines > 500 {
+		tailLines = 500
+	}
+
+	targets, err := s.LogsReader.ListTargets(ctx, record)
+	if err != nil {
+		return err
+	}
+	if !hasContainerLogTarget(targets, podName, containerName) {
+		return ValidationError{
+			Message: "selected pod or container was not found",
+			Details: map[string]any{
+				"podName":       podName,
+				"containerName": containerName,
+			},
+		}
+	}
+
+	return s.LogsReader.Stream(ctx, record, podName, containerName, tailLines, emit)
+}
+
+func hasContainerLogTarget(targets []ContainerLogTarget, podName string, containerName string) bool {
+	for _, target := range targets {
+		if target.PodName != podName {
+			continue
+		}
+		for _, container := range target.Containers {
+			if container.Name == containerName {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (s Service) ListDeployments(ctx context.Context, user core.User, applicationID string) (DeploymentListResponse, error) {
@@ -568,6 +1028,23 @@ func (s Service) requireApplication(
 	return s.Store.GetApplication(ctx, applicationID)
 }
 
+func (s Service) requireProjectAdmin(ctx context.Context, user core.User, applicationID string) (string, project.AuthorizedProject, error) {
+	projectID, _, err := splitApplicationID(applicationID)
+	if err != nil {
+		return "", project.AuthorizedProject{}, err
+	}
+
+	authorizedProject, err := s.Projects.GetAuthorized(ctx, user, projectID)
+	if err != nil {
+		return "", project.AuthorizedProject{}, err
+	}
+	if !authorizedProject.Role.CanAdmin() {
+		return "", project.AuthorizedProject{}, ErrRequiresAdmin
+	}
+
+	return projectID, authorizedProject, nil
+}
+
 func splitApplicationID(applicationID string) (string, string, error) {
 	projectID, appName, ok := strings.Cut(applicationID, "__")
 	if !ok || projectID == "" || appName == "" {
@@ -623,15 +1100,246 @@ func validateCreateRequest(input CreateRequest) error {
 			Details: map[string]any{"field": "deploymentStrategy"},
 		}
 	}
+	if input.RepositoryPollIntervalSeconds != 0 {
+		if err := validateRepositoryPollIntervalSeconds(input.RepositoryPollIntervalSeconds); err != nil {
+			return err
+		}
+	}
 
 	return nil
 }
 
-func (s Service) verifyImageReference(ctx context.Context, image string) error {
+func validateRepositoryPollIntervalSeconds(value int) error {
+	if normalizeRepositoryPollIntervalSeconds(value) > 0 {
+		return nil
+	}
+
+	return ValidationError{
+		Message: "repositoryPollIntervalSeconds must be one of 60, 300, or 600",
+		Details: map[string]any{
+			"field":   "repositoryPollIntervalSeconds",
+			"allowed": AllowedRepositoryPollIntervalsSeconds,
+		},
+	}
+}
+
+func normalizeCreateNetworkProfile(input *CreateRequest) {
+	if input == nil {
+		return
+	}
+	if NormalizeDeploymentStrategy(input.DeploymentStrategy) == DeploymentStrategyCanary {
+		input.MeshEnabled = true
+	}
+}
+
+func validateNetworkProfile(strategy DeploymentStrategy, meshEnabled bool, loadBalancerEnabled bool) error {
+	normalizedStrategy := NormalizeDeploymentStrategy(strategy)
+	if normalizedStrategy == DeploymentStrategyCanary && !meshEnabled {
+		return ValidationError{
+			Message: "meshEnabled must be true when deploymentStrategy is Canary",
+			Details: map[string]any{"field": "meshEnabled"},
+		}
+	}
+	if normalizedStrategy == DeploymentStrategyCanary && loadBalancerEnabled {
+		return ValidationError{
+			Message: "loadBalancerEnabled cannot be true when deploymentStrategy is Canary",
+			Details: map[string]any{"field": "loadBalancerEnabled"},
+		}
+	}
+	return nil
+}
+
+func normalizeRepositoryMetadata(projectInfo project.CatalogProject, input *CreateRequest) error {
+	repositoryID := strings.TrimSpace(input.RepositoryID)
+	repositoryURL := strings.TrimSpace(input.RepositoryURL)
+	repositoryBranch := strings.TrimSpace(input.RepositoryBranch)
+	repositoryToken := strings.TrimSpace(input.RepositoryToken)
+	repositoryServiceID := strings.TrimSpace(input.RepositoryServiceID)
+	configPath := strings.TrimSpace(input.ConfigPath)
+
+	if repositoryURL != "" {
+		if repositoryID != "" {
+			return ValidationError{
+				Message: "repositoryId and repositoryUrl cannot be used together",
+				Details: map[string]any{"field": "repositoryUrl"},
+			}
+		}
+		input.RepositoryID = ""
+		input.RepositoryURL = repositoryURL
+		input.RepositoryBranch = repositoryBranch
+		input.RepositoryServiceID = repositoryServiceID
+		if configPath == "" {
+			input.ConfigPath = DefaultRepositoryConfigPath
+		} else {
+			input.ConfigPath = configPath
+		}
+		return nil
+	}
+
+	if repositoryID == "" {
+		if repositoryServiceID != "" || configPath != "" || repositoryBranch != "" || repositoryToken != "" {
+			return ValidationError{
+				Message: "repositoryUrl is required when GitHub source metadata is provided",
+				Details: map[string]any{"field": "repositoryUrl"},
+			}
+		}
+		input.RepositoryURL = ""
+		input.RepositoryBranch = ""
+		input.RepositoryServiceID = ""
+		input.ConfigPath = ""
+		return nil
+	}
+
+	for _, repository := range projectInfo.Repositories {
+		if repository.ID != repositoryID {
+			continue
+		}
+
+		input.RepositoryID = repositoryID
+		input.RepositoryURL = repository.URL
+		input.RepositoryBranch = strings.TrimSpace(repository.Branch)
+		input.RepositoryServiceID = repositoryServiceID
+		if configPath != "" {
+			input.ConfigPath = configPath
+			return nil
+		}
+		if strings.TrimSpace(repository.ConfigFile) != "" {
+			input.ConfigPath = strings.TrimSpace(repository.ConfigFile)
+			return nil
+		}
+		input.ConfigPath = DefaultRepositoryConfigPath
+		return nil
+	}
+
+	return ValidationError{
+		Message: "repositoryId is not connected to this project",
+		Details: map[string]any{
+			"field":        "repositoryId",
+			"repositoryId": repositoryID,
+		},
+	}
+}
+
+func (s Service) hydrateRepositorySource(ctx context.Context, input *CreateRequest) error {
+	if strings.TrimSpace(input.RepositoryURL) == "" {
+		return nil
+	}
+
+	input.RepositoryURL = strings.TrimSpace(input.RepositoryURL)
+	input.RepositoryBranch = strings.TrimSpace(input.RepositoryBranch)
+	input.RepositoryServiceID = strings.TrimSpace(input.RepositoryServiceID)
+	input.ConfigPath = strings.TrimSpace(input.ConfigPath)
+	input.RepositoryToken = strings.TrimSpace(input.RepositoryToken)
+	if input.ConfigPath == "" {
+		input.ConfigPath = DefaultRepositoryConfigPath
+	}
+
+	descriptor, err := s.readRepositoryDescriptor(ctx, *input)
+	if err != nil {
+		return err
+	}
+
+	service, ok := descriptor.resolveService(Record{
+		Name:                strings.TrimSpace(input.Name),
+		RepositoryServiceID: input.RepositoryServiceID,
+	})
+	if !ok {
+		return ValidationError{
+			Message: "repositoryServiceId is required when the descriptor defines multiple services",
+			Details: map[string]any{
+				"field": "repositoryServiceId",
+			},
+		}
+	}
+
+	if strings.TrimSpace(input.Name) == "" {
+		input.Name = service.ServiceID
+	}
+	if input.Image == "" {
+		input.Image = service.Image
+	}
+	if input.ServicePort == 0 {
+		input.ServicePort = service.Port
+	}
+	if input.Replicas == 0 {
+		input.Replicas = service.Replicas
+	}
+	input.RepositoryServiceID = service.ServiceID
+	if strings.TrimSpace(string(input.DeploymentStrategy)) == "" {
+		if normalized := NormalizeDeploymentStrategy(service.Strategy); normalized != "" {
+			input.DeploymentStrategy = normalized
+		} else {
+			input.DeploymentStrategy = DeploymentStrategyRollout
+		}
+	}
+
+	return nil
+}
+
+func (s Service) readRepositoryDescriptor(ctx context.Context, input CreateRequest) (repositoryDescriptor, error) {
+	poller := AutoUpdatePoller{
+		Client: s.httpClient(),
+	}
+	repo := project.Repository{
+		URL:        strings.TrimSpace(input.RepositoryURL),
+		Branch:     strings.TrimSpace(input.RepositoryBranch),
+		ConfigFile: strings.TrimSpace(input.ConfigPath),
+	}
+
+	target, err := poller.resolveRepositoryFileTarget(repo, repo.ConfigFile, DefaultRepositoryConfigPath, strings.TrimSpace(input.RepositoryToken))
+	if err != nil {
+		return repositoryDescriptor{}, ValidationError{
+			Message: "repositoryUrl must point to a GitHub repository",
+			Details: map[string]any{"field": "repositoryUrl"},
+		}
+	}
+
+	data, err := poller.fetchRemoteFile(ctx, target, strings.TrimSpace(input.RepositoryToken))
+	if err != nil {
+		return repositoryDescriptor{}, ValidationError{
+			Message: DefaultRepositoryConfigPath + " could not be read from the repository",
+			Details: map[string]any{
+				"field":          "repositoryUrl",
+				"repositoryUrl":  input.RepositoryURL,
+				"repositoryPath": repo.ConfigFile,
+				"error":          err.Error(),
+			},
+		}
+	}
+
+	descriptor, err := parseRepositoryDescriptor(data)
+	if err != nil {
+		return repositoryDescriptor{}, ValidationError{
+			Message: DefaultRepositoryConfigPath + " format is invalid",
+			Details: map[string]any{
+				"field": "configPath",
+				"error": err.Error(),
+			},
+		}
+	}
+
+	return descriptor, nil
+}
+
+func (s Service) httpClient() *http.Client {
+	if s.HTTPClient != nil {
+		return s.HTTPClient
+	}
+	return &http.Client{Timeout: 10 * time.Second}
+}
+
+func (s Service) defaultRepositoryPollInterval() time.Duration {
+	if s.PollTracker != nil {
+		return s.PollTracker.DefaultInterval()
+	}
+	return 5 * time.Minute
+}
+
+func (s Service) verifyImageReference(ctx context.Context, image string, credential *RegistryCredential) error {
 	if s.Images == nil {
 		return nil
 	}
-	return s.Images.Verify(ctx, image)
+	return s.Images.Verify(ctx, image, credential)
 }
 
 func (s Service) verifyDeploymentImage(
@@ -641,7 +1349,11 @@ func (s Service) verifyDeploymentImage(
 	imageTag string,
 	environment string,
 ) error {
-	if err := s.verifyImageReference(ctx, image); err != nil {
+	registryCredential, err := s.resolveRecordRegistryCredential(ctx, record)
+	if err != nil {
+		return err
+	}
+	if err := s.verifyImageReference(ctx, image, registryCredential); err != nil {
 		var imageErr ImageValidationError
 		if errors.As(err, &imageErr) {
 			_ = s.appendEvent(ctx, record.ID, "DeploymentPreflightFailed", imageErr.Message, map[string]any{
@@ -660,6 +1372,78 @@ func (s Service) verifyDeploymentImage(
 		"imageTag":    imageTag,
 	})
 	return nil
+}
+
+func normalizeRegistryCredentialInput(
+	image string,
+	registryServer string,
+	registryUsername string,
+	registryToken string,
+) (*RegistryCredential, string, error) {
+	registryServer = normalizeRegistryServer(registryServer)
+	registryUsername = strings.TrimSpace(registryUsername)
+	registryToken = strings.TrimSpace(registryToken)
+
+	if registryServer == "" && registryUsername == "" && registryToken == "" {
+		return nil, "", nil
+	}
+	if registryUsername == "" || registryToken == "" {
+		return nil, "", ValidationError{
+			Message: "registryUsername and registryToken must be provided together",
+			Details: map[string]any{"field": "registryToken"},
+		}
+	}
+	if registryServer == "" {
+		ref, err := parseImageReference(image)
+		if err != nil {
+			return nil, "", ValidationError{
+				Message: "registryServer could not be inferred from image",
+				Details: map[string]any{"field": "registryServer"},
+			}
+		}
+		registryServer = normalizeRegistryServer(ref.Registry)
+	}
+
+	dockerConfigJSON, err := buildDockerConfigJSON(registryServer, registryUsername, registryToken)
+	if err != nil {
+		return nil, "", ValidationError{
+			Message: "registry credential is invalid",
+			Details: map[string]any{
+				"field": "registryToken",
+				"error": err.Error(),
+			},
+		}
+	}
+
+	return &RegistryCredential{
+		Server:   registryServer,
+		Username: registryUsername,
+		Password: registryToken,
+	}, dockerConfigJSON, nil
+}
+
+func (s Service) resolveRecordRegistryCredential(ctx context.Context, record Record) (*RegistryCredential, error) {
+	secretPath := strings.TrimSpace(record.RegistrySecretPath)
+	if secretPath == "" || s.Secrets == nil {
+		return nil, nil
+	}
+
+	values, err := s.Secrets.Get(ctx, secretPath)
+	if err != nil {
+		return nil, fmt.Errorf("read registry credential: %w", err)
+	}
+	credential, err := registryCredentialFromSecret(values)
+	if err != nil {
+		return nil, ValidationError{
+			Message: "stored registry credential is invalid",
+			Details: map[string]any{
+				"field": "registryToken",
+				"path":  secretPath,
+				"error": err.Error(),
+			},
+		}
+	}
+	return credential, nil
 }
 
 func normalizeSecrets(entries []SecretEntry) (map[string]string, error) {
@@ -810,21 +1594,27 @@ func (s Service) appendEvent(ctx context.Context, applicationID string, eventTyp
 
 func toApplication(record Record, syncInfo SyncInfo) Application {
 	return Application{
-		ID:                  record.ID,
-		ProjectID:           record.ProjectID,
-		Name:                record.Name,
-		Description:         record.Description,
-		Image:               record.Image,
-		ServicePort:         record.ServicePort,
-		Replicas:            record.Replicas,
-		DeploymentStrategy:  string(NormalizeDeploymentStrategy(record.DeploymentStrategy)),
-		DefaultEnvironment:  record.DefaultEnvironment,
-		SyncStatus:          syncInfo.Status,
-		CreatedAt:           record.CreatedAt,
-		UpdatedAt:           record.UpdatedAt,
-		RepositoryID:        record.RepositoryID,
-		RepositoryServiceID: record.RepositoryServiceID,
-		ConfigPath:          record.ConfigPath,
+		ID:                            record.ID,
+		ProjectID:                     record.ProjectID,
+		Name:                          record.Name,
+		Description:                   record.Description,
+		Image:                         record.Image,
+		ServicePort:                   record.ServicePort,
+		Replicas:                      record.Replicas,
+		DeploymentStrategy:            string(NormalizeDeploymentStrategy(record.DeploymentStrategy)),
+		DefaultEnvironment:            record.DefaultEnvironment,
+		SyncStatus:                    syncInfo.Status,
+		CreatedAt:                     record.CreatedAt,
+		UpdatedAt:                     record.UpdatedAt,
+		RepositoryID:                  record.RepositoryID,
+		RepositoryURL:                 record.RepositoryURL,
+		RepositoryBranch:              record.RepositoryBranch,
+		RepositoryServiceID:           record.RepositoryServiceID,
+		ConfigPath:                    record.ConfigPath,
+		RepositoryPollIntervalSeconds: record.RepositoryPollIntervalSeconds,
+		Resources:                     record.Resources,
+		MeshEnabled:                   record.MeshEnabled,
+		LoadBalancerEnabled:           record.LoadBalancerEnabled,
 	}
 }
 

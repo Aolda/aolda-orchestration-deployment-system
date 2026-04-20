@@ -7,12 +7,13 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/aolda/aods-backend/internal/fluxscaffold"
 )
 
 const (
-	defaultFluxKustomizationNamespace = "flux-system"
-	defaultFluxSourceName             = "aods-manifest"
-	fluxBootstrapRootFileName         = "root-kustomization.yaml"
+	defaultFluxKustomizationNamespace = fluxscaffold.DefaultKustomizationNamespace
+	defaultFluxSourceName             = fluxscaffold.DefaultSourceName
 )
 
 func (p ProjectContext) clusterIDForEnvironment(environment string) string {
@@ -83,72 +84,21 @@ func (s LocalManifestStore) syncFluxWiring(record Record, project ProjectContext
 }
 
 func (s LocalManifestStore) ensureFluxClusterScaffold(clusterID string) error {
-	clusterID = strings.TrimSpace(clusterID)
-	if clusterID == "" {
-		clusterID = "default"
-	}
-
-	clusterDir := s.fluxClusterDir(clusterID)
-	if err := os.MkdirAll(filepath.Join(clusterDir, "applications"), 0o755); err != nil {
-		return fmt.Errorf("create flux cluster directory: %w", err)
-	}
-
-	bootstrapDir := s.fluxBootstrapDir(clusterID)
-	if err := os.MkdirAll(bootstrapDir, 0o755); err != nil {
-		return fmt.Errorf("create flux bootstrap directory: %w", err)
-	}
-
-	if err := os.WriteFile(filepath.Join(bootstrapDir, "kustomization.yaml"), []byte(renderBootstrapKustomization()), 0o644); err != nil {
-		return fmt.Errorf("write flux bootstrap kustomization: %w", err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(bootstrapDir, fluxBootstrapRootFileName),
-		[]byte(s.renderFluxBootstrapRoot(clusterID)),
-		0o644,
-	); err != nil {
-		return fmt.Errorf("write flux bootstrap root manifest: %w", err)
-	}
-
-	if err := s.rewriteFluxClusterRoot(clusterID); err != nil {
-		return err
-	}
-
-	return nil
+	return fluxscaffold.EnsureCluster(fluxscaffold.Config{
+		RepoRoot:               s.RepoRoot,
+		ClusterID:              clusterID,
+		KustomizationNamespace: s.fluxKustomizationNamespace(),
+		SourceName:             s.fluxSourceName(),
+	})
 }
 
 func (s LocalManifestStore) rewriteFluxClusterRoot(clusterID string) error {
-	clusterID = strings.TrimSpace(clusterID)
-	if clusterID == "" {
-		clusterID = "default"
-	}
-
-	applicationsDir := filepath.Join(s.fluxClusterDir(clusterID), "applications")
-	entries, err := os.ReadDir(applicationsDir)
-	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("read flux applications directory: %w", err)
-	}
-
-	resources := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".yaml") {
-			continue
-		}
-		resources = append(resources, filepath.ToSlash(filepath.Join("applications", entry.Name())))
-	}
-	sort.Strings(resources)
-
-	if err := os.MkdirAll(s.fluxClusterDir(clusterID), 0o755); err != nil {
-		return fmt.Errorf("create flux cluster root: %w", err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(s.fluxClusterDir(clusterID), "kustomization.yaml"),
-		[]byte(renderFluxClusterRootKustomization(resources)),
-		0o644,
-	); err != nil {
-		return fmt.Errorf("write flux cluster root kustomization: %w", err)
-	}
-
-	return nil
+	return fluxscaffold.RewriteClusterRoot(fluxscaffold.Config{
+		RepoRoot:               s.RepoRoot,
+		ClusterID:              clusterID,
+		KustomizationNamespace: s.fluxKustomizationNamespace(),
+		SourceName:             s.fluxSourceName(),
+	})
 }
 
 func (s LocalManifestStore) writeFluxChildKustomization(record Record, clusterID string) error {
@@ -181,29 +131,7 @@ func (s LocalManifestStore) removeFluxChildKustomization(record Record, clusterI
 }
 
 func (s LocalManifestStore) fluxClusterDir(clusterID string) string {
-	return filepath.Join(s.RepoRoot, "platform", "flux", "clusters", clusterID)
-}
-
-func (s LocalManifestStore) fluxBootstrapDir(clusterID string) string {
-	return filepath.Join(s.RepoRoot, "platform", "flux", "bootstrap", clusterID)
-}
-
-func (s LocalManifestStore) renderFluxBootstrapRoot(clusterID string) string {
-	return fmt.Sprintf(`apiVersion: kustomize.toolkit.fluxcd.io/v1
-kind: Kustomization
-metadata:
-  name: %s
-  namespace: %s
-spec:
-  interval: 1m0s
-  prune: true
-  wait: false
-  timeout: 3m0s
-  path: %s
-  sourceRef:
-    kind: GitRepository
-    name: %s
-`, yamlScalar("aods-root-"+clusterID), yamlScalar(s.fluxKustomizationNamespace()), yamlScalar("./platform/flux/clusters/"+clusterID), yamlScalar(s.fluxSourceName()))
+	return fluxscaffold.ClusterDir(s.RepoRoot, clusterID)
 }
 
 func (s LocalManifestStore) renderFluxChildKustomization(record Record) string {
@@ -261,34 +189,4 @@ func fluxOverlayPath(record Record) string {
 		environment = "shared"
 	}
 	return filepath.ToSlash(path.Join("apps", record.ProjectID, record.Name, "overlays", environment))
-}
-
-func renderBootstrapKustomization() string {
-	return fmt.Sprintf(`apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-  - %s
-`, fluxBootstrapRootFileName)
-}
-
-func renderFluxClusterRootKustomization(resources []string) string {
-	if len(resources) == 0 {
-		return `apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources: []
-`
-	}
-
-	var builder strings.Builder
-	builder.WriteString(`apiVersion: kustomize.config.k8s.io/v1beta1
-kind: Kustomization
-resources:
-`)
-	for _, resource := range resources {
-		builder.WriteString("  - ")
-		builder.WriteString(resource)
-		builder.WriteByte('\n')
-	}
-
-	return builder.String()
 }

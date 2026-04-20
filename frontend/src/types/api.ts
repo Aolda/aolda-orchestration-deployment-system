@@ -19,26 +19,116 @@ export type ProjectListResponse = {
   items: ProjectSummary[]
 }
 
+export type ProjectAccess = {
+  viewerGroups?: string[]
+  deployerGroups?: string[]
+  adminGroups?: string[]
+}
+
+export type ProjectEnvironmentInput = {
+  id: string
+  name?: string
+  clusterId?: string
+  writeMode?: WriteMode
+  default?: boolean
+}
+
+export type ProjectRepositoryInput = {
+  id: string
+  name: string
+  url: string
+  description?: string
+  branch?: string
+  authSecretPath?: string
+  configFile?: string
+}
+
+export type CreateProjectRequest = {
+  id: string
+  name: string
+  description?: string
+  namespace?: string
+  access?: ProjectAccess
+  environments?: ProjectEnvironmentInput[]
+  repositories?: ProjectRepositoryInput[]
+  policies?: ProjectPolicy
+}
+
+export type ProjectLifecycleResponse = {
+  projectId: string
+  name: string
+  namespace: string
+  status: 'deleted'
+  deletedAt?: string
+}
+
 export type SecretEntry = {
   key: string
   value: string
 }
 
 export type CreateApplicationRequest = {
-  name: string
+  name?: string
   description?: string
-  image: string
-  servicePort: number
+  image?: string
+  servicePort?: number
   replicas?: number
-  deploymentStrategy: 'Rollout' | 'Canary'
+  deploymentStrategy?: 'Rollout' | 'Canary'
+  meshEnabled?: boolean
+  loadBalancerEnabled?: boolean
   environment?: string
   secrets?: SecretEntry[]
   repositoryId?: string
+  repositoryUrl?: string
+  repositoryBranch?: string
+  repositoryToken?: string
+  repositoryServiceId?: string
+  configPath?: string
+  repositoryPollIntervalSeconds?: number
+  registryServer?: string
+  registryUsername?: string
+  registryToken?: string
+}
+
+export type PreviewApplicationSourceRequest = {
+  name?: string
+  repositoryUrl: string
+  repositoryBranch?: string
+  repositoryToken?: string
   repositoryServiceId?: string
   configPath?: string
 }
 
+export type PreviewApplicationSourceService = {
+  serviceId: string
+  image: string
+  port: number
+  replicas: number
+  strategy?: 'Rollout' | 'Canary'
+}
+
+export type PreviewApplicationSourceResponse = {
+  configPath: string
+  services: PreviewApplicationSourceService[]
+  selectedServiceId?: string
+  requiresServiceSelection: boolean
+}
+
 export type SyncStatus = 'Unknown' | 'Syncing' | 'Synced' | 'Degraded'
+export type RepositoryPollResult = 'Pending' | 'Success' | 'Error'
+
+export type RepositoryPollStatus = {
+  enabled: boolean
+  intervalSeconds: number
+  lastCheckedAt?: string
+  lastSucceededAt?: string
+  nextScheduledAt?: string
+  lastResult?: RepositoryPollResult
+  lastError?: string
+  source?: string
+}
+
+export type WriteMode = 'direct' | 'pull_request'
 
 export type Application = {
   id: string
@@ -54,8 +144,14 @@ export type Application = {
   createdAt?: string
   updatedAt?: string
   repositoryId?: string
+  repositoryUrl?: string
+  repositoryBranch?: string
   repositoryServiceId?: string
   configPath?: string
+  repositoryPollIntervalSeconds?: number
+  resources?: ApplicationResources
+  meshEnabled: boolean
+  loadBalancerEnabled: boolean
 }
 
 export type ApplicationSummary = {
@@ -64,6 +160,9 @@ export type ApplicationSummary = {
   image: string
   deploymentStrategy: 'Rollout' | 'Canary'
   syncStatus: SyncStatus
+  resources?: ApplicationResources
+  meshEnabled: boolean
+  loadBalancerEnabled: boolean
 }
 
 export type ApplicationListResponse = {
@@ -81,17 +180,52 @@ export type UpdateApplicationRequest = {
   servicePort?: number
   replicas?: number
   deploymentStrategy?: 'Rollout' | 'Canary'
+  meshEnabled?: boolean
+  loadBalancerEnabled?: boolean
   environment?: string
   repositoryId?: string
+  repositoryUrl?: string
+  repositoryBranch?: string
   repositoryServiceId?: string
   configPath?: string
+  repositoryPollIntervalSeconds?: number
+  resources?: ApplicationResources
+}
+
+export type ResourceQuantity = {
+  cpu?: string
+  memory?: string
+}
+
+export type ApplicationResources = {
+  requests?: ResourceQuantity
+  limits?: ResourceQuantity
+}
+
+export type ApplicationLifecycleResponse = {
+  applicationId: string
+  projectId: string
+  name: string
+  status: 'archived' | 'deleted'
+  archivedAt?: string
+  deletedAt?: string
+}
+
+export type RepositorySyncResponse = {
+  applicationId: string
+  checkedAt: string
+  message: string
+  source?: string
+  settingsApplied?: boolean
+  deploymentTriggered?: boolean
+  repositoryPoll?: RepositoryPollStatus
 }
 
 export type EnvironmentSummary = {
   id: string
   name: string
   clusterId: string
-  writeMode: 'direct' | 'pull_request'
+  writeMode: WriteMode
   default: boolean
 }
 
@@ -130,8 +264,80 @@ export type ClusterSummary = {
   default: boolean
 }
 
+export type CreateClusterRequest = {
+  id: string
+  name: string
+  description?: string
+  default?: boolean
+}
+
 export type ClusterListResponse = {
   items: ClusterSummary[]
+}
+
+export type CapacitySummary = {
+  allocatableCpuCores?: number
+  allocatableMemoryMiB?: number
+  requestedCpuCores?: number
+  requestedMemoryMiB?: number
+  usedCpuCores?: number
+  usedMemoryMiB?: number
+  availableCpuCores?: number
+  availableMemoryMiB?: number
+  requestCpuUtilization?: number
+  requestMemoryUtilization?: number
+  usageCpuUtilization?: number
+  usageMemoryUtilization?: number
+}
+
+export type ServiceEfficiencyStatus =
+  | 'Balanced'
+  | 'Underutilized'
+  | 'Overutilized'
+  | 'NoMetrics'
+  | 'Unknown'
+
+export type EfficiencyCounts = {
+  balanced: number
+  underutilized: number
+  overutilized: number
+  noMetrics: number
+  unknown: number
+}
+
+export type ServiceResourceEfficiency = {
+  applicationId: string
+  projectId: string
+  projectName: string
+  clusterId?: string
+  clusterName?: string
+  namespace: string
+  name: string
+  podCount: number
+  readyPodCount: number
+  status: ServiceEfficiencyStatus
+  summary: string
+  cpuRequestCores?: number
+  cpuLimitCores?: number
+  cpuUsageCores?: number
+  cpuRequestUtilization?: number
+  cpuLimitUtilization?: number
+  memoryRequestMiB?: number
+  memoryLimitMiB?: number
+  memoryUsageMiB?: number
+  memoryRequestUtilization?: number
+  memoryLimitUtilization?: number
+}
+
+export type FleetResourceOverviewResponse = {
+  generatedAt: string
+  runtimeConnected: boolean
+  message?: string
+  projectCount: number
+  serviceCount: number
+  capacity: CapacitySummary
+  counts: EfficiencyCounts
+  services: ServiceResourceEfficiency[]
 }
 
 export type DeploymentRecord = {
@@ -151,6 +357,7 @@ export type DeploymentRecord = {
   stableRevision?: string
   canaryRevision?: string
   message?: string
+  commitSha?: string
   createdAt: string
   updatedAt: string
 }
@@ -158,6 +365,63 @@ export type DeploymentRecord = {
 export type DeploymentListResponse = {
   applicationId: string
   items: DeploymentRecord[]
+}
+
+export type ContainerLogStream = {
+  podName: string
+  containerName: string
+  phase?: string
+  ready: boolean
+  restartCount: number
+  content: string
+}
+
+export type ContainerLogsResponse = {
+  applicationId: string
+  collectedAt: string
+  tailLines: number
+  items: ContainerLogStream[]
+}
+
+export type ContainerResourceStatus = {
+  cpuUsageCores?: number
+  cpuRequestCores?: number
+  cpuLimitCores?: number
+  cpuRequestUtilization?: number
+  cpuLimitUtilization?: number
+  memoryUsageMiB?: number
+  memoryRequestMiB?: number
+  memoryLimitMiB?: number
+  memoryRequestUtilization?: number
+  memoryLimitUtilization?: number
+}
+
+export type ContainerLogTargetContainer = {
+  name: string
+  ready: boolean
+  restartCount: number
+  default: boolean
+  resourceStatus?: ContainerResourceStatus
+}
+
+export type ContainerLogTarget = {
+  podName: string
+  phase?: string
+  containers: ContainerLogTargetContainer[]
+}
+
+export type ContainerLogTargetsResponse = {
+  applicationId: string
+  collectedAt: string
+  items: ContainerLogTarget[]
+}
+
+export type ContainerLogEvent = {
+  podName: string
+  containerName: string
+  timestamp?: string
+  message: string
+  rawLine: string
 }
 
 export type RollbackPolicy = {
@@ -186,14 +450,16 @@ export type ChangeOperation =
   | 'Redeploy'
   | 'UpdatePolicies'
 
+export type ChangeStatus = 'Draft' | 'Submitted' | 'Approved' | 'Merged'
+
 export type ChangeRecord = {
   id: string
   projectId: string
   applicationId?: string
   operation: ChangeOperation
   environment: string
-  writeMode: 'direct' | 'pull_request'
-  status: 'Draft' | 'Submitted' | 'Approved' | 'Merged'
+  writeMode: WriteMode
+  status: ChangeStatus
   summary: string
   diffPreview: string[]
   createdBy: string
@@ -215,6 +481,14 @@ export type CreateChangeRequest = {
   environment?: string
   imageTag?: string
   secrets?: SecretEntry[]
+  repositoryUrl?: string
+  repositoryBranch?: string
+  repositoryToken?: string
+  repositoryServiceId?: string
+  configPath?: string
+  registryServer?: string
+  registryUsername?: string
+  registryToken?: string
   policies?: ProjectPolicy
   summary?: string
 }
@@ -223,6 +497,36 @@ export type SyncStatusResponse = {
   applicationId: string
   status: SyncStatus
   message?: string
+  observedAt?: string
+  repositoryPoll?: RepositoryPollStatus
+}
+
+export type NetworkExposureStatus = 'Internal' | 'Pending' | 'Provisioning' | 'Ready' | 'Error'
+
+export type NetworkExposureEvent = {
+  type: string
+  reason?: string
+  message: string
+  observedAt?: string
+}
+
+export type NetworkExposurePort = {
+  name?: string
+  protocol?: string
+  port: number
+  targetPort?: string
+  nodePort?: number
+}
+
+export type NetworkExposureResponse = {
+  applicationId: string
+  enabled: boolean
+  status: NetworkExposureStatus
+  message?: string
+  serviceType?: string
+  addresses?: string[]
+  ports?: NetworkExposurePort[]
+  lastEvent?: NetworkExposureEvent | null
   observedAt?: string
 }
 

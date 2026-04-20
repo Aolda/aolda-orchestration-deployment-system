@@ -491,12 +491,14 @@ func collectJWTGroups(claims map[string]any, groupsClaim string) []string {
 	groups = append(groups, claimStrings(claimValue(claims, "realm_access.roles"))...)
 
 	if resourceAccess, ok := claimValue(claims, "resource_access").(map[string]any); ok {
-		for _, raw := range resourceAccess {
+		for clientID, raw := range resourceAccess {
 			entry, ok := raw.(map[string]any)
 			if !ok {
 				continue
 			}
-			groups = append(groups, claimStrings(entry["roles"])...)
+			roles := claimStrings(entry["roles"])
+			groups = append(groups, roles...)
+			groups = append(groups, qualifyClientRoles(clientID, roles)...)
 		}
 	}
 
@@ -508,6 +510,23 @@ func collectJWTGroups(claims map[string]any, groupsClaim string) []string {
 		}
 		seen[group] = struct{}{}
 		items = append(items, group)
+	}
+	return items
+}
+
+func qualifyClientRoles(clientID string, roles []string) []string {
+	clientID = strings.TrimSpace(clientID)
+	if clientID == "" || len(roles) == 0 {
+		return nil
+	}
+
+	items := make([]string, 0, len(roles))
+	for _, role := range roles {
+		role = strings.TrimSpace(role)
+		if role == "" {
+			continue
+		}
+		items = append(items, clientID+":"+role)
 	}
 	return items
 }

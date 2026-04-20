@@ -64,8 +64,21 @@ func (s Service) Create(ctx context.Context, user core.User, projectID string, i
 	}
 	switch record.Operation {
 	case OperationCreateApplication:
-		if err := s.Applications.ValidateImageReference(ctx, strings.TrimSpace(input.Image)); err != nil {
-			return Record{}, err
+		if strings.TrimSpace(input.Image) != "" {
+			if err := s.Applications.ValidateImageReferenceWithCredential(
+				ctx,
+				strings.TrimSpace(input.Image),
+				input.RegistryServer,
+				input.RegistryUsername,
+				input.RegistryToken,
+			); err != nil {
+				return Record{}, err
+			}
+		} else if strings.TrimSpace(input.RepositoryURL) == "" {
+			return Record{}, application.ValidationError{
+				Message: "image is required when repositoryUrl is not provided",
+				Details: map[string]any{"field": "image"},
+			}
 		}
 	case OperationRedeploy:
 		if err := s.Applications.ValidateDeploymentImage(ctx, user, record.ApplicationID, strings.TrimSpace(input.ImageTag)); err != nil {
@@ -165,13 +178,21 @@ func (s Service) Merge(ctx context.Context, user core.User, changeID string) (Re
 	switch record.Operation {
 	case OperationCreateApplication:
 		_, err = s.Applications.CreateApplication(applyCtx, user, record.ProjectID, application.CreateRequest{
-			Name:               record.Request.Name,
-			Description:        record.Request.Description,
-			Image:              record.Request.Image,
-			ServicePort:        record.Request.ServicePort,
-			DeploymentStrategy: record.Request.DeploymentStrategy,
-			Environment:        record.Request.Environment,
-			Secrets:            record.Request.Secrets,
+			Name:                record.Request.Name,
+			Description:         record.Request.Description,
+			Image:               record.Request.Image,
+			ServicePort:         record.Request.ServicePort,
+			DeploymentStrategy:  record.Request.DeploymentStrategy,
+			Environment:         record.Request.Environment,
+			Secrets:             record.Request.Secrets,
+			RepositoryURL:       record.Request.RepositoryURL,
+			RepositoryBranch:    record.Request.RepositoryBranch,
+			RepositoryToken:     record.Request.RepositoryToken,
+			RepositoryServiceID: record.Request.RepositoryServiceID,
+			ConfigPath:          record.Request.ConfigPath,
+			RegistryServer:      record.Request.RegistryServer,
+			RegistryUsername:    record.Request.RegistryUsername,
+			RegistryToken:       record.Request.RegistryToken,
 		}, record.ID)
 	case OperationUpdateApplication:
 		_, err = s.Applications.PatchApplication(applyCtx, user, record.Request.ApplicationID, application.UpdateApplicationRequest{

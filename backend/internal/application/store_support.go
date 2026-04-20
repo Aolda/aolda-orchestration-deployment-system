@@ -12,68 +12,96 @@ import (
 )
 
 type appMetadata struct {
-	ID                  string             `yaml:"id"`
-	ProjectID           string             `yaml:"projectId"`
-	Namespace           string             `yaml:"namespace"`
-	Name                string             `yaml:"name"`
-	Description         string             `yaml:"description,omitempty"`
-	Image               string             `yaml:"image"`
-	ServicePort         int                `yaml:"servicePort"`
-	Replicas            int                `yaml:"replicas"`
-	RequiredProbes      *bool              `yaml:"requiredProbes,omitempty"`
-	DeploymentStrategy  DeploymentStrategy `yaml:"deploymentStrategy"`
-	DefaultEnvironment  string             `yaml:"defaultEnvironment"`
-	CreatedAt           time.Time          `yaml:"createdAt"`
-	UpdatedAt           time.Time          `yaml:"updatedAt"`
-	SecretPath          string             `yaml:"secretPath,omitempty"`
-	Environments        []string           `yaml:"environments,omitempty"`
-	RepositoryID        string             `yaml:"repositoryId,omitempty"`
-	RepositoryServiceID string             `yaml:"repositoryServiceId,omitempty"`
-	ConfigPath          string             `yaml:"configPath,omitempty"`
+	ID                            string               `yaml:"id"`
+	ProjectID                     string               `yaml:"projectId"`
+	Namespace                     string               `yaml:"namespace"`
+	Name                          string               `yaml:"name"`
+	Description                   string               `yaml:"description,omitempty"`
+	Image                         string               `yaml:"image"`
+	ServicePort                   int                  `yaml:"servicePort"`
+	Replicas                      int                  `yaml:"replicas"`
+	RequiredProbes                *bool                `yaml:"requiredProbes,omitempty"`
+	DeploymentStrategy            DeploymentStrategy   `yaml:"deploymentStrategy"`
+	DefaultEnvironment            string               `yaml:"defaultEnvironment"`
+	CreatedAt                     time.Time            `yaml:"createdAt"`
+	UpdatedAt                     time.Time            `yaml:"updatedAt"`
+	SecretPath                    string               `yaml:"secretPath,omitempty"`
+	ArchivedAt                    *time.Time           `yaml:"archivedAt,omitempty"`
+	ArchivedBy                    string               `yaml:"archivedBy,omitempty"`
+	Environments                  []string             `yaml:"environments,omitempty"`
+	RepositoryID                  string               `yaml:"repositoryId,omitempty"`
+	RepositoryURL                 string               `yaml:"repositoryUrl,omitempty"`
+	RepositoryBranch              string               `yaml:"repositoryBranch,omitempty"`
+	RepositoryServiceID           string               `yaml:"repositoryServiceId,omitempty"`
+	ConfigPath                    string               `yaml:"configPath,omitempty"`
+	RepositoryTokenPath           string               `yaml:"repositoryTokenPath,omitempty"`
+	RegistrySecretPath            string               `yaml:"registrySecretPath,omitempty"`
+	RepositoryPollIntervalSeconds int                  `yaml:"repositoryPollIntervalSeconds,omitempty"`
+	Resources                     ResourceRequirements `yaml:"resources,omitempty"`
+	MeshEnabled                   *bool                `yaml:"meshEnabled,omitempty"`
+	LoadBalancerEnabled           *bool                `yaml:"loadBalancerEnabled,omitempty"`
 }
 
 func metadataFromRecord(record Record, environments []string) appMetadata {
 	return appMetadata{
-		ID:                  record.ID,
-		ProjectID:           record.ProjectID,
-		Namespace:           record.Namespace,
-		Name:                record.Name,
-		Description:         record.Description,
-		Image:               record.Image,
-		ServicePort:         record.ServicePort,
-		Replicas:            record.Replicas,
-		RequiredProbes:      boolPointer(record.RequiredProbes),
-		DeploymentStrategy:  NormalizeDeploymentStrategy(record.DeploymentStrategy),
-		DefaultEnvironment:  record.DefaultEnvironment,
-		CreatedAt:           record.CreatedAt,
-		UpdatedAt:           record.UpdatedAt,
-		SecretPath:          record.SecretPath,
-		Environments:        append([]string(nil), environments...),
-		RepositoryID:        record.RepositoryID,
-		RepositoryServiceID: record.RepositoryServiceID,
-		ConfigPath:          record.ConfigPath,
+		ID:                            record.ID,
+		ProjectID:                     record.ProjectID,
+		Namespace:                     record.Namespace,
+		Name:                          record.Name,
+		Description:                   record.Description,
+		Image:                         record.Image,
+		ServicePort:                   record.ServicePort,
+		Replicas:                      record.Replicas,
+		RequiredProbes:                boolPointer(record.RequiredProbes),
+		DeploymentStrategy:            NormalizeDeploymentStrategy(record.DeploymentStrategy),
+		DefaultEnvironment:            record.DefaultEnvironment,
+		CreatedAt:                     record.CreatedAt,
+		UpdatedAt:                     record.UpdatedAt,
+		SecretPath:                    record.SecretPath,
+		ArchivedAt:                    nil,
+		ArchivedBy:                    "",
+		Environments:                  append([]string(nil), environments...),
+		RepositoryID:                  record.RepositoryID,
+		RepositoryURL:                 record.RepositoryURL,
+		RepositoryBranch:              record.RepositoryBranch,
+		RepositoryServiceID:           record.RepositoryServiceID,
+		ConfigPath:                    record.ConfigPath,
+		RepositoryTokenPath:           record.RepositoryTokenPath,
+		RegistrySecretPath:            record.RegistrySecretPath,
+		RepositoryPollIntervalSeconds: record.RepositoryPollIntervalSeconds,
+		Resources:                     record.Resources,
+		MeshEnabled:                   boolPointer(record.MeshEnabled),
+		LoadBalancerEnabled:           boolPointer(record.LoadBalancerEnabled),
 	}
 }
 
 func (m appMetadata) toRecord() Record {
 	return Record{
-		ID:                  m.ID,
-		ProjectID:           m.ProjectID,
-		Namespace:           m.Namespace,
-		Name:                m.Name,
-		Description:         m.Description,
-		Image:               m.Image,
-		ServicePort:         m.ServicePort,
-		Replicas:            m.Replicas,
-		RequiredProbes:      m.requiredProbesOrDefault(),
-		DeploymentStrategy:  NormalizeDeploymentStrategy(m.DeploymentStrategy),
-		DefaultEnvironment:  m.DefaultEnvironment,
-		CreatedAt:           m.CreatedAt,
-		UpdatedAt:           m.UpdatedAt,
-		SecretPath:          m.SecretPath,
-		RepositoryID:        m.RepositoryID,
-		RepositoryServiceID: m.RepositoryServiceID,
-		ConfigPath:          m.ConfigPath,
+		ID:                            m.ID,
+		ProjectID:                     m.ProjectID,
+		Namespace:                     m.Namespace,
+		Name:                          m.Name,
+		Description:                   m.Description,
+		Image:                         m.Image,
+		ServicePort:                   m.ServicePort,
+		Replicas:                      m.Replicas,
+		RequiredProbes:                m.requiredProbesOrDefault(),
+		DeploymentStrategy:            NormalizeDeploymentStrategy(m.DeploymentStrategy),
+		DefaultEnvironment:            m.DefaultEnvironment,
+		CreatedAt:                     m.CreatedAt,
+		UpdatedAt:                     m.UpdatedAt,
+		SecretPath:                    m.SecretPath,
+		RepositoryID:                  m.RepositoryID,
+		RepositoryURL:                 m.RepositoryURL,
+		RepositoryBranch:              m.RepositoryBranch,
+		RepositoryServiceID:           m.RepositoryServiceID,
+		ConfigPath:                    m.ConfigPath,
+		RepositoryTokenPath:           m.RepositoryTokenPath,
+		RegistrySecretPath:            m.RegistrySecretPath,
+		RepositoryPollIntervalSeconds: m.RepositoryPollIntervalSeconds,
+		Resources:                     m.Resources,
+		MeshEnabled:                   m.meshEnabledOrDefault(),
+		LoadBalancerEnabled:           m.loadBalancerEnabledOrDefault(),
 	}
 }
 
@@ -82,12 +110,16 @@ func metadataPath(repoRoot string, projectID string, appName string) string {
 }
 
 func writeMetadata(repoRoot string, record Record, environments []string) error {
-	data, err := yaml.Marshal(metadataFromRecord(record, environments))
+	return writeAppMetadata(repoRoot, record.ProjectID, record.Name, metadataFromRecord(record, environments))
+}
+
+func writeAppMetadata(repoRoot string, projectID string, appName string, metadata appMetadata) error {
+	data, err := yaml.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("encode application metadata: %w", err)
 	}
 
-	path := metadataPath(repoRoot, record.ProjectID, record.Name)
+	path := metadataPath(repoRoot, projectID, appName)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return fmt.Errorf("create metadata directory: %w", err)
 	}
@@ -117,8 +149,26 @@ func (m appMetadata) requiredProbesOrDefault() bool {
 	return *m.RequiredProbes
 }
 
+func (m appMetadata) meshEnabledOrDefault() bool {
+	if m.MeshEnabled == nil {
+		return true
+	}
+	return *m.MeshEnabled
+}
+
+func (m appMetadata) loadBalancerEnabledOrDefault() bool {
+	if m.LoadBalancerEnabled == nil {
+		return false
+	}
+	return *m.LoadBalancerEnabled
+}
+
 func boolPointer(value bool) *bool {
 	return &value
+}
+
+func (m appMetadata) isArchived() bool {
+	return m.ArchivedAt != nil && !m.ArchivedAt.IsZero()
 }
 
 func deploymentHistoryDir(repoRoot string, projectID string, appName string) string {

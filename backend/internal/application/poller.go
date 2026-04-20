@@ -17,10 +17,13 @@ import (
 )
 
 type AutoUpdatePoller struct {
-	Service  *Service
-	Projects *project.Service
-	Interval time.Duration
-	Client   *http.Client
+	Service                 *Service
+	Projects                *project.Service
+	Interval                time.Duration
+	Client                  *http.Client
+	RollbackEvaluationDelay time.Duration
+	RollbackMetricsRange    time.Duration
+	RollbackMetricsStep     time.Duration
 }
 
 type updateConfig struct {
@@ -52,16 +55,26 @@ type remoteFileTarget struct {
 	UseGitHubContents bool
 }
 
+type autoRollbackDecision struct {
+	Message  string
+	Metadata map[string]any
+}
+
 func (p *AutoUpdatePoller) Start(ctx context.Context) {
 	if p.Interval <= 0 {
 		p.Interval = 5 * time.Minute
 	}
 	if p.Client == nil {
-		p.Client = &http.Client{Timeout: 10 * time.Second}
+		if p.Service != nil {
+			p.Client = p.Service.httpClient()
+		} else {
+			p.Client = &http.Client{Timeout: 10 * time.Second}
+		}
 	}
 
-	slog.Info("starting auto-update poller", "interval", p.Interval)
-	ticker := time.NewTicker(p.Interval)
+	tickInterval := p.tickInterval()
+	slog.Info("starting auto-update poller", "interval", p.Interval, "tickInterval", tickInterval)
+	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
 	for {
@@ -75,11 +88,19 @@ func (p *AutoUpdatePoller) Start(ctx context.Context) {
 }
 
 func (p *AutoUpdatePoller) pollAll(ctx context.Context) {
+	if p.Service != nil && p.Service.PollTracker != nil {
+		p.Service.PollTracker.BeginCycle(timeNowUTC())
+	}
+
+	systemGroups := []string{"aods:platform:admin"}
+	if p.Projects != nil {
+		systemGroups = p.Projects.PlatformAdminAuthoritiesOrDefault()
+	}
 	systemUser := core.User{
 		ID:          "system-poller",
 		Username:    "system.poller",
 		DisplayName: "AODS 자동 업데이트 봇",
-		Groups:      []string{"aods:platform:admin"},
+		Groups:      systemGroups,
 	}
 
 	projects, err := p.Projects.Source.ListProjects(ctx)
@@ -100,73 +121,140 @@ func (p *AutoUpdatePoller) pollAll(ctx context.Context) {
 			repoMap[repo.ID] = repo
 		}
 
+		now := timeNowUTC()
 		for _, app := range apps {
-			if app.RepositoryID == "" {
+			currentApp := app
+			repo, ok := p.repositoryForApp(app, repoMap)
+			if !ok {
+				p.pollAutoRollback(ctx, systemUser, proj, currentApp)
 				continue
 			}
-
-			repo, ok := repoMap[app.RepositoryID]
-			if !ok {
-				slog.Warn("application linked to non-existent repository", "app", app.ID, "repoId", app.RepositoryID)
+			if p.Service != nil && p.Service.PollTracker != nil && !p.Service.PollTracker.Due(app, now) {
+				p.pollAutoRollback(ctx, systemUser, proj, currentApp)
 				continue
 			}
 
 			p.pollApp(ctx, systemUser, proj, app, repo)
+			updatedApp, err := p.Service.Store.GetApplication(ctx, app.ID)
+			if err != nil {
+				slog.Warn("poller failed to refresh application after repository sync", "app", app.ID, "error", err)
+			} else {
+				currentApp = updatedApp
+			}
+
+			p.pollAutoRollback(ctx, systemUser, proj, currentApp)
 		}
 	}
 }
 
 func (p *AutoUpdatePoller) pollApp(ctx context.Context, user core.User, proj project.CatalogProject, app Record, repo project.Repository) {
+	if _, err := p.SyncRepositoryNow(ctx, user, proj, app, repo); err != nil {
+		slog.Error("poller failed to sync repository state", "app", app.ID, "repoId", repo.ID, "error", err)
+	}
+}
+
+func (p *AutoUpdatePoller) SyncRepositoryNow(
+	ctx context.Context,
+	user core.User,
+	proj project.CatalogProject,
+	app Record,
+	repo project.Repository,
+) (RepositorySyncResponse, error) {
+	checkedAt := timeNowUTC()
+	result := RepositorySyncResponse{
+		ApplicationID: app.ID,
+		CheckedAt:     checkedAt,
+		Source:        repositoryPollSource(repo, app),
+	}
+	if p.Service != nil && p.Service.PollTracker != nil {
+		p.Service.PollTracker.MarkAttempt(app, repo, checkedAt)
+	}
+
 	token := ""
-	if repo.AuthSecretPath != "" && p.Service.Secrets != nil {
-		secrets, err := p.Service.Secrets.Get(ctx, repo.AuthSecretPath)
+	tokenPath := strings.TrimSpace(app.RepositoryTokenPath)
+	if tokenPath == "" {
+		tokenPath = strings.TrimSpace(repo.AuthSecretPath)
+	}
+	if tokenPath != "" && p.Service.Secrets != nil {
+		secrets, err := p.Service.Secrets.Get(ctx, tokenPath)
 		if err != nil {
-			slog.Error("poller failed to read repository secret", "app", app.ID, "path", repo.AuthSecretPath, "error", err)
-			return
+			if p.Service != nil && p.Service.PollTracker != nil {
+				p.Service.PollTracker.MarkFailure(app, repo, checkedAt, err)
+			}
+			return result, fmt.Errorf("read repository secret: %w", err)
 		}
 		if secrets != nil {
 			token = resolveRepositoryToken(secrets)
 		}
 		if token == "" {
-			slog.Error("poller failed to resolve repository token", "app", app.ID, "path", repo.AuthSecretPath)
-			return
+			err := fmt.Errorf("repository token was empty")
+			if p.Service != nil && p.Service.PollTracker != nil {
+				p.Service.PollTracker.MarkFailure(app, repo, checkedAt, err)
+			}
+			return result, err
 		}
 	}
 
 	desired, source, err := p.resolveDesiredState(ctx, repo, app, token)
 	if err != nil {
-		slog.Error("poller failed to resolve repository desired state", "app", app.ID, "repoId", repo.ID, "error", err)
-		return
+		if p.Service != nil && p.Service.PollTracker != nil {
+			p.Service.PollTracker.MarkFailure(app, repo, checkedAt, err)
+		}
+		return result, fmt.Errorf("resolve repository desired state: %w", err)
+	}
+	if strings.TrimSpace(source) != "" {
+		result.Source = source
 	}
 	if desired == nil {
-		return
+		if p.Service != nil && p.Service.PollTracker != nil {
+			p.Service.PollTracker.MarkSuccess(app, repo, checkedAt)
+		}
+		result.Message = fmt.Sprintf("%s 기준으로 저장소를 확인했지만 새 반영 내용은 없습니다.", result.Source)
+		result.RepositoryPoll = p.repositoryPollSnapshot(app)
+		return result, nil
 	}
 
 	ctx = WithChangeGuardBypass(ctx)
 	updatedApp, appChanged, err := p.reconcileRepositoryState(ctx, user, app, *desired)
 	if err != nil {
-		slog.Error("poller failed to reconcile repository desired state", "app", app.ID, "error", err)
-		return
+		if p.Service != nil && p.Service.PollTracker != nil {
+			p.Service.PollTracker.MarkFailure(app, repo, checkedAt, err)
+		}
+		return result, fmt.Errorf("reconcile repository desired state: %w", err)
 	}
+	result.SettingsApplied = appChanged
 
 	currentTag := extractImageTag(updatedApp.Image)
 	desiredTag := extractImageTag(desired.Image)
 	if desiredTag == "" || desiredTag == currentTag {
+		if p.Service != nil && p.Service.PollTracker != nil {
+			p.Service.PollTracker.MarkSuccess(updatedApp, repo, checkedAt)
+		}
 		if appChanged {
 			_ = p.Service.appendEvent(ctx, updatedApp.ID, "RepositoryDescriptorApplied", fmt.Sprintf("저장소 %s의 서비스 설정을 반영했습니다.", repo.Name), map[string]any{
 				"repositoryId":        repo.ID,
 				"repositoryServiceId": desired.ServiceID,
 				"source":              source,
 			})
+			result.Message = fmt.Sprintf("%s 기준으로 서비스 설정을 반영했습니다.", result.Source)
+		} else {
+			result.Message = fmt.Sprintf("%s 기준으로 저장소를 확인했지만 새 image tag 변경은 없습니다.", result.Source)
 		}
-		return
+		result.RepositoryPoll = p.repositoryPollSnapshot(updatedApp)
+		return result, nil
 	}
 
 	slog.Info("auto-update triggered", "app", updatedApp.ID, "oldTag", currentTag, "newTag", desiredTag, "source", source)
 	requestID := fmt.Sprintf("req_auto_%d", time.Now().Unix())
 	if _, err := p.Service.CreateDeployment(ctx, user, updatedApp.ID, desiredTag, updatedApp.DefaultEnvironment, requestID); err != nil {
-		slog.Error("poller failed to trigger deployment", "app", updatedApp.ID, "error", err)
-		return
+		if p.Service != nil && p.Service.PollTracker != nil {
+			p.Service.PollTracker.MarkFailure(updatedApp, repo, checkedAt, err)
+		}
+		return result, fmt.Errorf("trigger deployment: %w", err)
+	}
+
+	if p.Service != nil && p.Service.PollTracker != nil {
+		p.Service.PollTracker.MarkSuccess(updatedApp, repo, checkedAt)
 	}
 
 	_ = p.Service.appendEvent(ctx, updatedApp.ID, "AutoUpdateTriggered", fmt.Sprintf("저장소 %s의 변경을 감지하여 자동 배포를 수행합니다. (태그: %s)", repo.Name, desiredTag), map[string]any{
@@ -175,6 +263,110 @@ func (p *AutoUpdatePoller) pollApp(ctx context.Context, user core.User, proj pro
 		"newTag":              desiredTag,
 		"source":              source,
 	})
+	result.DeploymentTriggered = true
+	result.Message = fmt.Sprintf("%s 기준 변경을 감지해 %s 배포를 시작했습니다.", result.Source, desiredTag)
+	result.RepositoryPoll = p.repositoryPollSnapshot(updatedApp)
+	return result, nil
+}
+
+func (p *AutoUpdatePoller) tickInterval() time.Duration {
+	if p.Interval > 0 && p.Interval < time.Minute {
+		return p.Interval
+	}
+	return time.Minute
+}
+
+func (p *AutoUpdatePoller) repositoryPollSnapshot(app Record) *RepositoryPollStatus {
+	if p == nil || p.Service == nil || p.Service.PollTracker == nil {
+		return nil
+	}
+	return p.Service.PollTracker.Snapshot(app)
+}
+
+func (p *AutoUpdatePoller) pollAutoRollback(ctx context.Context, user core.User, proj project.CatalogProject, app Record) {
+	if p.Service == nil || p.Service.Store == nil || p.Service.MetricsReader == nil {
+		return
+	}
+	if !proj.Policies.AutoRollbackEnabled {
+		return
+	}
+
+	policy, err := p.Service.Store.GetRollbackPolicy(ctx, app.ID)
+	if err != nil {
+		slog.Error("poller failed to read rollback policy", "app", app.ID, "error", err)
+		return
+	}
+	if !policy.Enabled {
+		return
+	}
+
+	deployments, err := p.Service.Store.ListDeployments(ctx, app.ID)
+	if err != nil {
+		slog.Error("poller failed to read deployment history", "app", app.ID, "error", err)
+		return
+	}
+
+	latest, rollbackTarget, ok := selectAutoRollbackTarget(deployments, app.DefaultEnvironment)
+	if !ok {
+		return
+	}
+	if strings.EqualFold(strings.TrimSpace(latest.Status), "Aborted") || strings.EqualFold(strings.TrimSpace(latest.Status), "AutoRollbackTriggered") {
+		return
+	}
+
+	delay := p.rollbackEvaluationDelay()
+	if !latest.CreatedAt.IsZero() && delay > 0 && timeNowUTC().Sub(latest.CreatedAt) < delay {
+		return
+	}
+
+	events, err := p.Service.Store.ListEvents(ctx, app.ID)
+	if err != nil {
+		slog.Error("poller failed to read application events", "app", app.ID, "error", err)
+		return
+	}
+	if autoRollbackAlreadyTriggered(events, latest.DeploymentID) {
+		return
+	}
+
+	metrics, err := p.Service.MetricsReader.Read(ctx, app, p.rollbackMetricRange(), p.rollbackMetricStep())
+	if err != nil {
+		slog.Error("poller failed to read rollback metrics", "app", app.ID, "error", err)
+		return
+	}
+
+	decision, shouldRollback := evaluateAutoRollback(policy, metrics)
+	if !shouldRollback {
+		return
+	}
+
+	applyCtx := WithChangeGuardBypass(ctx)
+	requestID := fmt.Sprintf("req_rollback_%d", timeNowUTC().UnixNano())
+	if _, err := p.Service.CreateDeployment(applyCtx, user, app.ID, rollbackTarget.ImageTag, latest.Environment, requestID); err != nil {
+		slog.Error("poller failed to trigger auto rollback", "app", app.ID, "error", err)
+		_ = p.Service.appendEvent(ctx, app.ID, "AutoRollbackFailed", "자동 롤백 배포를 시작하지 못했습니다.", map[string]any{
+			"sourceDeploymentId":     latest.DeploymentID,
+			"rollbackToDeploymentId": rollbackTarget.DeploymentID,
+			"rollbackToImageTag":     rollbackTarget.ImageTag,
+			"reason":                 decision.Message,
+		})
+		return
+	}
+
+	latest.Status = "AutoRollbackTriggered"
+	latest.Message = decision.Message
+	latest.UpdatedAt = timeNowUTC()
+	if _, err := p.Service.Store.UpdateDeployment(ctx, app.ID, latest); err != nil {
+		slog.Error("poller failed to update deployment history after auto rollback", "app", app.ID, "deploymentId", latest.DeploymentID, "error", err)
+	}
+
+	metadata := copyMetadata(decision.Metadata)
+	metadata["environment"] = latest.Environment
+	metadata["sourceDeploymentId"] = latest.DeploymentID
+	metadata["sourceImageTag"] = latest.ImageTag
+	metadata["rollbackToDeploymentId"] = rollbackTarget.DeploymentID
+	metadata["rollbackToImageTag"] = rollbackTarget.ImageTag
+
+	_ = p.Service.appendEvent(ctx, app.ID, "AutoRollbackTriggered", fmt.Sprintf("자동 롤백을 수행했습니다. %s", decision.Message), metadata)
 }
 
 func (p *AutoUpdatePoller) reconcileRepositoryState(ctx context.Context, user core.User, app Record, desired desiredRepositoryState) (Record, bool, error) {
@@ -244,7 +436,7 @@ func (p *AutoUpdatePoller) resolveDesiredState(ctx context.Context, repo project
 		}
 	}
 
-	target, err := p.resolveRepositoryFileTarget(repo, app.ConfigPath, "aolda-deploy.yaml", token)
+	target, err := p.resolveRepositoryFileTarget(repo, app.ConfigPath, DefaultRepositoryConfigPath, token)
 	if err != nil {
 		return nil, "", err
 	}
@@ -260,6 +452,30 @@ func (p *AutoUpdatePoller) resolveDesiredState(ctx context.Context, repo project
 	return &desiredRepositoryState{
 		Image: replaceImageTag(app.Image, config.ImageTag),
 	}, app.ConfigPath, nil
+}
+
+func (p *AutoUpdatePoller) repositoryForApp(app Record, repoMap map[string]project.Repository) (project.Repository, bool) {
+	if strings.TrimSpace(app.RepositoryURL) != "" {
+		return project.Repository{
+			ID:             app.RepositoryID,
+			Name:           app.Name,
+			URL:            app.RepositoryURL,
+			Branch:         app.RepositoryBranch,
+			ConfigFile:     app.ConfigPath,
+			AuthSecretPath: app.RepositoryTokenPath,
+		}, true
+	}
+
+	if strings.TrimSpace(app.RepositoryID) == "" {
+		return project.Repository{}, false
+	}
+
+	repo, ok := repoMap[app.RepositoryID]
+	if !ok {
+		slog.Warn("application linked to non-existent repository", "app", app.ID, "repoId", app.RepositoryID)
+		return project.Repository{}, false
+	}
+	return repo, true
 }
 
 func parseRepositoryDescriptor(data []byte) (repositoryDescriptor, error) {
@@ -319,6 +535,142 @@ func imageRepositoryRef(image string) string {
 		return withoutDigest[:lastColon]
 	}
 	return withoutDigest
+}
+
+func evaluateAutoRollback(policy RollbackPolicy, metrics []MetricSeries) (autoRollbackDecision, bool) {
+	if !policy.Enabled {
+		return autoRollbackDecision{}, false
+	}
+
+	requestRate := latestMetricValue(metrics, "request_rate")
+	errorRate := latestMetricValue(metrics, "error_rate")
+	latencyP95 := latestMetricValue(metrics, "latency_p95")
+
+	if policy.MinRequestRate != nil {
+		if requestRate == nil || *requestRate < *policy.MinRequestRate {
+			return autoRollbackDecision{}, false
+		}
+	}
+
+	breaches := make([]string, 0, 2)
+	metadata := map[string]any{}
+	if requestRate != nil {
+		metadata["requestRate"] = *requestRate
+	}
+	if errorRate != nil {
+		metadata["errorRate"] = *errorRate
+	}
+	if latencyP95 != nil {
+		metadata["latencyP95Ms"] = *latencyP95
+	}
+
+	if policy.MaxErrorRate != nil && errorRate != nil && *errorRate > *policy.MaxErrorRate {
+		breaches = append(breaches, fmt.Sprintf("에러율 %.2f%%가 임계치 %.2f%%를 초과했습니다.", *errorRate, *policy.MaxErrorRate))
+		metadata["maxErrorRate"] = *policy.MaxErrorRate
+	}
+	if policy.MaxLatencyP95Ms != nil && latencyP95 != nil && *latencyP95 > float64(*policy.MaxLatencyP95Ms) {
+		breaches = append(breaches, fmt.Sprintf("지연시간 P95 %.0fms가 임계치 %dms를 초과했습니다.", *latencyP95, *policy.MaxLatencyP95Ms))
+		metadata["maxLatencyP95Ms"] = *policy.MaxLatencyP95Ms
+	}
+
+	if len(breaches) == 0 {
+		return autoRollbackDecision{}, false
+	}
+
+	return autoRollbackDecision{
+		Message:  strings.Join(breaches, " "),
+		Metadata: metadata,
+	}, true
+}
+
+func latestMetricValue(metrics []MetricSeries, key string) *float64 {
+	for _, series := range metrics {
+		if series.Key != key {
+			continue
+		}
+		for idx := len(series.Points) - 1; idx >= 0; idx-- {
+			if series.Points[idx].Value == nil {
+				continue
+			}
+			value := *series.Points[idx].Value
+			return &value
+		}
+	}
+	return nil
+}
+
+func selectAutoRollbackTarget(deployments []DeploymentRecord, fallbackEnvironment string) (DeploymentRecord, DeploymentRecord, bool) {
+	if len(deployments) < 2 {
+		return DeploymentRecord{}, DeploymentRecord{}, false
+	}
+
+	latest := deployments[0]
+	targetEnvironment := strings.TrimSpace(latest.Environment)
+	if targetEnvironment == "" {
+		targetEnvironment = strings.TrimSpace(fallbackEnvironment)
+	}
+
+	for _, candidate := range deployments[1:] {
+		candidateEnvironment := strings.TrimSpace(candidate.Environment)
+		if targetEnvironment != "" && candidateEnvironment != "" && candidateEnvironment != targetEnvironment {
+			continue
+		}
+		if candidate.ImageTag == "" || candidate.ImageTag == latest.ImageTag {
+			continue
+		}
+		return latest, candidate, true
+	}
+
+	return DeploymentRecord{}, DeploymentRecord{}, false
+}
+
+func autoRollbackAlreadyTriggered(events []Event, deploymentID string) bool {
+	for _, event := range events {
+		if event.Type != "AutoRollbackTriggered" || event.Metadata == nil {
+			continue
+		}
+		sourceDeploymentID, _ := event.Metadata["sourceDeploymentId"].(string)
+		if sourceDeploymentID == deploymentID {
+			return true
+		}
+	}
+	return false
+}
+
+func copyMetadata(values map[string]any) map[string]any {
+	if len(values) == 0 {
+		return map[string]any{}
+	}
+
+	copied := make(map[string]any, len(values))
+	for key, value := range values {
+		copied[key] = value
+	}
+	return copied
+}
+
+func (p *AutoUpdatePoller) rollbackEvaluationDelay() time.Duration {
+	if p.RollbackEvaluationDelay > 0 {
+		return p.RollbackEvaluationDelay
+	}
+	if p.Interval > 0 {
+		return p.Interval
+	}
+	return 5 * time.Minute
+}
+
+func (p *AutoUpdatePoller) rollbackMetricRange() time.Duration {
+	if p.RollbackMetricsRange > 0 {
+		return p.RollbackMetricsRange
+	}
+	return 15 * time.Minute
+}
+
+func (p *AutoUpdatePoller) rollbackMetricStep() time.Duration {
+	if p.RollbackMetricsStep > 0 {
+		return p.RollbackMetricsStep
+	}
+	return time.Minute
 }
 
 func intPointer(value int) *int {

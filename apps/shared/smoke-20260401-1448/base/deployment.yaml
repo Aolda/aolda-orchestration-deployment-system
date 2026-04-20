@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smoke-20260401-1448
+  namespace: shared
+  labels:
+    app.kubernetes.io/name: smoke-20260401-1448
+    app.kubernetes.io/part-of: shared
+  annotations:
+    aods.io/project-id: shared
+    aods.io/application-name: smoke-20260401-1448
+    aods.io/application-description: GitHub-first live smoke test
+    aods.io/deployment-strategy: Standard
+    aods.io/created-at: 2026-04-01T05:47:57Z
+    aods.io/updated-at: 2026-04-01T05:48:32Z
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: smoke-20260401-1448
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: smoke-20260401-1448
+        app.kubernetes.io/part-of: shared
+    spec:
+      containers:
+        - name: smoke-20260401-1448
+          image: nginx:1.27.1
+          ports:
+            - name: http
+              containerPort: 8080
+          envFrom:
+            - secretRef:
+                name: smoke-20260401-1448-secrets

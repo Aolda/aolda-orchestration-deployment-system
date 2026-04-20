@@ -5,6 +5,13 @@ import classes from './AppShell.module.css'
 import { SidebarNav } from '../../components/navigation/SidebarNav'
 import { TopBar } from '../../components/layout/TopBar'
 
+type SidebarProject = {
+  id: string
+  name: string
+  namespace: string
+  role: string
+}
+
 type AppShellProps = {
   activeSection: GlobalSection
   onSectionChange: (section: GlobalSection) => void
@@ -12,9 +19,15 @@ type AppShellProps = {
   title: string
   description: string
   topBarActions?: ReactNode
+  metaBadges?: ReactNode
   secondaryNav?: ReactNode
   userLabel?: string
   roleLabel?: string
+  projects?: SidebarProject[]
+  selectedProjectId?: string | null
+  onProjectSelect?: (projectId: string) => void
+  canCreateProject?: boolean
+  onCreateProject?: () => void
   children: ReactNode
 }
 
@@ -25,9 +38,15 @@ export function AppShell({
   title,
   description,
   topBarActions,
+  metaBadges,
   secondaryNav,
   userLabel,
   roleLabel,
+  projects,
+  selectedProjectId,
+  onProjectSelect,
+  canCreateProject,
+  onCreateProject,
   children,
 }: AppShellProps) {
   return (
@@ -48,7 +67,15 @@ export function AppShell({
           </div>
 
           <ScrollArea type="never" flex={1}>
-            <SidebarNav activeSection={activeSection} onSectionChange={onSectionChange} />
+            <SidebarNav
+              activeSection={activeSection}
+              onSectionChange={onSectionChange}
+              projects={projects}
+              selectedProjectId={selectedProjectId}
+              onProjectSelect={onProjectSelect}
+              canCreateProject={canCreateProject}
+              onCreateProject={onCreateProject}
+            />
             {secondaryNav && (
               <div className={classes.secondaryNavContainer}>
                 {secondaryNav}
@@ -65,6 +92,7 @@ export function AppShell({
             title={title}
             description={description}
             actions={topBarActions}
+            metaBadges={metaBadges}
             userLabel={userLabel}
             roleLabel={roleLabel}
           />

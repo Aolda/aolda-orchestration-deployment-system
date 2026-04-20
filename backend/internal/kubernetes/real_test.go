@@ -275,6 +275,513 @@ func TestPodMetricsReaderTokenModeProvidesCPUAndMemoryFallback(t *testing.T) {
 	}
 }
 
+func TestServiceNetworkExposureReaderReadyWhenIngressIsAssigned(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer exposure-token" {
+			t.Fatalf("expected bearer token auth, got %q", got)
+		}
+
+		switch r.URL.Path {
+		case "/api/v1/namespaces/shared/services/moltbot-front-poc-web":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"spec": {
+					"type": "LoadBalancer",
+					"ports": [
+						{"name": "http", "protocol": "TCP", "port": 80, "targetPort": 3000, "nodePort": 32080}
+					]
+				},
+				"status": {
+					"loadBalancer": {
+						"ingress": [{"ip": "172.31.0.238"}]
+					}
+				}
+			}`))
+		case "/api/v1/namespaces/shared/events":
+			if got := r.URL.Query().Get("fieldSelector"); got != "involvedObject.kind=Service,involvedObject.name=moltbot-front-poc-web" {
+				t.Fatalf("unexpected fieldSelector %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"items": [
+					{
+						"type": "Normal",
+						"reason": "UpdatedLoadBalancer",
+						"message": "Updated LoadBalancer with new IPs: [172.31.0.238]",
+						"lastTimestamp": "2026-04-18T09:00:00Z",
+						"metadata": {"creationTimestamp": "2026-04-18T08:59:00Z"}
+					}
+				]
+			}`))
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	reader, err := NewServiceNetworkExposureReader(core.Config{
+		KubernetesMode:           "token",
+		KubernetesAPIURL:         server.URL,
+		KubernetesBearerToken:    "exposure-token",
+		KubernetesRequestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new network exposure reader: %v", err)
+	}
+
+	info, err := reader.Read(context.Background(), application.Record{
+		Name:                "moltbot-front-poc-web",
+		Namespace:           "shared",
+		LoadBalancerEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("read network exposure: %v", err)
+	}
+
+	if info.Status != application.NetworkExposureStatusReady {
+		t.Fatalf("expected Ready, got %s", info.Status)
+	}
+	if info.ServiceType != "LoadBalancer" {
+		t.Fatalf("expected LoadBalancer service type, got %q", info.ServiceType)
+	}
+	if len(info.Addresses) != 1 || info.Addresses[0] != "172.31.0.238" {
+		t.Fatalf("unexpected ingress addresses %#v", info.Addresses)
+	}
+	if len(info.Ports) != 1 {
+		t.Fatalf("expected one service port, got %#v", info.Ports)
+	}
+	if info.Ports[0].Port != 80 || info.Ports[0].TargetPort != "3000" || info.Ports[0].NodePort != 32080 {
+		t.Fatalf("unexpected service port mapping %#v", info.Ports[0])
+	}
+	if info.LastEvent == nil || info.LastEvent.Reason != "UpdatedLoadBalancer" {
+		t.Fatalf("expected latest service event to be returned, got %#v", info.LastEvent)
+	}
+}
+
+func TestServiceNetworkExposureReaderReturnsProvisioningWithoutIngress(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/namespaces/shared/services/moltbot-front-poc-web":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"spec": {"type": "LoadBalancer"},
+				"status": {
+					"loadBalancer": {
+						"ingress": []
+					}
+				}
+			}`))
+		case "/api/v1/namespaces/shared/events":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"items": [
+					{
+						"type": "Normal",
+						"reason": "EnsuringLoadBalancer",
+						"message": "Ensuring load balancer",
+						"lastTimestamp": "2026-04-18T09:05:00Z"
+					}
+				]
+			}`))
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	reader, err := NewServiceNetworkExposureReader(core.Config{
+		KubernetesMode:           "token",
+		KubernetesAPIURL:         server.URL,
+		KubernetesBearerToken:    "exposure-token",
+		KubernetesRequestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new network exposure reader: %v", err)
+	}
+
+	info, err := reader.Read(context.Background(), application.Record{
+		Name:                "moltbot-front-poc-web",
+		Namespace:           "shared",
+		LoadBalancerEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("read network exposure: %v", err)
+	}
+
+	if info.Status != application.NetworkExposureStatusProvisioning {
+		t.Fatalf("expected Provisioning, got %s", info.Status)
+	}
+	if info.LastEvent == nil || info.LastEvent.Reason != "EnsuringLoadBalancer" {
+		t.Fatalf("expected provisioning event, got %#v", info.LastEvent)
+	}
+}
+
+func TestServiceNetworkExposureReaderReturnsErrorOnWarningEvent(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/namespaces/shared/services/moltbot-front-poc-web":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"spec": {"type": "LoadBalancer"},
+				"status": {
+					"loadBalancer": {
+						"ingress": []
+					}
+				}
+			}`))
+		case "/api/v1/namespaces/shared/events":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"items": [
+					{
+						"type": "Warning",
+						"reason": "SyncLoadBalancerFailed",
+						"message": "failed to ensure external LB",
+						"lastTimestamp": "2026-04-18T09:10:00Z"
+					}
+				]
+			}`))
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	reader, err := NewServiceNetworkExposureReader(core.Config{
+		KubernetesMode:           "token",
+		KubernetesAPIURL:         server.URL,
+		KubernetesBearerToken:    "exposure-token",
+		KubernetesRequestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new network exposure reader: %v", err)
+	}
+
+	info, err := reader.Read(context.Background(), application.Record{
+		Name:                "moltbot-front-poc-web",
+		Namespace:           "shared",
+		LoadBalancerEnabled: true,
+	})
+	if err != nil {
+		t.Fatalf("read network exposure: %v", err)
+	}
+
+	if info.Status != application.NetworkExposureStatusError {
+		t.Fatalf("expected Error, got %s", info.Status)
+	}
+	if !strings.Contains(info.Message, "failed to ensure external LB") {
+		t.Fatalf("expected warning message to surface, got %q", info.Message)
+	}
+}
+
+func TestPodLogReaderTokenModeReturnsLatestPrimaryContainerLogs(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer logs-token" {
+			t.Fatalf("expected bearer token auth, got %q", got)
+		}
+		if got := r.Header.Get("Accept"); got == "text/plain" {
+			t.Fatalf("unexpected Accept header %q", got)
+		}
+
+		switch {
+		case r.URL.Path == "/api/v1/namespaces/shared/pods":
+			if got := r.URL.Query().Get("labelSelector"); got != "app.kubernetes.io/name=moltbot-front-poc-web" {
+				t.Fatalf("unexpected label selector %q", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"items": [
+					{
+						"metadata": {"name": "moltbot-front-poc-web-7cc4d5f789-newer", "creationTimestamp": "2026-04-17T10:00:00Z"},
+						"spec": {"containers": [{"name": "moltbot-front-poc-web"}, {"name": "istio-proxy"}]},
+						"status": {
+							"phase": "Running",
+							"containerStatuses": [
+								{"name": "moltbot-front-poc-web", "ready": true, "restartCount": 1},
+								{"name": "istio-proxy", "ready": true, "restartCount": 0}
+							]
+						}
+					},
+					{
+						"metadata": {"name": "moltbot-front-poc-web-7cc4d5f789-older", "creationTimestamp": "2026-04-17T09:00:00Z"},
+						"spec": {"containers": [{"name": "moltbot-front-poc-web"}]},
+						"status": {
+							"phase": "Running",
+							"containerStatuses": [
+								{"name": "moltbot-front-poc-web", "ready": false, "restartCount": 3}
+							]
+						}
+					}
+				]
+			}`))
+		case r.URL.Path == "/api/v1/namespaces/shared/pods/moltbot-front-poc-web-7cc4d5f789-newer/log":
+			if got := r.URL.Query().Get("container"); got != "moltbot-front-poc-web" {
+				t.Fatalf("unexpected container query %q", got)
+			}
+			if got := r.URL.Query().Get("tailLines"); got != "120" {
+				t.Fatalf("unexpected tailLines %q", got)
+			}
+			_, _ = w.Write([]byte("2026-04-17T10:12:00Z server started\n2026-04-17T10:12:03Z ready"))
+		case r.URL.Path == "/api/v1/namespaces/shared/pods/moltbot-front-poc-web-7cc4d5f789-older/log":
+			_, _ = w.Write([]byte("2026-04-17T09:10:00Z booting"))
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	reader, err := NewPodLogReader(core.Config{
+		KubernetesMode:           "token",
+		KubernetesAPIURL:         server.URL,
+		KubernetesBearerToken:    "logs-token",
+		KubernetesRequestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new pod log reader: %v", err)
+	}
+
+	logs, err := reader.Read(context.Background(), application.Record{
+		Name:      "moltbot-front-poc-web",
+		Namespace: "shared",
+	}, 120)
+	if err != nil {
+		t.Fatalf("read pod logs: %v", err)
+	}
+
+	if len(logs) != 2 {
+		t.Fatalf("expected 2 log streams, got %d", len(logs))
+	}
+	if logs[0].PodName != "moltbot-front-poc-web-7cc4d5f789-newer" {
+		t.Fatalf("expected newest pod first, got %q", logs[0].PodName)
+	}
+	if logs[0].ContainerName != "moltbot-front-poc-web" {
+		t.Fatalf("expected primary container logs, got %q", logs[0].ContainerName)
+	}
+	if !logs[0].Ready || logs[0].RestartCount != 1 {
+		t.Fatalf("unexpected primary container status: %#v", logs[0])
+	}
+	if !strings.Contains(logs[0].Content, "server started") {
+		t.Fatalf("expected log content, got %q", logs[0].Content)
+	}
+}
+
+func TestPodLogReaderListTargetsIncludesResourceStatus(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/namespaces/shared/pods":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"items": [
+					{
+						"metadata": {"name": "moltbot-front-poc-web-7cc4d5f789-newer", "creationTimestamp": "2026-04-17T10:00:00Z"},
+						"spec": {
+							"containers": [
+								{
+									"name": "moltbot-front-poc-web",
+									"resources": {
+										"requests": {"cpu": "500m", "memory": "256Mi"},
+										"limits": {"cpu": "1000m", "memory": "512Mi"}
+									}
+								},
+								{
+									"name": "istio-proxy",
+									"resources": {
+										"requests": {"cpu": "100m", "memory": "64Mi"},
+										"limits": {"cpu": "200m", "memory": "128Mi"}
+									}
+								}
+							]
+						},
+						"status": {
+							"phase": "Running",
+							"containerStatuses": [
+								{"name": "moltbot-front-poc-web", "ready": true, "restartCount": 1},
+								{"name": "istio-proxy", "ready": true, "restartCount": 0}
+							]
+						}
+					}
+				]
+			}`))
+		case "/apis/metrics.k8s.io/v1beta1/namespaces/shared/pods":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{
+				"items": [
+					{
+						"metadata": {"name": "moltbot-front-poc-web-7cc4d5f789-newer"},
+						"containers": [
+							{"name": "moltbot-front-poc-web", "usage": {"cpu": "125m", "memory": "128Mi"}},
+							{"name": "istio-proxy", "usage": {"cpu": "20m", "memory": "48Mi"}}
+						]
+					}
+				]
+			}`))
+		default:
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	reader, err := NewPodLogReader(core.Config{
+		KubernetesMode:           "token",
+		KubernetesAPIURL:         server.URL,
+		KubernetesBearerToken:    "logs-token",
+		KubernetesRequestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new pod log reader: %v", err)
+	}
+
+	targets, err := reader.ListTargets(context.Background(), application.Record{
+		Name:      "moltbot-front-poc-web",
+		Namespace: "shared",
+	})
+	if err != nil {
+		t.Fatalf("list targets: %v", err)
+	}
+
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 pod target, got %d", len(targets))
+	}
+	if len(targets[0].Containers) != 2 {
+		t.Fatalf("expected 2 container targets, got %d", len(targets[0].Containers))
+	}
+	if !targets[0].Containers[0].Default {
+		t.Fatal("expected first app container to be default")
+	}
+	resourceStatus := targets[0].Containers[0].ResourceStatus
+	if resourceStatus == nil {
+		t.Fatal("expected resource status for primary container")
+	}
+	if resourceStatus.CPUUsageCores == nil || *resourceStatus.CPUUsageCores != 0.125 {
+		t.Fatalf("unexpected cpu usage %#v", resourceStatus.CPUUsageCores)
+	}
+	if resourceStatus.CPURequestUtilization == nil || int(*resourceStatus.CPURequestUtilization) != 25 {
+		t.Fatalf("unexpected cpu request utilization %#v", resourceStatus.CPURequestUtilization)
+	}
+	if resourceStatus.MemoryLimitUtilization == nil || int(*resourceStatus.MemoryLimitUtilization) != 25 {
+		t.Fatalf("unexpected memory limit utilization %#v", resourceStatus.MemoryLimitUtilization)
+	}
+}
+
+func TestPodLogReaderStreamsSelectedContainerLogs(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/namespaces/shared/pods/moltbot-front-poc-web-7cc4d5f789-newer/log" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("follow"); got != "true" {
+			t.Fatalf("expected follow=true, got %q", got)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("2026-04-17T10:12:00Z server started\n"))
+		flusher.Flush()
+		_, _ = w.Write([]byte("2026-04-17T10:12:03Z ready\n"))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	reader, err := NewPodLogReader(core.Config{
+		KubernetesMode:           "token",
+		KubernetesAPIURL:         server.URL,
+		KubernetesBearerToken:    "logs-token",
+		KubernetesRequestTimeout: 2 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new pod log reader: %v", err)
+	}
+
+	var events []application.ContainerLogEvent
+	err = reader.Stream(
+		context.Background(),
+		application.Record{Name: "moltbot-front-poc-web", Namespace: "shared"},
+		"moltbot-front-poc-web-7cc4d5f789-newer",
+		"moltbot-front-poc-web",
+		120,
+		func(event application.ContainerLogEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream logs: %v", err)
+	}
+
+	if len(events) != 2 {
+		t.Fatalf("expected 2 streamed events, got %d", len(events))
+	}
+	if events[0].Timestamp != "2026-04-17T10:12:00Z" {
+		t.Fatalf("unexpected first timestamp %q", events[0].Timestamp)
+	}
+	if events[1].Message != "ready" {
+		t.Fatalf("unexpected second message %q", events[1].Message)
+	}
+}
+
+func TestPodLogReaderStreamIgnoresHTTPClientTimeoutForLongLivedLogs(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/namespaces/shared/pods/moltbot-front-poc-web-7cc4d5f789-newer/log" {
+			t.Fatalf("unexpected request path %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		flusher, _ := w.(http.Flusher)
+		_, _ = w.Write([]byte("2026-04-17T10:12:00Z first line\n"))
+		flusher.Flush()
+		time.Sleep(150 * time.Millisecond)
+		_, _ = w.Write([]byte("2026-04-17T10:12:03Z second line\n"))
+		flusher.Flush()
+	}))
+	defer server.Close()
+
+	reader, err := NewPodLogReader(core.Config{
+		KubernetesMode:           "token",
+		KubernetesAPIURL:         server.URL,
+		KubernetesBearerToken:    "logs-token",
+		KubernetesRequestTimeout: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("new pod log reader: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	var events []application.ContainerLogEvent
+	err = reader.Stream(
+		ctx,
+		application.Record{Name: "moltbot-front-poc-web", Namespace: "shared"},
+		"moltbot-front-poc-web-7cc4d5f789-newer",
+		"moltbot-front-poc-web",
+		120,
+		func(event application.ContainerLogEvent) error {
+			events = append(events, event)
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("stream logs: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("expected 2 streamed events, got %d", len(events))
+	}
+	if events[1].Message != "second line" {
+		t.Fatalf("unexpected second message %q", events[1].Message)
+	}
+}
+
 func TestKubeUserResolveClientCertificateFromData(t *testing.T) {
 	t.Parallel()
 

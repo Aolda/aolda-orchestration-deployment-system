@@ -1,8 +1,12 @@
 package application
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/aolda/aods-backend/internal/core"
@@ -66,6 +70,40 @@ func (h Handler) CreateApplication(w http.ResponseWriter, r *http.Request) {
 	}
 
 	core.WriteJSON(w, http.StatusCreated, application)
+}
+
+func (h Handler) PreviewRepositorySource(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	var request PreviewRepositorySourceRequest
+	if err := core.DecodeJSON(r, &request); err != nil {
+		core.WriteError(
+			w,
+			r,
+			http.StatusBadRequest,
+			"INVALID_REQUEST",
+			"Request body is invalid.",
+			map[string]any{"error": err.Error()},
+			false,
+		)
+		return
+	}
+
+	response, err := h.Service.PreviewRepositorySource(
+		r.Context(),
+		user,
+		r.PathValue("projectId"),
+		request,
+	)
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
 }
 
 func (h Handler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +170,36 @@ func (h Handler) PatchApplication(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, http.StatusOK, application)
 }
 
+func (h Handler) ArchiveApplication(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	response, err := h.Service.ArchiveApplication(r.Context(), user, r.PathValue("applicationId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) DeleteApplication(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	response, err := h.Service.DeleteApplication(r.Context(), user, r.PathValue("applicationId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
 func (h Handler) GetSyncStatus(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.currentUser(w, r)
 	if !ok {
@@ -139,6 +207,36 @@ func (h Handler) GetSyncStatus(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response, err := h.Service.GetSyncStatus(r.Context(), user, r.PathValue("applicationId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) SyncRepositoryNow(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	response, err := h.Service.SyncRepositoryNow(r.Context(), user, r.PathValue("applicationId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) GetNetworkExposure(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	response, err := h.Service.GetNetworkExposure(r.Context(), user, r.PathValue("applicationId"))
 	if err != nil {
 		h.writeDomainError(w, r, err)
 		return
@@ -178,6 +276,125 @@ func (h Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) GetContainerLogs(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	tailLines, ok := parseTailLines(w, r)
+	if !ok {
+		return
+	}
+
+	response, err := h.Service.GetContainerLogs(r.Context(), user, r.PathValue("applicationId"), tailLines)
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) GetContainerLogTargets(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	response, err := h.Service.GetContainerLogTargets(r.Context(), user, r.PathValue("applicationId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) StreamContainerLogs(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	tailLines, ok := parseTailLines(w, r)
+	if !ok {
+		return
+	}
+	podName := strings.TrimSpace(r.URL.Query().Get("podName"))
+	containerName := strings.TrimSpace(r.URL.Query().Get("containerName"))
+
+	flusher, streamSupported := w.(http.Flusher)
+	if !streamSupported {
+		core.WriteError(w, r, http.StatusInternalServerError, "STREAM_UNSUPPORTED", "Streaming is not supported by the current server.", nil, true)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	wroteEvent := false
+	emit := func(event ContainerLogEvent) error {
+		payload, err := json.Marshal(event)
+		if err != nil {
+			return fmt.Errorf("encode log stream event: %w", err)
+		}
+		if _, err := fmt.Fprintf(w, "event: log\ndata: %s\n\n", payload); err != nil {
+			return err
+		}
+		wroteEvent = true
+		flusher.Flush()
+		return nil
+	}
+
+	if err := h.Service.StreamContainerLogs(
+		r.Context(),
+		user,
+		r.PathValue("applicationId"),
+		podName,
+		containerName,
+		tailLines,
+		emit,
+	); err != nil {
+		if !wroteEvent {
+			h.writeDomainError(w, r, err)
+			return
+		}
+
+		payload, _ := json.Marshal(map[string]string{
+			"message": err.Error(),
+		})
+		_, _ = fmt.Fprintf(w, "event: error\ndata: %s\n\n", payload)
+		flusher.Flush()
+		return
+	}
+
+	_, _ = fmt.Fprint(w, "event: done\ndata: {}\n\n")
+	flusher.Flush()
+}
+
+func parseTailLines(w http.ResponseWriter, r *http.Request) (int, bool) {
+	tailLines := 120
+	if raw := r.URL.Query().Get("tailLines"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil {
+			core.WriteError(
+				w,
+				r,
+				http.StatusBadRequest,
+				"INVALID_REQUEST",
+				"tailLines must be a valid integer.",
+				map[string]any{"field": "tailLines"},
+				false,
+			)
+			return 0, false
+		}
+		tailLines = parsed
+	}
+	return tailLines, true
 }
 
 func (h Handler) ListDeployments(w http.ResponseWriter, r *http.Request) {
@@ -327,7 +544,7 @@ func (h Handler) writeDomainError(w http.ResponseWriter, r *http.Request, err er
 			},
 			false,
 		)
-	case errors.Is(err, project.ErrForbidden), errors.Is(err, ErrRequiresDeployer):
+	case errors.Is(err, project.ErrForbidden), errors.Is(err, ErrRequiresDeployer), errors.Is(err, ErrRequiresAdmin):
 		core.WriteError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have permission to perform this action.", nil, false)
 	case errors.Is(err, ErrChangeRequired):
 		core.WriteError(
@@ -359,7 +576,7 @@ func (h Handler) writeDomainError(w http.ResponseWriter, r *http.Request, err er
 			map[string]any{"applicationId": r.PathValue("applicationId")},
 			false,
 		)
-	case errors.Is(err, ErrNotFound):
+	case errors.Is(err, ErrNotFound), errors.Is(err, ErrArchived):
 		core.WriteError(
 			w,
 			r,
@@ -390,6 +607,16 @@ func (h Handler) writeDomainError(w http.ResponseWriter, r *http.Request, err er
 			"DUPLICATE_APPLICATION",
 			"An application with this name already exists.",
 			map[string]any{"projectId": r.PathValue("projectId")},
+			false,
+		)
+	case errors.Is(err, ErrAlreadyArchived):
+		core.WriteError(
+			w,
+			r,
+			http.StatusConflict,
+			"APPLICATION_ALREADY_ARCHIVED",
+			"Application is already archived.",
+			map[string]any{"applicationId": r.PathValue("applicationId")},
 			false,
 		)
 	default:

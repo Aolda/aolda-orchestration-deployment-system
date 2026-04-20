@@ -4,6 +4,13 @@
   background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
 }
 
+.workspacePage {
+  min-height: calc(100vh - 140px);
+  background: linear-gradient(135deg, #f8fafc 0%, #eff6ff 100%);
+  border-radius: 28px;
+  padding: 24px;
+}
+
 .authShell {
   min-height: 100vh;
   display: flex;
@@ -211,6 +218,16 @@
   color: #ffffff;
 }
 
+.progressError .progressMarker {
+  background: #ef4444;
+  color: #ffffff;
+}
+
+.progressPending .progressMarker {
+  background: #f1f5f9;
+  color: #64748b;
+}
+
 .progressTitle {
   font-size: 0.95rem;
   font-weight: 700;
@@ -221,6 +238,15 @@
   margin-top: 2px;
   font-size: 0.85rem;
   color: #64748b;
+  line-height: 1.6;
+}
+
+.progressHighlight {
+  font-weight: 800;
+  color: #0f172a;
+  background: #dbeafe;
+  border-radius: 999px;
+  padding: 2px 8px;
 }
 
 /* Animation */
@@ -269,12 +295,76 @@
   color: var(--mantine-color-lagoon-9);
 }
 
+.statValueSmall {
+  font-size: 1rem;
+  font-weight: 800;
+  color: var(--mantine-color-lagoon-9);
+  line-height: 1.35;
+}
+
 .statLabel {
   font-size: 0.7rem;
   font-weight: 700;
   color: #64748b;
   text-transform: uppercase;
   letter-spacing: 0.05em;
+}
+
+.insightSummary {
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: #475569;
+}
+
+.appOverviewCard {
+  padding: 20px;
+  border-radius: 18px;
+  border: 1px solid #e2e8f0;
+  background: linear-gradient(180deg, #ffffff 0%, #f8fafc 100%);
+  box-shadow: 0 10px 22px -20px rgba(15, 23, 42, 0.32);
+}
+
+.appOverviewMeta {
+  min-width: 0;
+}
+
+.appOverviewActions {
+  display: flex;
+  min-width: 180px;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.applicationCatalogCard {
+  text-align: left;
+}
+
+.applicationCatalogCard .surfaceCard {
+  height: 100%;
+}
+
+.applicationCatalogSummary {
+  line-height: 1.6;
+}
+
+.applicationCatalogStat {
+  padding: 12px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+}
+
+.applicationCatalogMetric {
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+}
+
+.applicationCatalogFooter {
+  padding-top: 4px;
+  border-top: 1px solid #e2e8f0;
 }
 
 .metricProgress {
@@ -288,6 +378,44 @@
 .metricBar {
   height: 100%;
   background: var(--mantine-color-lagoon-6);
+}
+
+.projectSettingsPanel {
+  gap: 24px;
+}
+
+.projectSettingsTableScroll {
+  width: 100%;
+}
+
+.projectSettingsTable {
+  table-layout: fixed;
+}
+
+.projectSettingsTable th,
+.projectSettingsTable td {
+  vertical-align: top;
+}
+
+.projectSettingsNameCell {
+  min-width: 120px;
+  font-weight: 700;
+}
+
+.projectSettingsActionCell {
+  white-space: nowrap;
+}
+
+.projectSettingsWrapText {
+  white-space: normal;
+  line-height: 1.6;
+}
+
+.projectSettingsBreakText {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  line-height: 1.6;
 }
 
 @media (max-width: 1200px) {
@@ -304,5 +432,20 @@
   .loginCard {
     padding: 24px;
     margin: 20px;
+  }
+
+  .workspacePage {
+    padding: 16px;
+    border-radius: 20px;
+  }
+
+  .appOverviewActions {
+    min-width: 0;
+    width: 100%;
+    align-items: stretch;
+  }
+
+  .projectSettingsPanel {
+    gap: 20px;
   }
 }

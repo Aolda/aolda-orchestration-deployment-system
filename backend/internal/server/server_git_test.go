@@ -43,12 +43,15 @@ func TestGitModeCreateAndRedeployApplication(t *testing.T) {
 		"deployment.yaml",
 		"service.yaml",
 		"servicemonitor.yaml",
-		"virtualservice.yaml",
-		"destinationrule.yaml",
 		"externalsecret.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(appDir, fileName)); err != nil {
 			t.Fatalf("expected %s in remote checkout: %v", fileName, err)
+		}
+	}
+	for _, fileName := range []string{"virtualservice.yaml", "destinationrule.yaml"} {
+		if _, err := os.Stat(filepath.Join(appDir, fileName)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be skipped for non-mesh rollout apps, got %v", fileName, err)
 		}
 	}
 	serviceMonitorManifest, err := os.ReadFile(filepath.Join(appDir, "servicemonitor.yaml"))
@@ -119,6 +122,177 @@ func TestGitModeMissingProjectCatalogReturnsBootstrapError(t *testing.T) {
 	}
 }
 
+func TestGitModeBootstrapCluster(t *testing.T) {
+	env := newGitTestEnvironment(t)
+
+	payload := map[string]any{
+		"id":          "edge",
+		"name":        "Edge Cluster",
+		"description": "Dedicated edge workloads",
+	}
+
+	response := performJSONRequest(t, env, "POST", "/api/v1/clusters", payload, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", response.StatusCode)
+	}
+
+	verifyDir := cloneRemoteForVerification(t, env.repoRoot)
+	clustersYAML, err := os.ReadFile(filepath.Join(verifyDir, "platform", "clusters.yaml"))
+	if err != nil {
+		t.Fatalf("read remote clusters.yaml: %v", err)
+	}
+	if !strings.Contains(string(clustersYAML), "id: edge") {
+		t.Fatalf("expected remote cluster catalog to contain edge cluster: %s", clustersYAML)
+	}
+
+	assertFluxBootstrapFiles(t, verifyDir, "edge")
+	clusterRoot, err := os.ReadFile(filepath.Join(verifyDir, "platform", "flux", "clusters", "edge", "kustomization.yaml"))
+	if err != nil {
+		t.Fatalf("read remote cluster root kustomization: %v", err)
+	}
+	if !strings.Contains(string(clusterRoot), "resources: []") {
+		t.Fatalf("expected remote cluster root to start empty: %s", clusterRoot)
+	}
+}
+
+func TestGitModeBootstrapProject(t *testing.T) {
+	env := newGitTestEnvironment(t)
+
+	payload := map[string]any{
+		"id":   "project-z",
+		"name": "project-z",
+		"environments": []map[string]any{
+			{
+				"id":        "staging",
+				"clusterId": "default",
+				"writeMode": "direct",
+				"default":   true,
+			},
+		},
+	}
+
+	response := performJSONRequest(t, env, "POST", "/api/v1/projects", payload, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", response.StatusCode)
+	}
+
+	verifyDir := cloneRemoteForVerification(t, env.repoRoot)
+	projectsYAML, err := os.ReadFile(filepath.Join(verifyDir, "platform", "projects.yaml"))
+	if err != nil {
+		t.Fatalf("read remote projects.yaml: %v", err)
+	}
+	content := string(projectsYAML)
+	for _, needle := range []string{
+		"id: project-z",
+		"namespace: project-z",
+		"- aods:project-z:view",
+		"- aods:project-z:deploy",
+		"- aods:project-z:admin",
+		"clusterId: default",
+	} {
+		if !strings.Contains(content, needle) {
+			t.Fatalf("expected remote projects.yaml to contain %q, got:\n%s", needle, content)
+		}
+	}
+
+	assertFluxBootstrapFiles(t, verifyDir, "default")
+}
+
+func TestGitModeDeleteApplication(t *testing.T) {
+	env := newGitTestEnvironment(t)
+
+	createResponse := performJSONRequest(t, env, "POST", "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "git-delete-app",
+		"image":              "repo/git-delete-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Rollout",
+		"secrets": []map[string]string{
+			{"key": "DATABASE_URL", "value": "postgres://git-delete"},
+		},
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	deleteResponse := performJSONRequest(t, env, "DELETE", "/api/v1/applications/project-a__git-delete-app", nil, map[string]string{
+		"X-AODS-User-Id":  "user-2",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if deleteResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", deleteResponse.StatusCode)
+	}
+
+	verifyDir := cloneRemoteForVerification(t, env.repoRoot)
+	if _, err := os.Stat(filepath.Join(verifyDir, "apps", "project-a", "git-delete-app")); !os.IsNotExist(err) {
+		t.Fatalf("expected remote application directory to be removed, got %v", err)
+	}
+	assertNoFluxChildManifest(t, verifyDir, "default", "project-a-git-delete-app")
+
+	if _, err := os.Stat(filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "git-delete-app", "prod.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected final vault secret to be removed, got %v", err)
+	}
+}
+
+func TestGitModeDeleteProject(t *testing.T) {
+	env := newGitTestEnvironment(t)
+
+	createResponse := performJSONRequest(t, env, "POST", "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "git-delete-project-app",
+		"image":              "repo/git-delete-project-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Rollout",
+		"secrets": []map[string]string{
+			{"key": "DATABASE_URL", "value": "postgres://git-project-delete"},
+		},
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	deleteResponse := performJSONRequest(t, env, "DELETE", "/api/v1/projects/project-a", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if deleteResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", deleteResponse.StatusCode)
+	}
+
+	verifyDir := cloneRemoteForVerification(t, env.repoRoot)
+	projectsYAML, err := os.ReadFile(filepath.Join(verifyDir, "platform", "projects.yaml"))
+	if err != nil {
+		t.Fatalf("read remote projects.yaml: %v", err)
+	}
+	if strings.Contains(string(projectsYAML), "id: project-a") {
+		t.Fatalf("expected remote catalog to remove project-a, got:\n%s", projectsYAML)
+	}
+	if _, err := os.Stat(filepath.Join(verifyDir, "apps", "project-a")); !os.IsNotExist(err) {
+		t.Fatalf("expected remote project directory to be removed, got %v", err)
+	}
+	assertNoFluxChildManifest(t, verifyDir, "default", "project-a-git-delete-project-app")
+
+	if _, err := os.Stat(filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "git-delete-project-app", "prod.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected local project vault secret to be removed, got %v", err)
+	}
+}
+
 func newGitTestEnvironment(t *testing.T) testEnvironment {
 	return newGitTestEnvironmentWithCatalog(t, true)
 }
@@ -164,11 +338,6 @@ func newGitTestEnvironmentWithCatalog(t *testing.T, includeCatalog bool) testEnv
         - aods:project-a:deploy
       adminGroups:
         - aods:platform:admin
-    repositories:
-      - id: project-a-api
-        name: API Repository
-        url: https://github.com/aolda-demo/project-a-api
-        description: Primary API source code
 `
 		if err := os.WriteFile(filepath.Join(seedDir, "platform", "projects.yaml"), []byte(projectsYAML), 0o644); err != nil {
 			t.Fatalf("write projects.yaml: %v", err)

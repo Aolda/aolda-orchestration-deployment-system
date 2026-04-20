@@ -11,6 +11,7 @@ import (
 	"github.com/aolda/aods-backend/internal/core"
 	"github.com/aolda/aods-backend/internal/gitops"
 	"github.com/aolda/aods-backend/internal/server"
+	"github.com/aolda/aods-backend/internal/vault"
 	"time"
 )
 
@@ -71,6 +72,7 @@ func main() {
 		"gitRepoDir", cfg.GitRepoDir,
 		"gitRemote", redactRemote(cfg.GitRemote),
 		"gitBranch", cfg.GitBranch,
+		"repositoryPollInterval", cfg.RepositoryPollInterval,
 		"kubernetesMode", cfg.KubernetesMode,
 		"kubernetesAPIURL", cfg.KubernetesAPIURL,
 		"fluxKustomizationNamespace", cfg.FluxKustomizationNamespace,
@@ -79,6 +81,9 @@ func main() {
 		"vaultMode", cfg.VaultMode,
 		"vaultAddress", cfg.VaultAddress,
 		"vaultNamespace", cfg.VaultNamespace,
+		"vaultStagingCleanupInterval", cfg.VaultStagingCleanupInterval,
+		"vaultStagingMaxAge", cfg.VaultStagingMaxAge,
+		"orphanFluxCleanupInterval", cfg.OrphanFluxCleanupInterval,
 		"devAuthFallback", cfg.AllowDevFallback,
 		"localVaultDir", cfg.LocalVaultDir,
 	)
@@ -86,9 +91,30 @@ func main() {
 	poller := &application.AutoUpdatePoller{
 		Service:  applicationService,
 		Projects: projectService,
-		Interval: 5 * time.Minute,
+		Interval: cfg.RepositoryPollInterval,
 	}
 	go poller.Start(context.Background())
+
+	if cleaner, ok := applicationService.Secrets.(interface {
+		CleanupStale(context.Context, time.Time) (int, error)
+	}); ok && cfg.VaultStagingCleanupInterval > 0 && cfg.VaultStagingMaxAge > 0 {
+		cleanupWorker := &vault.StagingSecretCleanupWorker{
+			Cleaner:  cleaner,
+			Interval: cfg.VaultStagingCleanupInterval,
+			MaxAge:   cfg.VaultStagingMaxAge,
+		}
+		go cleanupWorker.Start(context.Background())
+	}
+
+	if cleaner, ok := applicationService.Store.(interface {
+		CleanupOrphanFluxManifests(context.Context) (int, error)
+	}); ok && cfg.OrphanFluxCleanupInterval > 0 {
+		cleanupWorker := &application.OrphanFluxManifestCleanupWorker{
+			Cleaner:  cleaner,
+			Interval: cfg.OrphanFluxCleanupInterval,
+		}
+		go cleanupWorker.Start(context.Background())
+	}
 
 	if err := http.ListenAndServe(cfg.Address, handler); err != nil {
 		slog.Error("backend server stopped", "error", err)

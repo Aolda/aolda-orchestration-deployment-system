@@ -11,9 +11,24 @@ info:
 servers:
   - url: http://localhost:8080
     description: Local development server
+tags:
+  - name: Auth
+    description: Authentication and current-user lookup
+  - name: Projects
+    description: Project catalog, environments, repositories, and policy APIs
+  - name: Clusters
+    description: Cluster catalog APIs
+  - name: Applications
+    description: Application CRUD-style operations, sync status, metrics, rollback policy, and events
+  - name: Deployments
+    description: Deployment history and rollout control APIs
+  - name: Changes
+    description: Review-gated change request lifecycle APIs
 paths:
   /api/v1/me:
     get:
+      tags: [Auth]
+      operationId: getCurrentUser
       summary: Get current authenticated user
       responses:
         '200':
@@ -29,6 +44,8 @@ paths:
 
   /api/v1/projects:
     get:
+      tags: [Projects]
+      operationId: listProjects
       summary: List projects available to the current user
       responses:
         '200':
@@ -41,9 +58,38 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '500':
           $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Projects]
+      operationId: createProject
+      summary: Bootstrap a project catalog entry with default access and policy scaffolding
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectRequest'
+      responses:
+        '201':
+          description: Project bootstrap completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
 
   /api/v1/clusters:
     get:
+      tags: [Clusters]
+      operationId: listClusters
       summary: List cluster targets available to the platform
       responses:
         '200':
@@ -57,8 +103,81 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /api/v1/admin/resource-overview:
+    get:
+      tags: [Admin]
+      operationId: getFleetResourceOverview
+      summary: Get platform-wide resource capacity and efficiency overview
+      responses:
+        '200':
+          description: Fleet resource overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FleetResourceOverviewResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    post:
+      tags: [Clusters]
+      operationId: createCluster
+      summary: Bootstrap a cluster target and its Flux scaffold
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateClusterRequest'
+      responses:
+        '201':
+          description: Cluster bootstrap completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ClusterSummary'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/projects/{projectId}:
+    delete:
+      tags: [Projects]
+      operationId: deleteProject
+      summary: Delete a project catalog entry and its managed application resources
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Project deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectLifecycleResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   /api/v1/projects/{projectId}/environments:
     get:
+      tags: [Projects]
+      operationId: listProjectEnvironments
       summary: List environments configured for a project
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -80,6 +199,8 @@ paths:
 
   /api/v1/projects/{projectId}/repositories:
     get:
+      tags: [Projects]
+      operationId: listProjectRepositories
       summary: List source repositories connected to a project
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -101,6 +222,8 @@ paths:
 
   /api/v1/projects/{projectId}/policies:
     get:
+      tags: [Projects]
+      operationId: getProjectPolicies
       summary: Read project deployment guardrails
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -120,6 +243,8 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
     patch:
+      tags: [Projects]
+      operationId: updateProjectPolicies
       summary: Update project deployment guardrails
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -149,6 +274,8 @@ paths:
 
   /api/v1/projects/{projectId}/changes:
     post:
+      tags: [Changes]
+      operationId: createProjectChange
       summary: Create a reviewed change request for a project mutation
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -178,6 +305,8 @@ paths:
 
   /api/v1/projects/{projectId}/applications:
     get:
+      tags: [Applications]
+      operationId: listProjectApplications
       summary: List applications in a project
       parameters:
         - $ref: '#/components/parameters/ProjectId'
@@ -197,6 +326,8 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
     post:
+      tags: [Applications]
+      operationId: createApplication
       summary: Create a new application
       description: Applications can be created with Rollout or Canary strategies.
       parameters:
@@ -227,8 +358,41 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /api/v1/projects/{projectId}/applications/source-preview:
+    post:
+      tags: [Applications]
+      operationId: previewApplicationSource
+      summary: Read and preview a GitHub-backed application descriptor before creation
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PreviewApplicationSourceRequest'
+      responses:
+        '200':
+          description: Descriptor preview loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PreviewApplicationSourceResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   /api/v1/applications/{applicationId}/deployments:
     get:
+      tags: [Deployments]
+      operationId: listDeployments
       summary: List deployment history for an application
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
@@ -248,6 +412,8 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
     post:
+      tags: [Deployments]
+      operationId: createDeployment
       summary: Trigger a new deployment revision
       description: Supports standard redeploys and canary revisions.
       parameters:
@@ -279,7 +445,30 @@ paths:
           $ref: '#/components/responses/InternalServerError'
 
   /api/v1/applications/{applicationId}:
+    delete:
+      tags: [Applications]
+      operationId: deleteApplication
+      summary: Permanently delete an application and its final secret
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Application deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationLifecycleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
     patch:
+      tags: [Applications]
+      operationId: patchApplication
       summary: Update application strategy or environment defaults
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
@@ -309,8 +498,35 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /api/v1/applications/{applicationId}/archive:
+    post:
+      tags: [Applications]
+      operationId: archiveApplication
+      summary: Archive an application while retaining history metadata
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Application archived
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationLifecycleResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   /api/v1/applications/{applicationId}/deployments/{deploymentId}:
     get:
+      tags: [Deployments]
+      operationId: getDeployment
       summary: Get deployment revision detail including rollout state
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
@@ -333,6 +549,8 @@ paths:
 
   /api/v1/applications/{applicationId}/deployments/{deploymentId}/promote:
     post:
+      tags: [Deployments]
+      operationId: promoteDeployment
       summary: Promote a canary rollout to the next step
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
@@ -355,6 +573,8 @@ paths:
 
   /api/v1/applications/{applicationId}/deployments/{deploymentId}/abort:
     post:
+      tags: [Deployments]
+      operationId: abortDeployment
       summary: Abort an in-flight canary rollout
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
@@ -377,6 +597,8 @@ paths:
 
   /api/v1/applications/{applicationId}/sync-status:
     get:
+      tags: [Applications]
+      operationId: getApplicationSyncStatus
       summary: Check Flux GitOps sync status via Kubernetes API
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
@@ -396,11 +618,75 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /api/v1/applications/{applicationId}/sync:
+    post:
+      tags: [Applications]
+      operationId: syncApplicationRepositoryNow
+      summary: Trigger an immediate repository sync check for a repository-backed application
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Repository sync completed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RepositorySyncResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/network-exposure:
+    get:
+      tags: [Applications]
+      operationId: getApplicationNetworkExposure
+      summary: Check Kubernetes Service / LoadBalancer exposure status for the application
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Network exposure status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NetworkExposureResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   /api/v1/applications/{applicationId}/metrics:
     get:
+      tags: [Applications]
+      operationId: getApplicationMetrics
       summary: Get core Prometheus metrics for the application
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
+        - name: range
+          in: query
+          required: false
+          description: Duration window for the metric query, e.g. `15m`, `1h`, `24h`.
+          schema:
+            type: string
+          example: 15m
+        - name: step
+          in: query
+          required: false
+          description: Sampling interval for the metric query, e.g. `1m`, `5m`.
+          schema:
+            type: string
+          example: 1m
       responses:
         '200':
           description: Metric snapshot
@@ -417,8 +703,119 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /api/v1/applications/{applicationId}/logs:
+    get:
+      tags: [Applications]
+      operationId: getApplicationLogs
+      summary: Get recent Kubernetes container logs for the application
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - name: tailLines
+          in: query
+          required: false
+          description: Number of recent log lines to return per container stream.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 120
+      responses:
+        '200':
+          description: Recent container logs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContainerLogsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/logs/targets:
+    get:
+      tags: [Applications]
+      operationId: getApplicationLogTargets
+      summary: List selectable pod and container log targets for the application
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Available pod and container targets with current resource status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ContainerLogTargetsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/logs/stream:
+    get:
+      tags: [Applications]
+      operationId: streamApplicationLogs
+      summary: Stream Kubernetes pod logs for a selected pod and container
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - name: podName
+          in: query
+          required: true
+          description: Kubernetes pod name to stream logs from.
+          schema:
+            type: string
+        - name: containerName
+          in: query
+          required: true
+          description: Container name inside the selected pod.
+          schema:
+            type: string
+        - name: tailLines
+          in: query
+          required: false
+          description: Number of recent log lines to replay before continuing the live stream.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 500
+            default: 120
+      responses:
+        '200':
+          description: Server-sent event stream of container logs
+          content:
+            text/event-stream:
+              schema:
+                type: string
+              example: |
+                event: log
+                data: {"podName":"payment-api-7d9f8d7-abcde","containerName":"payment-api","timestamp":"2026-04-17T02:10:00.000000000Z","message":"server started","rawLine":"2026-04-17T02:10:00.000000000Z server started"}
+
+                event: log
+                data: {"podName":"payment-api-7d9f8d7-abcde","containerName":"payment-api","timestamp":"2026-04-17T02:10:05.000000000Z","message":"listening on :8080","rawLine":"2026-04-17T02:10:05.000000000Z listening on :8080"}
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   /api/v1/applications/{applicationId}/rollback-policies:
     get:
+      tags: [Applications]
+      operationId: getRollbackPolicy
       summary: Get rollback policy thresholds for an application
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
@@ -438,6 +835,8 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
     post:
+      tags: [Applications]
+      operationId: saveRollbackPolicy
       summary: Save rollback policy thresholds for an application
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
@@ -467,6 +866,8 @@ paths:
 
   /api/v1/applications/{applicationId}/events:
     get:
+      tags: [Applications]
+      operationId: listApplicationEvents
       summary: List application deployment and policy events
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
@@ -488,6 +889,8 @@ paths:
 
   /api/v1/changes/{changeId}:
     get:
+      tags: [Changes]
+      operationId: getChange
       summary: Get change request detail
       parameters:
         - $ref: '#/components/parameters/ChangeId'
@@ -509,6 +912,8 @@ paths:
 
   /api/v1/changes/{changeId}/submit:
     post:
+      tags: [Changes]
+      operationId: submitChange
       summary: Submit a draft change for review
       parameters:
         - $ref: '#/components/parameters/ChangeId'
@@ -530,6 +935,8 @@ paths:
 
   /api/v1/changes/{changeId}/approve:
     post:
+      tags: [Changes]
+      operationId: approveChange
       summary: Approve a submitted change
       parameters:
         - $ref: '#/components/parameters/ChangeId'
@@ -551,6 +958,8 @@ paths:
 
   /api/v1/changes/{changeId}/merge:
     post:
+      tags: [Changes]
+      operationId: mergeChange
       summary: Merge an approved change into the desired state
       parameters:
         - $ref: '#/components/parameters/ChangeId'
@@ -606,6 +1015,7 @@ components:
       required:
         - id
         - username
+        - groups
       properties:
         id:
           type: string
@@ -617,6 +1027,12 @@ components:
           type: array
           items:
             type: string
+      example:
+        id: user_123
+        username: local.developer
+        displayName: 로컬 운영자
+        groups:
+          - aods:project-a:deploy
 
     ProjectRole:
       type: string
@@ -644,6 +1060,41 @@ components:
           type: string
         role:
           $ref: '#/components/schemas/ProjectRole'
+      example:
+        id: project-a
+        name: Project A
+        description: Internal APIs
+        namespace: project-a
+        role: deployer
+
+    ProjectLifecycleResponse:
+      type: object
+      required:
+        - projectId
+        - name
+        - namespace
+        - status
+      properties:
+        projectId:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        name:
+          type: string
+        namespace:
+          type: string
+        status:
+          type: string
+          enum:
+            - deleted
+        deletedAt:
+          type: string
+          format: date-time
+      example:
+        projectId: project-a
+        name: Project A
+        namespace: project-a
+        status: deleted
+        deletedAt: '2026-04-13T12:00:00Z'
 
     ProjectListResponse:
       type: object
@@ -654,6 +1105,127 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ProjectSummary'
+      example:
+        items:
+          - id: project-a
+            name: Project A
+            description: Internal APIs
+            namespace: project-a
+            role: deployer
+
+    ProjectAccess:
+      type: object
+      properties:
+        viewerGroups:
+          type: array
+          items:
+            type: string
+        deployerGroups:
+          type: array
+          items:
+            type: string
+        adminGroups:
+          type: array
+          items:
+            type: string
+
+    ProjectEnvironmentInput:
+      type: object
+      required:
+        - id
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        name:
+          type: string
+        clusterId:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        writeMode:
+          type: string
+          enum:
+            - direct
+            - pull_request
+        default:
+          type: boolean
+
+    ProjectRepositoryInput:
+      type: object
+      required:
+        - id
+        - name
+        - url
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        name:
+          type: string
+        url:
+          type: string
+          format: uri
+        description:
+          type: string
+        branch:
+          type: string
+        authSecretPath:
+          type: string
+        configFile:
+          type: string
+
+    CreateProjectRequest:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        name:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          description: Must match `id`. Project name is also used as the Kubernetes namespace slug.
+        description:
+          type: string
+        namespace:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+          description: Optional override field, but if provided it must match `name`.
+        access:
+          $ref: '#/components/schemas/ProjectAccess'
+        environments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectEnvironmentInput'
+        repositories:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectRepositoryInput'
+        policies:
+          $ref: '#/components/schemas/ProjectPolicy'
+      example:
+        id: payment
+        name: payment
+        description: 결제 도메인 워크로드
+        access:
+          viewerGroups:
+            - aods:payment:view
+          deployerGroups:
+            - aods:payment:deploy
+        environments:
+          - id: prod
+            name: Production
+            clusterId: default
+            writeMode: direct
+            default: true
+        repositories:
+          - id: payment-api
+            name: Payment API
+            url: https://github.com/aolda/payment-api
+            branch: main
+            configFile: aolda_deploy.json
 
     SecretEntry:
       type: object
@@ -668,11 +1240,15 @@ components:
 
     CreateApplicationRequest:
       type: object
-      required:
-        - name
-        - image
-        - servicePort
-        - deploymentStrategy
+      description: 빠른 생성 모드에서는 `name`, `image`, `servicePort`, `deploymentStrategy`를 직접 넣고, GitHub 읽기 모드에서는 `repositoryUrl`, `configPath`를 넣어 `aolda_deploy.json` 기반으로 자동 채운다. 공개 저장소는 URL만으로 등록할 수 있고, private 저장소이거나 GitHub API 호출 한도를 안정적으로 확보하려면 `repositoryToken`을 함께 넣는다. private 이미지가 있으면 `registryUsername`, `registryToken`을 함께 넣어 image pull credential도 별도로 저장한다.
+      oneOf:
+        - required:
+            - name
+            - image
+            - servicePort
+            - deploymentStrategy
+        - required:
+            - repositoryUrl
       properties:
         name:
           type: string
@@ -693,19 +1269,151 @@ components:
           enum:
             - Rollout
             - Canary
+        meshEnabled:
+          type: boolean
+          description: Istio sidecar/VirtualService/DestinationRule 사용 여부. Canary면 true여야 한다.
+        loadBalancerEnabled:
+          type: boolean
+          description: Kubernetes Service를 LoadBalancer 타입으로 노출할지 여부. Canary와 동시 사용은 허용하지 않는다.
         environment:
           type: string
         repositoryId:
           type: string
+        repositoryUrl:
+          type: string
+          format: uri
+          description: GitHub 저장소 URL. 공개 저장소는 URL만으로 연결할 수 있다.
+        repositoryBranch:
+          type: string
+        repositoryToken:
+          type: string
+          description: 선택 입력. private 저장소 접근 또는 GitHub API rate limit 완화를 위한 fine-grained PAT. 저장 시 애플리케이션 환경변수 Vault 경로와 분리된 별도 경로에 저장된다.
         repositoryServiceId:
           type: string
+          description: descriptor 내 서비스 식별자. 비우면 앱 이름 또는 단일 서비스 기준으로 추론한다.
         configPath:
           type: string
+          description: 기본값은 `aolda_deploy.json`.
+        repositoryPollIntervalSeconds:
+          type: integer
+          enum: [60, 300, 600]
+          description: 저장소 polling 주기. 1분, 5분, 10분만 허용한다.
+        registryServer:
+          type: string
+          description: private 컨테이너 이미지 registry 주소. 비우면 이미지 주소에서 자동 추론한다.
+        registryUsername:
+          type: string
+          description: private registry 접근 계정명. 예: GHCR이면 GitHub username.
+        registryToken:
+          type: string
+          description: private registry image pull 토큰. 저장 시 별도 registry credential Vault 경로에 dockerconfigjson 형식으로 저장된다.
         secrets:
           type: array
           description: Secrets are submitted directly to the backend and stored in Vault KV v2.
           items:
             $ref: '#/components/schemas/SecretEntry'
+      example:
+        name: payment-api
+        description: 결제 API
+        environment: prod
+        meshEnabled: false
+        loadBalancerEnabled: false
+        repositoryUrl: https://github.com/aolda/payment-api
+        repositoryBranch: main
+        repositoryServiceId: payment-api
+        configPath: aolda_deploy.json
+        repositoryPollIntervalSeconds: 300
+        registryServer: ghcr.io
+        registryUsername: octocat
+        registryToken: ghp_packages_xxx
+        secrets:
+          - key: DATABASE_URL
+            value: postgres://db.internal/payment
+
+    PreviewApplicationSourceRequest:
+      type: object
+      required:
+        - repositoryUrl
+      properties:
+        name:
+          type: string
+          pattern: '^[a-z0-9]([-a-z0-9]*[a-z0-9])?$'
+        repositoryUrl:
+          type: string
+          format: uri
+        repositoryBranch:
+          type: string
+        repositoryToken:
+          type: string
+        repositoryServiceId:
+          type: string
+        configPath:
+          type: string
+      example:
+        repositoryUrl: https://github.com/aolda/payment-api
+        repositoryBranch: main
+        configPath: aolda_deploy.json
+
+    PreviewApplicationSourceService:
+      type: object
+      required:
+        - serviceId
+        - image
+        - port
+        - replicas
+      properties:
+        serviceId:
+          type: string
+        image:
+          type: string
+        port:
+          type: integer
+        replicas:
+          type: integer
+        strategy:
+          type: string
+          enum:
+            - Rollout
+            - Canary
+      example:
+        serviceId: payment-api
+        image: ghcr.io/aolda/payment-api:sha-1a2b3c4d
+        port: 8080
+        replicas: 2
+        strategy: Rollout
+
+    PreviewApplicationSourceResponse:
+      type: object
+      required:
+        - configPath
+        - services
+        - requiresServiceSelection
+      properties:
+        configPath:
+          type: string
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/PreviewApplicationSourceService'
+        selectedServiceId:
+          type: string
+        requiresServiceSelection:
+          type: boolean
+      example:
+        configPath: aolda_deploy.json
+        services:
+          - serviceId: payment-api
+            image: ghcr.io/aolda/payment-api:sha-1a2b3c4d
+            port: 8080
+            replicas: 2
+            strategy: Rollout
+          - serviceId: payment-worker
+            image: ghcr.io/aolda/payment-worker:sha-1a2b3c4d
+            port: 9090
+            replicas: 1
+            strategy: Canary
+        selectedServiceId: payment-api
+        requiresServiceSelection: false
 
     Application:
       type: object
@@ -749,10 +1457,51 @@ components:
           format: date-time
         repositoryId:
           type: string
+        repositoryUrl:
+          type: string
+          format: uri
+        repositoryBranch:
+          type: string
         repositoryServiceId:
           type: string
         configPath:
           type: string
+        repositoryPollIntervalSeconds:
+          type: integer
+          enum: [60, 300, 600]
+        resources:
+          $ref: '#/components/schemas/ApplicationResources'
+        meshEnabled:
+          type: boolean
+        loadBalancerEnabled:
+          type: boolean
+      example:
+        id: project-a__payment-api
+        projectId: project-a
+        name: payment-api
+        description: 결제 API
+        image: ghcr.io/aolda/payment-api:1.2.3
+        servicePort: 8080
+        replicas: 2
+        deploymentStrategy: Rollout
+        defaultEnvironment: prod
+        syncStatus: Synced
+        createdAt: '2026-04-12T10:00:00Z'
+        updatedAt: '2026-04-12T10:05:00Z'
+        repositoryUrl: https://github.com/aolda/payment-api
+        repositoryBranch: main
+        repositoryServiceId: payment-api
+        configPath: aolda_deploy.json
+        repositoryPollIntervalSeconds: 300
+        meshEnabled: false
+        loadBalancerEnabled: true
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
 
     ApplicationSummary:
       type: object
@@ -776,6 +1525,27 @@ components:
             - Canary
         syncStatus:
           $ref: '#/components/schemas/SyncStatus'
+        resources:
+          $ref: '#/components/schemas/ApplicationResources'
+        meshEnabled:
+          type: boolean
+        loadBalancerEnabled:
+          type: boolean
+      example:
+        id: project-a__payment-api
+        name: payment-api
+        image: ghcr.io/aolda/payment-api:1.2.3
+        deploymentStrategy: Rollout
+        syncStatus: Synced
+        meshEnabled: false
+        loadBalancerEnabled: true
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
 
     ApplicationListResponse:
       type: object
@@ -786,6 +1556,22 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ApplicationSummary'
+      example:
+        items:
+          - id: project-a__payment-api
+            name: payment-api
+            image: ghcr.io/aolda/payment-api:1.2.3
+            deploymentStrategy: Rollout
+            syncStatus: Synced
+            meshEnabled: false
+            loadBalancerEnabled: true
+            resources:
+              requests:
+                cpu: 250m
+                memory: 256Mi
+              limits:
+                cpu: 500m
+                memory: 512Mi
 
     CreateDeploymentRequest:
       type: object
@@ -796,6 +1582,9 @@ components:
           type: string
         environment:
           type: string
+      example:
+        imageTag: v1.2.4
+        environment: prod
 
     UpdateApplicationRequest:
       type: object
@@ -816,14 +1605,92 @@ components:
           enum:
             - Rollout
             - Canary
+        meshEnabled:
+          type: boolean
+          description: Istio mesh 사용 여부. Canary는 true만 허용된다.
+        loadBalancerEnabled:
+          type: boolean
+          description: Kubernetes Service를 LoadBalancer 타입으로 노출할지 여부. Canary와 동시 사용은 허용하지 않는다.
         environment:
           type: string
         repositoryId:
+          type: string
+        repositoryUrl:
+          type: string
+          format: uri
+        repositoryBranch:
           type: string
         repositoryServiceId:
           type: string
         configPath:
           type: string
+        repositoryPollIntervalSeconds:
+          type: integer
+          enum: [60, 300, 600]
+          description: repository-backed application에만 적용되는 polling 주기. 1분, 5분, 10분만 허용한다.
+        resources:
+          $ref: '#/components/schemas/ApplicationResources'
+      example:
+        deploymentStrategy: Canary
+        environment: staging
+        repositoryPollIntervalSeconds: 300
+        meshEnabled: true
+        loadBalancerEnabled: false
+        resources:
+          requests:
+            cpu: 250m
+            memory: 256Mi
+          limits:
+            cpu: 500m
+            memory: 512Mi
+
+    ResourceQuantity:
+      type: object
+      properties:
+        cpu:
+          type: string
+        memory:
+          type: string
+
+    ApplicationResources:
+      type: object
+      properties:
+        requests:
+          $ref: '#/components/schemas/ResourceQuantity'
+        limits:
+          $ref: '#/components/schemas/ResourceQuantity'
+
+    ApplicationLifecycleResponse:
+      type: object
+      required:
+        - applicationId
+        - projectId
+        - name
+        - status
+      properties:
+        applicationId:
+          type: string
+        projectId:
+          type: string
+        name:
+          type: string
+        status:
+          type: string
+          enum:
+            - archived
+            - deleted
+        archivedAt:
+          type: string
+          format: date-time
+        deletedAt:
+          type: string
+          format: date-time
+      example:
+        applicationId: project-a__payment-api
+        projectId: project-a
+        name: payment-api
+        status: archived
+        archivedAt: '2026-04-12T10:20:00Z'
 
     DeploymentResponse:
       type: object
@@ -848,6 +1715,12 @@ components:
             - Syncing
             - Promoted
             - Aborted
+      example:
+        deploymentId: dep_01HXYZ
+        applicationId: project-a__payment-api
+        imageTag: v1.2.4
+        environment: prod
+        status: Pending
 
     DeploymentRecord:
       type: object
@@ -899,12 +1772,34 @@ components:
           type: string
         message:
           type: string
+        commitSha:
+          type: string
         createdAt:
           type: string
           format: date-time
         updatedAt:
           type: string
           format: date-time
+      example:
+        deploymentId: dep_01HXYZ
+        applicationId: project-a__payment-api
+        projectId: project-a
+        applicationName: payment-api
+        environment: prod
+        image: ghcr.io/aolda/payment-api:v1.2.4
+        imageTag: v1.2.4
+        deploymentStrategy: Canary
+        status: Syncing
+        syncStatus: Syncing
+        rolloutPhase: Progressing
+        currentStep: 1
+        canaryWeight: 25
+        stableRevision: payment-api-7d9f8d7
+        canaryRevision: payment-api-8a1c2e1
+        message: Canary rollout is progressing.
+        commitSha: a1b2c3d4
+        createdAt: '2026-04-12T10:10:00Z'
+        updatedAt: '2026-04-12T10:12:00Z'
 
     DeploymentListResponse:
       type: object
@@ -918,6 +1813,21 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/DeploymentRecord'
+      example:
+        applicationId: project-a__payment-api
+        items:
+          - deploymentId: dep_01HXYZ
+            applicationId: project-a__payment-api
+            projectId: project-a
+            applicationName: payment-api
+            environment: prod
+            image: ghcr.io/aolda/payment-api:v1.2.4
+            imageTag: v1.2.4
+            deploymentStrategy: Canary
+            status: Syncing
+            syncStatus: Syncing
+            createdAt: '2026-04-12T10:10:00Z'
+            updatedAt: '2026-04-12T10:12:00Z'
 
     SyncStatus:
       type: string
@@ -942,6 +1852,185 @@ components:
         observedAt:
           type: string
           format: date-time
+        repositoryPoll:
+          $ref: '#/components/schemas/RepositoryPollStatus'
+      example:
+        applicationId: project-a__payment-api
+        status: Synced
+        message: ReconciliationSucceeded
+        observedAt: '2026-04-12T10:12:30Z'
+        repositoryPoll:
+          enabled: true
+          intervalSeconds: 300
+          lastCheckedAt: '2026-04-12T10:10:00Z'
+          lastSucceededAt: '2026-04-12T10:10:00Z'
+          nextScheduledAt: '2026-04-12T10:15:00Z'
+          lastResult: Success
+          source: aolda_deploy.json
+
+    RepositorySyncResponse:
+      type: object
+      required:
+        - applicationId
+        - checkedAt
+        - message
+      properties:
+        applicationId:
+          type: string
+        checkedAt:
+          type: string
+          format: date-time
+        message:
+          type: string
+        source:
+          type: string
+        settingsApplied:
+          type: boolean
+        deploymentTriggered:
+          type: boolean
+        repositoryPoll:
+          $ref: '#/components/schemas/RepositoryPollStatus'
+      example:
+        applicationId: project-a__payment-api
+        checkedAt: '2026-04-18T03:00:00Z'
+        message: aolda_deploy.json 기준 변경을 감지해 v1.2.4 배포를 시작했습니다.
+        source: aolda_deploy.json
+        settingsApplied: true
+        deploymentTriggered: true
+        repositoryPoll:
+          enabled: true
+          intervalSeconds: 300
+          lastCheckedAt: '2026-04-18T03:00:00Z'
+          lastSucceededAt: '2026-04-18T03:00:00Z'
+          nextScheduledAt: '2026-04-18T03:05:00Z'
+          lastResult: Success
+          source: aolda_deploy.json
+
+    RepositoryPollResult:
+      type: string
+      enum:
+        - Pending
+        - Success
+        - Error
+
+    RepositoryPollStatus:
+      type: object
+      required:
+        - enabled
+        - intervalSeconds
+      properties:
+        enabled:
+          type: boolean
+        intervalSeconds:
+          type: integer
+          minimum: 1
+        lastCheckedAt:
+          type: string
+          format: date-time
+        lastSucceededAt:
+          type: string
+          format: date-time
+        nextScheduledAt:
+          type: string
+          format: date-time
+        lastResult:
+          $ref: '#/components/schemas/RepositoryPollResult'
+        lastError:
+          type: string
+        source:
+          type: string
+
+    NetworkExposureStatus:
+      type: string
+      enum:
+        - Internal
+        - Pending
+        - Provisioning
+        - Ready
+        - Error
+
+    NetworkExposureEvent:
+      type: object
+      required:
+        - type
+        - message
+      properties:
+        type:
+          type: string
+        reason:
+          type: string
+        message:
+          type: string
+        observedAt:
+          type: string
+          format: date-time
+
+    NetworkExposurePort:
+      type: object
+      required:
+        - port
+      properties:
+        name:
+          type: string
+        protocol:
+          type: string
+        port:
+          type: integer
+        targetPort:
+          type: string
+        nodePort:
+          type: integer
+
+    NetworkExposureResponse:
+      type: object
+      required:
+        - applicationId
+        - enabled
+        - status
+      properties:
+        applicationId:
+          type: string
+        enabled:
+          type: boolean
+        status:
+          $ref: '#/components/schemas/NetworkExposureStatus'
+        message:
+          type: string
+        serviceType:
+          type: string
+        addresses:
+          type: array
+          items:
+            type: string
+        ports:
+          type: array
+          items:
+            $ref: '#/components/schemas/NetworkExposurePort'
+        lastEvent:
+          $ref: '#/components/schemas/NetworkExposureEvent'
+        observedAt:
+          type: string
+          format: date-time
+      example:
+        applicationId: project-a__payment-api
+        enabled: true
+        status: Ready
+        message: 클러스터 LoadBalancer 주소가 준비되었습니다.
+        serviceType: LoadBalancer
+        addresses:
+          - 172.31.0.238
+        ports:
+          - name: http
+            protocol: TCP
+            port: 80
+            targetPort: '3000'
+            nodePort: 32080
+        lastEvent:
+          type: Normal
+          reason: UpdatedLoadBalancer
+          message: Updated LoadBalancer with new IPs.
+          observedAt: '2026-04-18T09:00:00Z'
+        observedAt: '2026-04-18T09:00:00Z'
 
     MetricPoint:
       type: object
@@ -987,6 +2076,223 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/MetricSeries'
+      example:
+        applicationId: project-a__payment-api
+        metrics:
+          - key: request_rate
+            label: Request Rate
+            unit: req/s
+            points:
+              - timestamp: '2026-04-12T10:00:00Z'
+                value: 18.4
+              - timestamp: '2026-04-12T10:05:00Z'
+                value: 20.1
+          - key: error_rate
+            label: Error Rate
+            unit: '%'
+            points:
+              - timestamp: '2026-04-12T10:00:00Z'
+                value: 0.2
+              - timestamp: '2026-04-12T10:05:00Z'
+                value: 0.1
+
+    ContainerLogStream:
+      type: object
+      required:
+        - podName
+        - containerName
+        - ready
+        - restartCount
+        - content
+      properties:
+        podName:
+          type: string
+        containerName:
+          type: string
+        phase:
+          type: string
+        ready:
+          type: boolean
+        restartCount:
+          type: integer
+        content:
+          type: string
+
+    ContainerLogsResponse:
+      type: object
+      required:
+        - applicationId
+        - collectedAt
+        - tailLines
+        - items
+      properties:
+        applicationId:
+          type: string
+        collectedAt:
+          type: string
+          format: date-time
+        tailLines:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContainerLogStream'
+      example:
+        applicationId: project-a__payment-api
+        collectedAt: '2026-04-12T10:12:30Z'
+        tailLines: 120
+        items:
+          - podName: payment-api-7d9f8d7-abcde
+            containerName: payment-api
+            phase: Running
+            ready: true
+            restartCount: 0
+            content: |
+              2026-04-12T10:12:20Z server started
+              2026-04-12T10:12:25Z listening on :8080
+
+    ContainerResourceStatus:
+      type: object
+      properties:
+        cpuUsageCores:
+          type: number
+          format: double
+        cpuRequestCores:
+          type: number
+          format: double
+        cpuLimitCores:
+          type: number
+          format: double
+        cpuRequestUtilization:
+          type: number
+          format: double
+        cpuLimitUtilization:
+          type: number
+          format: double
+        memoryUsageMiB:
+          type: number
+          format: double
+        memoryRequestMiB:
+          type: number
+          format: double
+        memoryLimitMiB:
+          type: number
+          format: double
+        memoryRequestUtilization:
+          type: number
+          format: double
+        memoryLimitUtilization:
+          type: number
+          format: double
+      example:
+        cpuUsageCores: 0.125
+        cpuRequestCores: 0.25
+        cpuLimitCores: 0.5
+        cpuRequestUtilization: 50
+        cpuLimitUtilization: 25
+        memoryUsageMiB: 148
+        memoryRequestMiB: 256
+        memoryLimitMiB: 512
+        memoryRequestUtilization: 57.8
+        memoryLimitUtilization: 28.9
+
+    ContainerLogTargetContainer:
+      type: object
+      required:
+        - name
+        - ready
+        - restartCount
+        - default
+      properties:
+        name:
+          type: string
+        ready:
+          type: boolean
+        restartCount:
+          type: integer
+        default:
+          type: boolean
+        resourceStatus:
+          $ref: '#/components/schemas/ContainerResourceStatus'
+
+    ContainerLogTarget:
+      type: object
+      required:
+        - podName
+        - containers
+      properties:
+        podName:
+          type: string
+        phase:
+          type: string
+        containers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContainerLogTargetContainer'
+
+    ContainerLogTargetsResponse:
+      type: object
+      required:
+        - applicationId
+        - collectedAt
+        - items
+      properties:
+        applicationId:
+          type: string
+        collectedAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ContainerLogTarget'
+      example:
+        applicationId: project-a__payment-api
+        collectedAt: '2026-04-17T02:10:30Z'
+        items:
+          - podName: payment-api-7d9f8d7-abcde
+            phase: Running
+            containers:
+              - name: payment-api
+                ready: true
+                restartCount: 0
+                default: true
+                resourceStatus:
+                  cpuUsageCores: 0.125
+                  cpuRequestCores: 0.25
+                  cpuLimitCores: 0.5
+                  cpuRequestUtilization: 50
+                  cpuLimitUtilization: 25
+                  memoryUsageMiB: 148
+                  memoryRequestMiB: 256
+                  memoryLimitMiB: 512
+                  memoryRequestUtilization: 57.8
+                  memoryLimitUtilization: 28.9
+
+    ContainerLogEvent:
+      type: object
+      required:
+        - podName
+        - containerName
+        - message
+        - rawLine
+      properties:
+        podName:
+          type: string
+        containerName:
+          type: string
+        timestamp:
+          type: string
+        message:
+          type: string
+        rawLine:
+          type: string
+      example:
+        podName: payment-api-7d9f8d7-abcde
+        containerName: payment-api
+        timestamp: '2026-04-17T02:10:05.000000000Z'
+        message: listening on :8080
+        rawLine: '2026-04-17T02:10:05.000000000Z listening on :8080'
 
     EnvironmentSummary:
       type: object
@@ -1020,6 +2326,13 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/EnvironmentSummary'
+      example:
+        items:
+          - id: prod
+            name: Production
+            clusterId: default
+            writeMode: direct
+            default: true
     RepositorySummary:
       type: object
       required:
@@ -1054,6 +2367,15 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/RepositorySummary'
+      example:
+        items:
+          - id: payment-repo
+            name: Payment Repository
+            url: https://github.com/aolda/payment-api
+            description: Payment service source
+            access: private
+            branch: main
+            configFile: aolda_deploy.json
 
     ProjectPolicy:
       type: object
@@ -1089,6 +2411,19 @@ components:
           type: boolean
         requiredProbes:
           type: boolean
+      example:
+        minReplicas: 2
+        allowedEnvironments:
+          - staging
+          - prod
+        allowedDeploymentStrategies:
+          - Rollout
+          - Canary
+        allowedClusterTargets:
+          - default
+        prodPRRequired: false
+        autoRollbackEnabled: true
+        requiredProbes: true
 
     ClusterSummary:
       type: object
@@ -1106,6 +2441,29 @@ components:
         default:
           type: boolean
 
+    CreateClusterRequest:
+      type: object
+      required:
+        - id
+        - name
+      properties:
+        id:
+          type: string
+          description: Stable cluster identifier used in GitOps paths.
+        name:
+          type: string
+          description: Display name shown in the platform.
+        description:
+          type: string
+        default:
+          type: boolean
+          description: When true, marks this cluster as the default target in the cluster catalog.
+      example:
+        id: edge
+        name: Edge Cluster
+        description: Dedicated edge workloads.
+        default: false
+
     ClusterListResponse:
       type: object
       required:
@@ -1115,6 +2473,203 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ClusterSummary'
+      example:
+        items:
+          - id: default
+            name: Default Cluster
+            description: 기본 클러스터 타겟
+            default: true
+
+    CapacitySummary:
+      type: object
+      properties:
+        allocatableCpuCores:
+          type: number
+        allocatableMemoryMiB:
+          type: number
+        requestedCpuCores:
+          type: number
+        requestedMemoryMiB:
+          type: number
+        usedCpuCores:
+          type: number
+        usedMemoryMiB:
+          type: number
+        availableCpuCores:
+          type: number
+        availableMemoryMiB:
+          type: number
+        requestCpuUtilization:
+          type: number
+        requestMemoryUtilization:
+          type: number
+        usageCpuUtilization:
+          type: number
+        usageMemoryUtilization:
+          type: number
+
+    ServiceEfficiencyStatus:
+      type: string
+      enum:
+        - Balanced
+        - Underutilized
+        - Overutilized
+        - NoMetrics
+        - Unknown
+
+    EfficiencyCounts:
+      type: object
+      required:
+        - balanced
+        - underutilized
+        - overutilized
+        - noMetrics
+        - unknown
+      properties:
+        balanced:
+          type: integer
+        underutilized:
+          type: integer
+        overutilized:
+          type: integer
+        noMetrics:
+          type: integer
+        unknown:
+          type: integer
+
+    ServiceResourceEfficiency:
+      type: object
+      required:
+        - applicationId
+        - projectId
+        - projectName
+        - namespace
+        - name
+        - podCount
+        - readyPodCount
+        - status
+        - summary
+      properties:
+        applicationId:
+          type: string
+        projectId:
+          type: string
+        projectName:
+          type: string
+        clusterId:
+          type: string
+        clusterName:
+          type: string
+        namespace:
+          type: string
+        name:
+          type: string
+        podCount:
+          type: integer
+        readyPodCount:
+          type: integer
+        status:
+          $ref: '#/components/schemas/ServiceEfficiencyStatus'
+        summary:
+          type: string
+        cpuRequestCores:
+          type: number
+        cpuLimitCores:
+          type: number
+        cpuUsageCores:
+          type: number
+        cpuRequestUtilization:
+          type: number
+        cpuLimitUtilization:
+          type: number
+        memoryRequestMiB:
+          type: number
+        memoryLimitMiB:
+          type: number
+        memoryUsageMiB:
+          type: number
+        memoryRequestUtilization:
+          type: number
+        memoryLimitUtilization:
+          type: number
+
+    FleetResourceOverviewResponse:
+      type: object
+      required:
+        - generatedAt
+        - runtimeConnected
+        - projectCount
+        - serviceCount
+        - capacity
+        - counts
+        - services
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        runtimeConnected:
+          type: boolean
+        message:
+          type: string
+        projectCount:
+          type: integer
+        serviceCount:
+          type: integer
+        capacity:
+          $ref: '#/components/schemas/CapacitySummary'
+        counts:
+          $ref: '#/components/schemas/EfficiencyCounts'
+        services:
+          type: array
+          items:
+            $ref: '#/components/schemas/ServiceResourceEfficiency'
+      example:
+        generatedAt: '2026-04-18T02:00:00Z'
+        runtimeConnected: true
+        message: ''
+        projectCount: 4
+        serviceCount: 12
+        capacity:
+          allocatableCpuCores: 32
+          requestedCpuCores: 14.5
+          usedCpuCores: 8.2
+          availableCpuCores: 17.5
+          allocatableMemoryMiB: 65536
+          requestedMemoryMiB: 24576
+          usedMemoryMiB: 14848
+          availableMemoryMiB: 40960
+          requestCpuUtilization: 45.3
+          requestMemoryUtilization: 37.5
+          usageCpuUtilization: 25.6
+          usageMemoryUtilization: 22.7
+        counts:
+          balanced: 6
+          underutilized: 3
+          overutilized: 1
+          noMetrics: 1
+          unknown: 1
+        services:
+          - applicationId: shared__portal
+            projectId: shared
+            projectName: 공용 프로젝트
+            clusterId: default
+            clusterName: Shared Cluster
+            namespace: shared
+            name: portal
+            podCount: 2
+            readyPodCount: 2
+            status: Balanced
+            summary: 요청 대비 사용량이 현재 수준에서는 안정적입니다.
+            cpuRequestCores: 0.5
+            cpuLimitCores: 1
+            cpuUsageCores: 0.31
+            cpuRequestUtilization: 62
+            cpuLimitUtilization: 31
+            memoryRequestMiB: 512
+            memoryLimitMiB: 1024
+            memoryUsageMiB: 320
+            memoryRequestUtilization: 62.5
+            memoryLimitUtilization: 31.25
 
     RollbackPolicy:
       type: object
@@ -1129,6 +2684,11 @@ components:
           type: integer
         minRequestRate:
           type: number
+      example:
+        enabled: true
+        maxErrorRate: 3.5
+        maxLatencyP95Ms: 700
+        minRequestRate: 5
 
     ApplicationEvent:
       type: object
@@ -1163,6 +2723,16 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ApplicationEvent'
+      example:
+        applicationId: project-a__payment-api
+        items:
+          - id: evt_01HABC
+            type: AutoRollbackTriggered
+            message: 자동 롤백을 수행했습니다. Error rate exceeded threshold.
+            createdAt: '2026-04-12T10:30:00Z'
+            metadata:
+              sourceDeploymentId: dep_01HXYZ
+              rollbackToImageTag: v1.2.3
 
     CreateChangeRequest:
       type: object
@@ -1199,10 +2769,33 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/SecretEntry'
+        repositoryUrl:
+          type: string
+          format: uri
+        repositoryBranch:
+          type: string
+        repositoryToken:
+          type: string
+        repositoryServiceId:
+          type: string
+        configPath:
+          type: string
+        registryServer:
+          type: string
+        registryUsername:
+          type: string
+        registryToken:
+          type: string
         policies:
           $ref: '#/components/schemas/ProjectPolicy'
         summary:
           type: string
+      example:
+        operation: Redeploy
+        applicationId: project-a__payment-api
+        environment: prod
+        imageTag: v1.2.4
+        summary: 프로덕션 이미지 태그를 v1.2.4로 올립니다.
 
     ChangeRecord:
       type: object
@@ -1266,6 +2859,20 @@ components:
         updatedAt:
           type: string
           format: date-time
+      example:
+        id: chg_01HXYZ
+        projectId: project-a
+        applicationId: project-a__payment-api
+        operation: Redeploy
+        environment: prod
+        writeMode: pull_request
+        status: Submitted
+        summary: 프로덕션 이미지 태그를 v1.2.4로 올립니다.
+        diffPreview:
+          - '~ image: ghcr.io/aolda/payment-api:v1.2.3 -> ghcr.io/aolda/payment-api:v1.2.4'
+        createdBy: local.developer
+        createdAt: '2026-04-12T10:20:00Z'
+        updatedAt: '2026-04-12T10:21:00Z'
 
     ErrorBody:
       type: object
@@ -1293,6 +2900,14 @@ components:
       properties:
         error:
           $ref: '#/components/schemas/ErrorBody'
+      example:
+        error:
+          code: PROJECT_NOT_FOUND
+          message: Project was not found.
+          details:
+            projectId: project-x
+          requestId: req_1744444444444_000001
+          retryable: false
 
   responses:
     BadRequest:

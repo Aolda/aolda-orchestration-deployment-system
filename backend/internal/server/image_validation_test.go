@@ -77,6 +77,30 @@ func TestCreateChangeRejectsImageWhenRegistryAuthIsRequired(t *testing.T) {
 	}
 }
 
+func TestCreateApplicationAllowsPrivateImageWhenRegistryCredentialIsProvided(t *testing.T) {
+	registry := newImageRegistryServer(t)
+	env := newTestEnvironmentWithConfig(t, func(cfg *core.Config) {
+		cfg.ImageVerificationMode = "anonymous"
+		cfg.ImageVerificationTimeout = 2 * time.Second
+	})
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "private-image-app",
+		"image":              imageRef(registry, "private-app", "v1"),
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"registryUsername":   "octocat",
+		"registryToken":      "ghcr_pat_456",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", response.StatusCode)
+	}
+}
+
 func TestRedeployRecordsPreflightFailureEventWhenRegistryAuthIsRequired(t *testing.T) {
 	registry := newImageRegistryServer(t)
 	env := newTestEnvironmentWithConfig(t, func(cfg *core.Config) {
@@ -130,8 +154,8 @@ func TestRedeployRecordsPreflightFailureEventWhenRegistryAuthIsRequired(t *testi
 
 	var eventsBody struct {
 		Items []struct {
-			Type    string         `json:"type"`
-			Message string         `json:"message"`
+			Type     string         `json:"type"`
+			Message  string         `json:"message"`
 			Metadata map[string]any `json:"metadata"`
 		} `json:"items"`
 	}
@@ -158,6 +182,16 @@ func newImageRegistryServer(t *testing.T) *httptest.Server {
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/token":
+			scope := r.URL.Query().Get("scope")
+			if strings.Contains(scope, "repository:private-app:pull") {
+				username, password, ok := r.BasicAuth()
+				if !ok || username != "octocat" || password != "ghcr_pat_456" {
+					w.WriteHeader(http.StatusUnauthorized)
+					return
+				}
+				_ = json.NewEncoder(w).Encode(map[string]string{"token": "private-token"})
+				return
+			}
 			_ = json.NewEncoder(w).Encode(map[string]string{"token": "anon-token"})
 			return
 		case strings.HasPrefix(r.URL.Path, "/v2/"):
@@ -176,6 +210,11 @@ func newImageRegistryServer(t *testing.T) *httptest.Server {
 				})
 				return
 			case repo == "private-app":
+				if authHeader == "Bearer private-token" && identifier == "v1" {
+					w.WriteHeader(http.StatusOK)
+					_, _ = w.Write([]byte(`{"schemaVersion":2}`))
+					return
+				}
 				w.Header().Set("WWW-Authenticate", registryBearerChallenge(server.URL, repo))
 				w.WriteHeader(http.StatusUnauthorized)
 				return

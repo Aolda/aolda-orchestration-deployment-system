@@ -1,0 +1,100 @@
+name: Bug Report
+description: Structured bug report for humans and coding agents
+title: "[bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        버그 제보는 재현 단계와 계약 위반 여부를 함께 적어주세요.
+        에이전트가 바로 조사할 수 있도록 기대 동작, 실제 동작, 관련 파일 힌트를 남기는 형식입니다.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: 문제가 주로 보이는 영역을 선택하세요.
+      options:
+        - Backend API
+        - Frontend UI
+        - Backend + Frontend
+        - Docs / Contracts
+        - GitOps / Platform
+    validations:
+      required: true
+
+  - type: textarea
+    id: current_behavior
+    attributes:
+      label: Current Behavior
+      description: 지금 어떤 문제가 발생하는지 적어주세요.
+      placeholder: 실제로 보이는 오류, 잘못된 응답, UI 상태, 로그 등을 적어주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_behavior
+    attributes:
+      label: Expected Behavior
+      description: 원래 어떻게 동작해야 하는지 적어주세요.
+      placeholder: 기대한 API 응답, UI 표시, 정책 적용 결과 등을 적어주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction Steps
+      description: 재현 단계를 순서대로 적어주세요.
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: contracts
+    attributes:
+      label: Related Contracts
+      description: 관련 문서가 있다면 적어주세요.
+      placeholder: |
+        예시
+        - docs/internal-platform/openapi.yaml
+        - docs/acceptance-criteria.md
+        - docs/phase1-decisions.md
+    validations:
+      required: false
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Suspected Files / Modules
+      description: 이미 의심되는 파일이 있으면 적어주세요.
+      placeholder: |
+        예시
+        - backend/internal/application/http.go
+        - backend/internal/application/service.go
+        - frontend/src/App.tsx
+    validations:
+      required: false
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence
+      description: 에러 메시지, 응답 예시, 스크린샷 링크 등을 남겨주세요.
+      placeholder: 로그, JSON 응답, 화면 캡처 설명 등을 적어주세요.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: guardrails
+    attributes:
+      label: Guardrails
+      options:
+        - label: 재현 단계 또는 관찰 근거를 적었다
+          required: true
+        - label: 관련 계약 문서가 있는지 확인했다
+          required: true

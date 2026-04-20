@@ -1,23 +1,18 @@
 projects:
-  - id: project-a
-    name: 공용 프로젝트
+  - id: shared
+    name: shared
     description: 공용 내부 서비스와 운영 검증 워크로드를 관리합니다.
     namespace: shared
     access:
       viewerGroups:
-        - aods:project-a:view
+        - aods:shared:view
+        - /Ajou_Univ/Aolda_Member/aods/ops
       deployerGroups:
-        - aods:project-a:deploy
+        - aods:shared:deploy
+        - /Ajou_Univ/Aolda_Member/aods/ops
       adminGroups:
+        - /Ajou_Univ/Aolda_Admin
         - aods:platform:admin
-    repositories:
-      - id: project-a-api
-        name: API Repository
-        url: https://github.com/aolda-demo/project-a-api
-        branch: main
-        description: Primary API source code
-        authSecretPath: secrets/project-a/github-token
-        configFile: aolda.deploy.json
     environments:
       - id: shared
         name: Shared
@@ -34,72 +29,5 @@ projects:
       allowedClusterTargets:
         - default
       prodPRRequired: false
-      autoRollbackEnabled: true
-      requiredProbes: true
-  - id: project-b
-    name: Project B
-    description: Finance automation and scheduled batch jobs.
-    namespace: project-b
-    access:
-      viewerGroups:
-        - aods:project-b:view
-      deployerGroups:
-        - aods:project-b:deploy
-      adminGroups:
-        - aods:platform:admin
-    environments:
-      - id: dev
-        name: Development
-        clusterId: default
-        writeMode: direct
-      - id: prod
-        name: Production
-        clusterId: default
-        writeMode: direct
-        default: true
-    policies:
-      minReplicas: 1
-      allowedEnvironments:
-        - dev
-        - prod
-      allowedDeploymentStrategies:
-        - Standard
-      allowedClusterTargets:
-        - default
-      prodPRRequired: false
-      autoRollbackEnabled: false
-      requiredProbes: true
-  - id: project-c
-    name: Project C
-    description: Internal analytics workloads for growth reporting.
-    namespace: project-c
-    access:
-      viewerGroups:
-        - aods:project-c:view
-      deployerGroups:
-        - aods:project-c:deploy
-      adminGroups:
-        - aods:platform:admin
-    environments:
-      - id: staging
-        name: Staging
-        clusterId: analytics
-        writeMode: direct
-      - id: prod
-        name: Production
-        clusterId: analytics
-        writeMode: pull_request
-        default: true
-    policies:
-      minReplicas: 2
-      allowedEnvironments:
-        - staging
-        - prod
-      allowedDeploymentStrategies:
-        - Standard
-        - Canary
-      allowedClusterTargets:
-        - analytics
-      prodPRRequired: true
       autoRollbackEnabled: true
       requiredProbes: true

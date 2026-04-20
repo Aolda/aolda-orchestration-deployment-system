@@ -68,6 +68,35 @@ func TestViewerCannotCreateApplication(t *testing.T) {
 	}
 }
 
+func TestPreviewRepositorySourceRouteIsRegistered(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications/source-preview", map[string]any{}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "alice",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from preview route, got %d", response.StatusCode)
+	}
+
+	var body struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	decodeBody(t, response, &body)
+
+	if body.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected INVALID_REQUEST, got %s", body.Error.Code)
+	}
+	if body.Error.Message != "repositoryUrl must point to a GitHub repository" {
+		t.Fatalf("expected repositoryUrl validation, got %q", body.Error.Message)
+	}
+}
+
 func TestProjectRepositoriesCanBeListed(t *testing.T) {
 	env := newTestEnvironment(t)
 
@@ -91,14 +120,418 @@ func TestProjectRepositoriesCanBeListed(t *testing.T) {
 	}
 	decodeBody(t, response, &body)
 
-	if len(body.Items) != 1 {
-		t.Fatalf("expected 1 repository, got %d", len(body.Items))
+	if len(body.Items) != 0 {
+		t.Fatalf("expected no seeded repositories, got %#v", body.Items)
 	}
-	if body.Items[0].ID != "project-a-api" {
-		t.Fatalf("expected project-a-api, got %s", body.Items[0].ID)
+}
+
+func TestPlatformAdminCanBootstrapCluster(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	payload := map[string]any{
+		"id":          "edge",
+		"name":        "Edge Cluster",
+		"description": "Dedicated edge workloads",
+		"default":     true,
 	}
-	if body.Items[0].URL != "https://github.com/aolda-demo/project-a-api" {
-		t.Fatalf("unexpected repository url: %s", body.Items[0].URL)
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/clusters", payload, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", response.StatusCode)
+	}
+
+	var body struct {
+		ID          string `json:"id"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Default     bool   `json:"default"`
+	}
+	decodeBody(t, response, &body)
+
+	if body.ID != "edge" {
+		t.Fatalf("expected edge cluster, got %s", body.ID)
+	}
+	if !body.Default {
+		t.Fatal("expected created cluster to become default")
+	}
+
+	clustersYAML, err := os.ReadFile(filepath.Join(env.repoRoot, "platform", "clusters.yaml"))
+	if err != nil {
+		t.Fatalf("read clusters.yaml: %v", err)
+	}
+	content := string(clustersYAML)
+	if !strings.Contains(content, "id: edge") {
+		t.Fatalf("expected clusters.yaml to contain edge cluster: %s", content)
+	}
+	if strings.Count(content, "default: true") != 1 {
+		t.Fatalf("expected exactly one default cluster after bootstrap: %s", content)
+	}
+
+	assertFluxBootstrapFiles(t, env.repoRoot, "edge")
+	rootContent, err := os.ReadFile(filepath.Join(env.repoRoot, "platform", "flux", "clusters", "edge", "kustomization.yaml"))
+	if err != nil {
+		t.Fatalf("read cluster root kustomization: %v", err)
+	}
+	if !strings.Contains(string(rootContent), "resources: []") {
+		t.Fatalf("expected new cluster root to start empty: %s", rootContent)
+	}
+}
+
+func TestConfiguredPlatformAdminAuthorityWorksAcrossHandlers(t *testing.T) {
+	env := newTestEnvironmentWithConfig(t, func(cfg *core.Config) {
+		cfg.PlatformAdminAuthorities = []string{"/Ajou_Univ/Aolda_Admin"}
+	})
+
+	projectResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/projects", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "/Ajou_Univ/Aolda_Admin",
+	})
+	if projectResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", projectResponse.StatusCode)
+	}
+
+	var projectBody struct {
+		Items []struct {
+			ID   string `json:"id"`
+			Role string `json:"role"`
+		} `json:"items"`
+	}
+	decodeBody(t, projectResponse, &projectBody)
+	if len(projectBody.Items) != 1 || projectBody.Items[0].Role != "admin" {
+		t.Fatalf("expected configured platform admin to see project as admin, got %#v", projectBody.Items)
+	}
+
+	clusterResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/clusters", map[string]any{
+		"id":   "edge",
+		"name": "Edge Cluster",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "/Ajou_Univ/Aolda_Admin",
+	})
+	if clusterResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", clusterResponse.StatusCode)
+	}
+
+	adminResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/admin/resource-overview", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "/Ajou_Univ/Aolda_Admin",
+	})
+	if adminResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", adminResponse.StatusCode)
+	}
+
+	var adminBody struct {
+		RuntimeConnected bool `json:"runtimeConnected"`
+		ProjectCount     int  `json:"projectCount"`
+		ServiceCount     int  `json:"serviceCount"`
+	}
+	decodeBody(t, adminResponse, &adminBody)
+	if adminBody.RuntimeConnected {
+		t.Fatal("expected runtimeConnected=false in local test environment")
+	}
+	if adminBody.ProjectCount != 1 {
+		t.Fatalf("expected projectCount=1, got %d", adminBody.ProjectCount)
+	}
+	if adminBody.ServiceCount != 0 {
+		t.Fatalf("expected serviceCount=0, got %d", adminBody.ServiceCount)
+	}
+}
+
+func TestNonPlatformAdminCannotBootstrapCluster(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	payload := map[string]any{
+		"id":   "edge",
+		"name": "Edge Cluster",
+	}
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/clusters", payload, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", response.StatusCode)
+	}
+}
+
+func TestNonPlatformAdminCannotGetAdminResourceOverview(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	response := performJSONRequest(t, env, http.MethodGet, "/api/v1/admin/resource-overview", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", response.StatusCode)
+	}
+}
+
+func TestBootstrapClusterConflictReturns409(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	payload := map[string]any{
+		"id":   "default",
+		"name": "Duplicate Default",
+	}
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/clusters", payload, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", response.StatusCode)
+	}
+}
+
+func TestPlatformAdminCanBootstrapProject(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	payload := map[string]any{
+		"id":          "project-z",
+		"name":        "project-z",
+		"description": "Bootstrap target",
+		"environments": []map[string]any{
+			{
+				"id":        "staging",
+				"name":      "Staging",
+				"clusterId": "analytics",
+				"writeMode": "direct",
+				"default":   true,
+			},
+		},
+		"repositories": []map[string]any{
+			{
+				"id":   "project-z-api",
+				"name": "Project Z API",
+				"url":  "https://github.com/aolda-demo/project-z-api",
+			},
+		},
+	}
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects", payload, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+
+	if response.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", response.StatusCode)
+	}
+
+	var body struct {
+		ID        string `json:"id"`
+		Namespace string `json:"namespace"`
+		Role      string `json:"role"`
+	}
+	decodeBody(t, response, &body)
+
+	if body.ID != "project-z" {
+		t.Fatalf("expected project-z, got %s", body.ID)
+	}
+	if body.Namespace != "project-z" {
+		t.Fatalf("expected namespace project-z, got %s", body.Namespace)
+	}
+	if body.Role != "admin" {
+		t.Fatalf("expected role admin, got %s", body.Role)
+	}
+
+	projectsYAML, err := os.ReadFile(filepath.Join(env.repoRoot, "platform", "projects.yaml"))
+	if err != nil {
+		t.Fatalf("read projects.yaml: %v", err)
+	}
+	content := string(projectsYAML)
+	for _, needle := range []string{
+		"id: project-z",
+		"namespace: project-z",
+		"- aods:project-z:view",
+		"- aods:project-z:deploy",
+		"- aods:project-z:admin",
+		"- aods:platform:admin",
+		"clusterId: analytics",
+	} {
+		if !strings.Contains(content, needle) {
+			t.Fatalf("expected projects.yaml to contain %q, got:\n%s", needle, content)
+		}
+	}
+
+	assertFluxBootstrapFiles(t, env.repoRoot, "analytics")
+}
+
+func TestNonPlatformAdminCannotBootstrapProject(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects", map[string]any{
+		"id":   "project-z",
+		"name": "project-z",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+
+	if response.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected 403, got %d", response.StatusCode)
+	}
+}
+
+func TestBootstrapProjectRejectsDisplayStyleName(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects", map[string]any{
+		"id":   "project-z",
+		"name": "Project Z",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+
+	if response.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", response.StatusCode)
+	}
+
+	var body struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	decodeBody(t, response, &body)
+
+	if body.Error.Code != "INVALID_REQUEST" {
+		t.Fatalf("expected INVALID_REQUEST, got %#v", body.Error)
+	}
+	if body.Error.Message != "project name must be a lowercase slug" {
+		t.Fatalf("unexpected message: %#v", body.Error)
+	}
+}
+
+func TestBootstrapProjectConflictReturns409(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects", map[string]any{
+		"id":   "project-a",
+		"name": "project-a",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+
+	if response.StatusCode != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", response.StatusCode)
+	}
+}
+
+func TestPlatformAdminCanDeleteProject(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "delete-project-app",
+		"image":              "repo/delete-project-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Rollout",
+		"secrets": []map[string]string{
+			{"key": "DATABASE_URL", "value": "postgres://project-delete"},
+		},
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	deleteResponse := performJSONRequest(t, env, http.MethodDelete, "/api/v1/projects/project-a", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if deleteResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", deleteResponse.StatusCode)
+	}
+
+	var body struct {
+		ProjectID string `json:"projectId"`
+		Status    string `json:"status"`
+	}
+	decodeBody(t, deleteResponse, &body)
+	if body.ProjectID != "project-a" || body.Status != "deleted" {
+		t.Fatalf("unexpected delete response: %#v", body)
+	}
+
+	projectsYAML, err := os.ReadFile(filepath.Join(env.repoRoot, "platform", "projects.yaml"))
+	if err != nil {
+		t.Fatalf("read projects.yaml: %v", err)
+	}
+	if strings.Contains(string(projectsYAML), "id: project-a") {
+		t.Fatalf("expected project-a to be removed from catalog, got:\n%s", projectsYAML)
+	}
+
+	if _, err := os.Stat(filepath.Join(env.repoRoot, "apps", "project-a")); !os.IsNotExist(err) {
+		t.Fatalf("expected project application directory to be removed, got %v", err)
+	}
+	assertNoFluxChildManifest(t, env.repoRoot, "default", "project-a-delete-project-app")
+
+	if _, err := os.Stat(filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "delete-project-app", "prod.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected project vault secrets to be removed, got %v", err)
+	}
+}
+
+func TestSharedNamespaceProjectCannotBeDeleted(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects", map[string]any{
+		"id":        "shared",
+		"name":      "shared",
+		"namespace": "shared",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	deleteResponse := performJSONRequest(t, env, http.MethodDelete, "/api/v1/projects/shared", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if deleteResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", deleteResponse.StatusCode)
+	}
+
+	var body struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	decodeBody(t, deleteResponse, &body)
+
+	if body.Error.Code != "PROJECT_DELETE_PROTECTED" {
+		t.Fatalf("expected PROJECT_DELETE_PROTECTED, got %s", body.Error.Code)
+	}
+	if body.Error.Details["namespace"] != "shared" {
+		t.Fatalf("expected shared namespace detail, got %#v", body.Error.Details)
 	}
 }
 
@@ -133,8 +566,6 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 		"deployment.yaml",
 		"service.yaml",
 		"servicemonitor.yaml",
-		"virtualservice.yaml",
-		"destinationrule.yaml",
 		"externalsecret.yaml",
 	}
 
@@ -149,8 +580,6 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 	repoFiles := []string{
 		filepath.Join(appDir, "deployment.yaml"),
 		filepath.Join(appDir, "service.yaml"),
-		filepath.Join(appDir, "virtualservice.yaml"),
-		filepath.Join(appDir, "destinationrule.yaml"),
 		filepath.Join(appDir, "externalsecret.yaml"),
 	}
 	for _, path := range repoFiles {
@@ -175,6 +604,11 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 	}
 	if !strings.Contains(string(serviceMonitorManifest), `aods.io/metrics-scrape: "true"`) {
 		t.Fatal("expected ServiceMonitor manifest to target the stable service")
+	}
+	for _, fileName := range []string{"virtualservice.yaml", "destinationrule.yaml"} {
+		if _, err := os.Stat(filepath.Join(appDir, fileName)); !os.IsNotExist(err) {
+			t.Fatalf("expected %s to be skipped for non-mesh rollout apps, got %v", fileName, err)
+		}
 	}
 
 	finalVaultFile := filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "my-app", "prod.json")
@@ -234,8 +668,8 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 		Status string `json:"status"`
 	}
 	decodeBody(t, syncResponse, &syncBody)
-	if syncBody.Status != "Synced" {
-		t.Fatalf("expected Synced status, got %s", syncBody.Status)
+	if syncBody.Status != "Unknown" {
+		t.Fatalf("expected Unknown status, got %s", syncBody.Status)
 	}
 
 	metricsResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__my-app/metrics", nil, map[string]string{
@@ -253,8 +687,195 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 		} `json:"metrics"`
 	}
 	decodeBody(t, metricsResponse, &metricsBody)
-	if len(metricsBody.Metrics) != 5 {
-		t.Fatalf("expected 5 metric series, got %d", len(metricsBody.Metrics))
+	if len(metricsBody.Metrics) != 0 {
+		t.Fatalf("expected no metric series without metrics integration, got %d", len(metricsBody.Metrics))
+	}
+}
+
+func TestNetworkExposureRouteReturnsPendingWhenLoadBalancerEnabledWithoutKubernetesAPI(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
+		"name":                "lb-app",
+		"description":         "LB requested app",
+		"image":               "repo/lb-app:v1",
+		"servicePort":         8080,
+		"deploymentStrategy":  "Standard",
+		"loadBalancerEnabled": true,
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	exposureResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__lb-app/network-exposure", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if exposureResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from network-exposure, got %d", exposureResponse.StatusCode)
+	}
+
+	var body struct {
+		Enabled     bool     `json:"enabled"`
+		Status      string   `json:"status"`
+		ServiceType string   `json:"serviceType"`
+		Addresses   []string `json:"addresses"`
+		Message     string   `json:"message"`
+	}
+	decodeBody(t, exposureResponse, &body)
+
+	if !body.Enabled {
+		t.Fatal("expected load balancer exposure to be enabled")
+	}
+	if body.Status != "Pending" {
+		t.Fatalf("expected Pending status, got %s", body.Status)
+	}
+	if body.ServiceType != "LoadBalancer" {
+		t.Fatalf("expected LoadBalancer service type, got %q", body.ServiceType)
+	}
+	if len(body.Addresses) != 0 {
+		t.Fatalf("expected no ingress addresses in local mode, got %#v", body.Addresses)
+	}
+	if !strings.Contains(body.Message, "Kubernetes API 연동이 설정되지 않아") {
+		t.Fatalf("expected local-mode explanation, got %q", body.Message)
+	}
+}
+
+func TestArchiveApplicationRemovesDesiredStateButKeepsHistory(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "archive-app",
+		"image":              "repo/archive-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Rollout",
+		"secrets": []map[string]string{
+			{"key": "DATABASE_URL", "value": "postgres://archive"},
+		},
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	archiveResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/applications/project-a__archive-app/archive", nil, map[string]string{
+		"X-AODS-User-Id":  "user-2",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if archiveResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", archiveResponse.StatusCode)
+	}
+
+	var body struct {
+		ApplicationID string `json:"applicationId"`
+		Status        string `json:"status"`
+	}
+	decodeBody(t, archiveResponse, &body)
+	if body.ApplicationID != "project-a__archive-app" || body.Status != "archived" {
+		t.Fatalf("unexpected archive response: %#v", body)
+	}
+
+	appDir := filepath.Join(env.repoRoot, "apps", "project-a", "archive-app")
+	if _, err := os.Stat(filepath.Join(appDir, "base")); !os.IsNotExist(err) {
+		t.Fatalf("expected base directory to be removed, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(appDir, "overlays")); !os.IsNotExist(err) {
+		t.Fatalf("expected overlays directory to be removed, got %v", err)
+	}
+
+	metadataContent, err := os.ReadFile(filepath.Join(appDir, ".aods", "metadata.yaml"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if !strings.Contains(string(metadataContent), "archivedAt:") {
+		t.Fatalf("expected archivedAt in metadata, got:\n%s", metadataContent)
+	}
+	if !strings.Contains(string(metadataContent), "archivedBy: platform-admin") {
+		t.Fatalf("expected archivedBy marker, got:\n%s", metadataContent)
+	}
+
+	assertNoFluxChildManifest(t, env.repoRoot, "default", "project-a-archive-app")
+
+	if _, err := os.Stat(filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "archive-app", "prod.json")); err != nil {
+		t.Fatalf("expected final vault secret to remain after archive: %v", err)
+	}
+
+	listResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/projects/project-a/applications", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if listResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", listResponse.StatusCode)
+	}
+
+	var listBody struct {
+		Items []struct {
+			ID string `json:"id"`
+		} `json:"items"`
+	}
+	decodeBody(t, listResponse, &listBody)
+	for _, item := range listBody.Items {
+		if item.ID == "project-a__archive-app" {
+			t.Fatalf("expected archived app to be hidden from list response")
+		}
+	}
+}
+
+func TestDeleteApplicationRemovesDirectoryAndSecret(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "delete-app",
+		"image":              "repo/delete-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Rollout",
+		"secrets": []map[string]string{
+			{"key": "DATABASE_URL", "value": "postgres://delete"},
+		},
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	deleteResponse := performJSONRequest(t, env, http.MethodDelete, "/api/v1/applications/project-a__delete-app", nil, map[string]string{
+		"X-AODS-User-Id":  "user-2",
+		"X-AODS-Username": "platform-admin",
+		"X-AODS-Groups":   "aods:platform:admin",
+	})
+	if deleteResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", deleteResponse.StatusCode)
+	}
+
+	var body struct {
+		ApplicationID string `json:"applicationId"`
+		Status        string `json:"status"`
+	}
+	decodeBody(t, deleteResponse, &body)
+	if body.ApplicationID != "project-a__delete-app" || body.Status != "deleted" {
+		t.Fatalf("unexpected delete response: %#v", body)
+	}
+
+	if _, err := os.Stat(filepath.Join(env.repoRoot, "apps", "project-a", "delete-app")); !os.IsNotExist(err) {
+		t.Fatalf("expected application directory to be removed, got %v", err)
+	}
+	assertNoFluxChildManifest(t, env.repoRoot, "default", "project-a-delete-app")
+
+	if _, err := os.Stat(filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "delete-app", "prod.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected final vault secret to be removed, got %v", err)
 	}
 }
 
@@ -290,11 +911,8 @@ func TestCreateApplicationWithoutSecretsSkipsSecretArtifacts(t *testing.T) {
 	if strings.Contains(string(deploymentManifest), "envFrom:") {
 		t.Fatal("expected deployment manifest to omit envFrom when no secrets are provided")
 	}
-	if !strings.Contains(string(deploymentManifest), `sidecar.istio.io/inject: "true"`) {
-		t.Fatal("expected deployment manifest to opt workloads into Istio sidecar injection")
-	}
-	if !strings.Contains(string(deploymentManifest), "labels:\n        sidecar.istio.io/inject: \"true\"") {
-		t.Fatal("expected deployment manifest to label pods for Istio sidecar injection")
+	if strings.Contains(string(deploymentManifest), `sidecar.istio.io/inject: "true"`) {
+		t.Fatal("expected deployment manifest to omit Istio sidecar injection for default rollout apps")
 	}
 	if !strings.Contains(string(deploymentManifest), "app: stateless-app") {
 		t.Fatal("expected deployment manifest to include Istio telemetry app label")
@@ -303,15 +921,15 @@ func TestCreateApplicationWithoutSecretsSkipsSecretArtifacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read service manifest: %v", err)
 	}
-	if !strings.Contains(string(serviceManifest), "name: envoy-metrics") {
-		t.Fatal("expected service manifest to expose envoy metrics port")
+	if strings.Contains(string(serviceManifest), "name: envoy-metrics") {
+		t.Fatal("expected service manifest to omit envoy metrics port when mesh is disabled")
 	}
 	serviceMonitorManifest, err := os.ReadFile(filepath.Join(appDir, "servicemonitor.yaml"))
 	if err != nil {
 		t.Fatalf("read servicemonitor manifest: %v", err)
 	}
-	if !strings.Contains(string(serviceMonitorManifest), "port: envoy-metrics") || !strings.Contains(string(serviceMonitorManifest), "path: /stats/prometheus") {
-		t.Fatal("expected ServiceMonitor to scrape Istio sidecar envoy metrics")
+	if strings.Contains(string(serviceMonitorManifest), "port: envoy-metrics") || strings.Contains(string(serviceMonitorManifest), "path: /stats/prometheus") {
+		t.Fatal("expected ServiceMonitor to omit envoy metrics endpoint when mesh is disabled")
 	}
 
 	kustomizationManifest, err := os.ReadFile(filepath.Join(appDir, "kustomization.yaml"))
@@ -328,6 +946,73 @@ func TestCreateApplicationWithoutSecretsSkipsSecretArtifacts(t *testing.T) {
 	}
 	if len(stagingMatches) != 0 {
 		t.Fatalf("expected no staged vault files, found %d", len(stagingMatches))
+	}
+}
+
+func TestCreateApplicationWithRegistryCredentialWritesRegistryArtifacts(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	createPayload := map[string]any{
+		"name":               "private-ghcr-app",
+		"description":        "Private registry deployment",
+		"image":              "ghcr.io/aolda/private-ghcr-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"registryUsername":   "octocat",
+		"registryToken":      "ghcr_pat_456",
+	}
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", createPayload, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	appDir := filepath.Join(env.repoRoot, "apps", "project-a", "private-ghcr-app", "base")
+	if _, err := os.Stat(filepath.Join(appDir, "registry-externalsecret.yaml")); err != nil {
+		t.Fatalf("expected registry-externalsecret.yaml to exist: %v", err)
+	}
+
+	deploymentManifest, err := os.ReadFile(filepath.Join(appDir, "deployment.yaml"))
+	if err != nil {
+		t.Fatalf("read deployment manifest: %v", err)
+	}
+	if !strings.Contains(string(deploymentManifest), "imagePullSecrets:") {
+		t.Fatal("expected deployment manifest to include imagePullSecrets")
+	}
+	if !strings.Contains(string(deploymentManifest), "name: private-ghcr-app-registry") {
+		t.Fatal("expected deployment manifest to reference the registry secret")
+	}
+
+	registryExternalSecret, err := os.ReadFile(filepath.Join(appDir, "registry-externalsecret.yaml"))
+	if err != nil {
+		t.Fatalf("read registry externalsecret manifest: %v", err)
+	}
+	if !strings.Contains(string(registryExternalSecret), "type: kubernetes.io/dockerconfigjson") {
+		t.Fatal("expected registry ExternalSecret to materialize a dockerconfigjson secret")
+	}
+	if strings.Contains(string(registryExternalSecret), "ghcr_pat_456") {
+		t.Fatal("expected registry token not to leak into manifests")
+	}
+
+	kustomizationManifest, err := os.ReadFile(filepath.Join(appDir, "kustomization.yaml"))
+	if err != nil {
+		t.Fatalf("read kustomization manifest: %v", err)
+	}
+	if !strings.Contains(string(kustomizationManifest), "registry-externalsecret.yaml") {
+		t.Fatal("expected kustomization to include registry-externalsecret.yaml")
+	}
+
+	registrySecretFile := filepath.Join(env.vaultRoot, "aods", "apps", "project-a", "private-ghcr-app", "registry.json")
+	registrySecretData, err := os.ReadFile(registrySecretFile)
+	if err != nil {
+		t.Fatalf("read registry vault file: %v", err)
+	}
+	if !strings.Contains(string(registrySecretData), "\"dockerconfigjson\"") {
+		t.Fatal("expected registry vault file to store dockerconfigjson payload")
 	}
 }
 
@@ -935,11 +1620,6 @@ func TestRedeployCanSwitchEnvironment(t *testing.T) {
         - aods:project-a:deploy
       adminGroups:
         - aods:platform:admin
-    repositories:
-      - id: project-a-api
-        name: API Repository
-        url: https://github.com/aolda-demo/project-a-api
-        description: Primary API source code
     environments:
       - id: dev
         name: Development
@@ -1034,11 +1714,6 @@ func TestCreateApplicationRejectsDisallowedEnvironment(t *testing.T) {
         - aods:project-a:deploy
       adminGroups:
         - aods:platform:admin
-    repositories:
-      - id: project-a-api
-        name: API Repository
-        url: https://github.com/aolda-demo/project-a-api
-        description: Primary API source code
     environments:
       - id: dev
         name: Development
@@ -1317,11 +1992,6 @@ func newTestEnvironmentWithConfig(t *testing.T, mutate func(*core.Config)) testE
         - aods:project-a:deploy
       adminGroups:
         - aods:platform:admin
-    repositories:
-      - id: project-a-api
-        name: API Repository
-        url: https://github.com/aolda-demo/project-a-api
-        description: Primary API source code
     environments:
       - id: dev
         name: Development

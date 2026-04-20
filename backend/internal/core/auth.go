@@ -83,24 +83,35 @@ func NewUserProvider(cfg Config) UserProvider {
 		DevUser:          cfg.DevUser,
 	}
 
+	var provider UserProvider
 	switch strings.ToLower(strings.TrimSpace(cfg.AuthMode)) {
 	case "", "header":
-		return header
+		provider = header
 	case "oidc":
-		provider, err := NewOIDCUserProvider(cfg)
+		oidcProvider, err := NewOIDCUserProvider(cfg)
 		if err != nil {
-			return ErrorUserProvider{Err: fmt.Errorf("configure oidc auth provider: %w", err)}
+			provider = ErrorUserProvider{Err: fmt.Errorf("configure oidc auth provider: %w", err)}
+			break
 		}
-		return CompositeUserProvider{
-			Primary: provider,
+		provider = CompositeUserProvider{
+			Primary: oidcProvider,
 			DevFallback: DevFallbackUserProvider{
 				AllowDevFallback: cfg.AllowDevFallback,
 				DevUser:          cfg.DevUser,
 			},
 		}
 	default:
-		return ErrorUserProvider{Err: fmt.Errorf("unsupported auth mode %q", cfg.AuthMode)}
+		provider = ErrorUserProvider{Err: fmt.Errorf("unsupported auth mode %q", cfg.AuthMode)}
 	}
+
+	if len(cfg.OIDCRoleMappings) > 0 {
+		provider = AuthorityMappingUserProvider{
+			Base:     provider,
+			Mappings: cfg.OIDCRoleMappings,
+		}
+	}
+
+	return provider
 }
 
 func userFromHeaders(r *http.Request) (User, bool, error) {

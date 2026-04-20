@@ -192,7 +192,15 @@ func (r *Repository) runOutput(
 	defer cancel()
 
 	cmd := exec.CommandContext(execCtx, "git", args...)
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0", "GCM_INTERACTIVE=Never")
+	cmd.Env = append(os.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"GCM_INTERACTIVE=Never",
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=gc.auto",
+		"GIT_CONFIG_VALUE_0=0",
+		"GIT_CONFIG_KEY_1=maintenance.auto",
+		"GIT_CONFIG_VALUE_1=0",
+	)
 
 	var stdoutBuffer bytes.Buffer
 	var stderrBuffer bytes.Buffer

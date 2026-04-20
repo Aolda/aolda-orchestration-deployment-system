@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"bufio"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -16,6 +17,7 @@ import (
 	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -30,6 +32,10 @@ const argoRolloutResourcePath = "/apis/argoproj.io/v1alpha1"
 const kubernetesPodMetricsResourcePath = "/apis/metrics.k8s.io/v1beta1"
 
 type ErrorSyncStatusReader struct {
+	Err error
+}
+
+type ErrorNetworkExposureReader struct {
 	Err error
 }
 
@@ -57,6 +63,38 @@ func (r ErrorSyncStatusReader) ReadMany(ctx context.Context, records []applicati
 	return nil, r.Err
 }
 
+func (r ErrorNetworkExposureReader) Read(ctx context.Context, record application.Record) (application.NetworkExposureInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return application.NetworkExposureInfo{}, err
+	}
+
+	observedAt := record.UpdatedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+
+	if !record.LoadBalancerEnabled {
+		return application.NetworkExposureInfo{
+			Status:      application.NetworkExposureStatusInternal,
+			Message:     "현재는 내부 전용(ClusterIP) 서비스로 운영 중입니다.",
+			ServiceType: "ClusterIP",
+			ObservedAt:  observedAt,
+		}, nil
+	}
+
+	message := "LoadBalancer 상태 조회에 실패했습니다."
+	if r.Err != nil {
+		message = fmt.Sprintf("LoadBalancer 상태 조회에 실패했습니다: %s", r.Err.Error())
+	}
+
+	return application.NetworkExposureInfo{
+		Status:      application.NetworkExposureStatusError,
+		Message:     message,
+		ServiceType: "LoadBalancer",
+		ObservedAt:  observedAt,
+	}, nil
+}
+
 func (r ErrorRolloutController) GetRollout(ctx context.Context, record application.Record) (application.RolloutInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return application.RolloutInfo{}, err
@@ -80,10 +118,19 @@ type FluxSyncStatusReader struct {
 	KustomizationNamespace string
 }
 
+type ServiceNetworkExposureReader struct {
+	Client *apiClient
+}
+
 type PodMetricsReader struct {
 	Client *apiClient
 	Range  time.Duration
 	Step   time.Duration
+	Now    func() time.Time
+}
+
+type PodLogReader struct {
+	Client *apiClient
 	Now    func() time.Time
 }
 
@@ -135,6 +182,24 @@ func NewPodMetricsReader(cfg core.Config) (PodMetricsReader, error) {
 		Range:  cfg.PrometheusRange,
 		Step:   cfg.PrometheusStep,
 	}, nil
+}
+
+func NewPodLogReader(cfg core.Config) (PodLogReader, error) {
+	client, err := newAPIClient(cfg)
+	if err != nil {
+		return PodLogReader{}, err
+	}
+
+	return PodLogReader{Client: client}, nil
+}
+
+func NewServiceNetworkExposureReader(cfg core.Config) (ServiceNetworkExposureReader, error) {
+	client, err := newAPIClient(cfg)
+	if err != nil {
+		return ServiceNetworkExposureReader{}, err
+	}
+
+	return ServiceNetworkExposureReader{Client: client}, nil
 }
 
 func (r FluxSyncStatusReader) Read(ctx context.Context, record application.Record) (application.SyncInfo, error) {
@@ -273,18 +338,101 @@ type podMetricsListResponse struct {
 	Items []podMetricsResponse `json:"items"`
 }
 
+type podListResponse struct {
+	Items []podResponse `json:"items"`
+}
+
+type podResponse struct {
+	Metadata struct {
+		Name              string            `json:"name"`
+		Namespace         string            `json:"namespace"`
+		Labels            map[string]string `json:"labels"`
+		CreationTimestamp time.Time         `json:"creationTimestamp"`
+	} `json:"metadata"`
+	Spec struct {
+		Containers []podSpecContainer `json:"containers"`
+	} `json:"spec"`
+	Status struct {
+		Phase             string               `json:"phase"`
+		ContainerStatuses []podContainerStatus `json:"containerStatuses"`
+	} `json:"status"`
+}
+
+type podSpecContainer struct {
+	Name      string                `json:"name"`
+	Resources podContainerResources `json:"resources"`
+}
+
+type podContainerResources struct {
+	Requests map[string]string `json:"requests"`
+	Limits   map[string]string `json:"limits"`
+}
+
+type podContainerStatus struct {
+	Name         string `json:"name"`
+	Ready        bool   `json:"ready"`
+	RestartCount int    `json:"restartCount"`
+}
+
 type podMetricsResponse struct {
 	Metadata struct {
-		Name string `json:"name"`
+		Name      string `json:"name"`
+		Namespace string `json:"namespace"`
 	} `json:"metadata"`
 	Containers []podMetricsContainer `json:"containers"`
 }
 
 type podMetricsContainer struct {
+	Name  string `json:"name"`
 	Usage struct {
 		CPU    string `json:"cpu"`
 		Memory string `json:"memory"`
 	} `json:"usage"`
+}
+
+type podContainerUsage struct {
+	CPUCores  *float64
+	MemoryMiB *float64
+}
+
+type serviceResponse struct {
+	Spec struct {
+		Type  string        `json:"type"`
+		Ports []servicePort `json:"ports"`
+	} `json:"spec"`
+	Status struct {
+		LoadBalancer struct {
+			Ingress []serviceIngress `json:"ingress"`
+		} `json:"loadBalancer"`
+	} `json:"status"`
+}
+
+type serviceIngress struct {
+	IP       string `json:"ip"`
+	Hostname string `json:"hostname"`
+}
+
+type servicePort struct {
+	Name       string `json:"name"`
+	Protocol   string `json:"protocol"`
+	Port       int    `json:"port"`
+	TargetPort any    `json:"targetPort"`
+	NodePort   int    `json:"nodePort"`
+}
+
+type eventListResponse struct {
+	Items []kubernetesEvent `json:"items"`
+}
+
+type kubernetesEvent struct {
+	Type          string `json:"type"`
+	Reason        string `json:"reason"`
+	Message       string `json:"message"`
+	LastTimestamp string `json:"lastTimestamp"`
+	EventTime     string `json:"eventTime"`
+	Metadata      struct {
+		CreationTimestamp string `json:"creationTimestamp"`
+	} `json:"metadata"`
 }
 
 func collectPodResourceUsage(items []podMetricsResponse, appName string) (float64, float64, bool, error) {
@@ -314,6 +462,525 @@ func collectPodResourceUsage(items []podMetricsResponse, appName string) (float6
 	}
 
 	return cpuUsage, memoryUsage, found, nil
+}
+
+func (r ServiceNetworkExposureReader) Read(ctx context.Context, record application.Record) (application.NetworkExposureInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return application.NetworkExposureInfo{}, err
+	}
+
+	observedAt := time.Now().UTC()
+	if !record.LoadBalancerEnabled {
+		return application.NetworkExposureInfo{
+			Status:      application.NetworkExposureStatusInternal,
+			Message:     "현재는 내부 전용(ClusterIP) 서비스로 운영 중입니다.",
+			ServiceType: "ClusterIP",
+			ObservedAt:  observedAt,
+		}, nil
+	}
+	if r.Client == nil {
+		return application.NetworkExposureInfo{
+			Status:      application.NetworkExposureStatusError,
+			Message:     "Kubernetes API 클라이언트가 설정되지 않아 LoadBalancer 상태를 조회할 수 없습니다.",
+			ServiceType: "LoadBalancer",
+			ObservedAt:  observedAt,
+		}, nil
+	}
+
+	service, err := r.getService(ctx, record)
+	if err != nil {
+		var apiErr apiRequestError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return application.NetworkExposureInfo{
+				Status:      application.NetworkExposureStatusPending,
+				Message:     "Service가 아직 생성되지 않았습니다. GitOps 반영이 끝나면 LoadBalancer 준비 단계가 시작됩니다.",
+				ServiceType: "LoadBalancer",
+				ObservedAt:  observedAt,
+			}, nil
+		}
+		return application.NetworkExposureInfo{}, err
+	}
+
+	lastEvent, eventErr := r.getLatestServiceEvent(ctx, record)
+	if eventErr == nil && lastEvent != nil && !lastEvent.ObservedAt.IsZero() {
+		observedAt = lastEvent.ObservedAt
+	}
+
+	serviceType := strings.TrimSpace(service.Spec.Type)
+	if serviceType == "" {
+		serviceType = "ClusterIP"
+	}
+	addresses := collectServiceIngressAddresses(service.Status.LoadBalancer.Ingress)
+	ports := collectServicePorts(service.Spec.Ports)
+
+	switch {
+	case strings.EqualFold(serviceType, "LoadBalancer") && len(addresses) > 0:
+		message := fmt.Sprintf("클러스터 LoadBalancer 주소가 준비되었습니다: %s", strings.Join(addresses, ", "))
+		if lastEvent != nil && strings.TrimSpace(lastEvent.Message) != "" {
+			message = fmt.Sprintf("%s 최근 이벤트: %s", message, strings.TrimSpace(lastEvent.Message))
+		}
+		return application.NetworkExposureInfo{
+			Status:      application.NetworkExposureStatusReady,
+			Message:     message,
+			ServiceType: serviceType,
+			Addresses:   addresses,
+			Ports:       ports,
+			LastEvent:   lastEvent,
+			ObservedAt:  observedAt,
+		}, nil
+	case lastEvent != nil && strings.EqualFold(strings.TrimSpace(lastEvent.Type), "Warning"):
+		return application.NetworkExposureInfo{
+			Status:      application.NetworkExposureStatusError,
+			Message:     fmt.Sprintf("LoadBalancer 준비 중 경고가 발생했습니다. %s", strings.TrimSpace(lastEvent.Message)),
+			ServiceType: serviceType,
+			Ports:       ports,
+			LastEvent:   lastEvent,
+			ObservedAt:  observedAt,
+		}, nil
+	case !strings.EqualFold(serviceType, "LoadBalancer"):
+		return application.NetworkExposureInfo{
+			Status:      application.NetworkExposureStatusPending,
+			Message:     fmt.Sprintf("현재 Service 타입은 %s 입니다. 아직 LoadBalancer 반영 전입니다.", serviceType),
+			ServiceType: serviceType,
+			Ports:       ports,
+			LastEvent:   lastEvent,
+			ObservedAt:  observedAt,
+		}, nil
+	default:
+		message := "Service는 LoadBalancer로 반영됐지만 외부 주소가 아직 할당되지 않았습니다."
+		if lastEvent != nil && strings.TrimSpace(lastEvent.Message) != "" {
+			message = fmt.Sprintf("%s 최근 이벤트: %s", message, strings.TrimSpace(lastEvent.Message))
+		}
+		return application.NetworkExposureInfo{
+			Status:      application.NetworkExposureStatusProvisioning,
+			Message:     message,
+			ServiceType: serviceType,
+			Ports:       ports,
+			LastEvent:   lastEvent,
+			ObservedAt:  observedAt,
+		}, nil
+	}
+}
+
+func (r ServiceNetworkExposureReader) getService(ctx context.Context, record application.Record) (serviceResponse, error) {
+	resourcePath := "/api/v1/namespaces/" + url.PathEscape(record.Namespace) + "/services/" + url.PathEscape(record.Name)
+	var response serviceResponse
+	if err := r.Client.GetJSON(ctx, resourcePath, &response); err != nil {
+		return serviceResponse{}, err
+	}
+	return response, nil
+}
+
+func (r ServiceNetworkExposureReader) getLatestServiceEvent(ctx context.Context, record application.Record) (*application.NetworkExposureEvent, error) {
+	resourcePath := "/api/v1/namespaces/" + url.PathEscape(record.Namespace) +
+		"/events?fieldSelector=" + url.QueryEscape("involvedObject.kind=Service,involvedObject.name="+record.Name)
+
+	var response eventListResponse
+	if err := r.Client.GetJSON(ctx, resourcePath, &response); err != nil {
+		var apiErr apiRequestError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	if len(response.Items) == 0 {
+		return nil, nil
+	}
+
+	sort.SliceStable(response.Items, func(i, j int) bool {
+		return eventObservedAt(response.Items[i]).After(eventObservedAt(response.Items[j]))
+	})
+
+	selected := response.Items[0]
+	return &application.NetworkExposureEvent{
+		Type:       strings.TrimSpace(selected.Type),
+		Reason:     strings.TrimSpace(selected.Reason),
+		Message:    strings.TrimSpace(selected.Message),
+		ObservedAt: eventObservedAt(selected),
+	}, nil
+}
+
+func collectServiceIngressAddresses(items []serviceIngress) []string {
+	seen := map[string]struct{}{}
+	addresses := make([]string, 0, len(items))
+	for _, item := range items {
+		for _, value := range []string{strings.TrimSpace(item.IP), strings.TrimSpace(item.Hostname)} {
+			if value == "" {
+				continue
+			}
+			if _, exists := seen[value]; exists {
+				continue
+			}
+			seen[value] = struct{}{}
+			addresses = append(addresses, value)
+		}
+	}
+	return addresses
+}
+
+func collectServicePorts(items []servicePort) []application.NetworkExposurePort {
+	ports := make([]application.NetworkExposurePort, 0, len(items))
+	for _, item := range items {
+		if item.Port <= 0 {
+			continue
+		}
+		ports = append(ports, application.NetworkExposurePort{
+			Name:       strings.TrimSpace(item.Name),
+			Protocol:   strings.TrimSpace(item.Protocol),
+			Port:       item.Port,
+			TargetPort: normalizeServiceTargetPort(item.TargetPort),
+			NodePort:   item.NodePort,
+		})
+	}
+	return ports
+}
+
+func normalizeServiceTargetPort(value any) string {
+	switch typed := value.(type) {
+	case string:
+		return strings.TrimSpace(typed)
+	case float64:
+		return strconv.Itoa(int(typed))
+	case int:
+		return strconv.Itoa(typed)
+	case int32:
+		return strconv.Itoa(int(typed))
+	case int64:
+		return strconv.Itoa(int(typed))
+	case json.Number:
+		return typed.String()
+	default:
+		return ""
+	}
+}
+
+func eventObservedAt(item kubernetesEvent) time.Time {
+	for _, raw := range []string{
+		strings.TrimSpace(item.LastTimestamp),
+		strings.TrimSpace(item.EventTime),
+		strings.TrimSpace(item.Metadata.CreationTimestamp),
+	} {
+		if raw == "" {
+			continue
+		}
+		if parsed, err := time.Parse(time.RFC3339, raw); err == nil && !parsed.IsZero() {
+			return parsed.UTC()
+		}
+		if parsed, err := time.Parse(time.RFC3339Nano, raw); err == nil && !parsed.IsZero() {
+			return parsed.UTC()
+		}
+	}
+	return time.Time{}
+}
+
+func (r PodLogReader) Read(ctx context.Context, record application.Record, tailLines int) ([]application.ContainerLogStream, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.Client == nil {
+		return nil, fmt.Errorf("kubernetes api client is not configured")
+	}
+
+	pods, err := r.listApplicationPods(ctx, record)
+	if err != nil {
+		return nil, err
+	}
+	if len(pods) > 2 {
+		pods = pods[:2]
+	}
+
+	streams := make([]application.ContainerLogStream, 0, len(pods))
+	for _, pod := range pods {
+		containerName, status := selectPrimaryContainer(pod)
+		if containerName == "" {
+			continue
+		}
+
+		logPath := buildPodLogResourcePath(record.Namespace, pod.Metadata.Name, containerName, tailLines, false)
+		content, err := r.Client.GetText(ctx, logPath)
+		if err != nil {
+			return nil, err
+		}
+
+		streams = append(streams, application.ContainerLogStream{
+			PodName:       pod.Metadata.Name,
+			ContainerName: containerName,
+			Phase:         pod.Status.Phase,
+			Ready:         status.Ready,
+			RestartCount:  status.RestartCount,
+			Content:       strings.TrimSpace(content),
+		})
+	}
+
+	return streams, nil
+}
+
+func (r PodLogReader) ListTargets(ctx context.Context, record application.Record) ([]application.ContainerLogTarget, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if r.Client == nil {
+		return nil, fmt.Errorf("kubernetes api client is not configured")
+	}
+
+	pods, err := r.listApplicationPods(ctx, record)
+	if err != nil {
+		return nil, err
+	}
+
+	usageByPod, err := r.readPodContainerUsage(ctx, record.Namespace)
+	if err != nil {
+		usageByPod = map[string]map[string]podContainerUsage{}
+	}
+
+	targets := make([]application.ContainerLogTarget, 0, len(pods))
+	for _, pod := range pods {
+		defaultContainerName, _ := selectPrimaryContainer(pod)
+		statusByName := make(map[string]podContainerStatus, len(pod.Status.ContainerStatuses))
+		for _, status := range pod.Status.ContainerStatuses {
+			statusByName[status.Name] = status
+		}
+
+		containers := make([]application.ContainerLogTargetContainer, 0, len(pod.Spec.Containers))
+		for _, container := range pod.Spec.Containers {
+			status := statusByName[container.Name]
+			resourceStatus, err := buildContainerResourceStatus(container.Resources, usageByPod[pod.Metadata.Name][container.Name])
+			if err != nil {
+				return nil, err
+			}
+			containers = append(containers, application.ContainerLogTargetContainer{
+				Name:           container.Name,
+				Ready:          status.Ready,
+				RestartCount:   status.RestartCount,
+				Default:        container.Name == defaultContainerName,
+				ResourceStatus: resourceStatus,
+			})
+		}
+		if len(containers) == 0 {
+			continue
+		}
+
+		targets = append(targets, application.ContainerLogTarget{
+			PodName:    pod.Metadata.Name,
+			Phase:      pod.Status.Phase,
+			Containers: containers,
+		})
+	}
+
+	return targets, nil
+}
+
+func (r PodLogReader) Stream(
+	ctx context.Context,
+	record application.Record,
+	podName string,
+	containerName string,
+	tailLines int,
+	emit func(application.ContainerLogEvent) error,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.Client == nil {
+		return fmt.Errorf("kubernetes api client is not configured")
+	}
+
+	logPath := buildPodLogResourcePath(record.Namespace, podName, containerName, tailLines, true)
+	return r.Client.StreamText(ctx, logPath, func(line string) error {
+		return emit(buildContainerLogEvent(podName, containerName, line))
+	})
+}
+
+func (r PodLogReader) listApplicationPods(ctx context.Context, record application.Record) ([]podResponse, error) {
+	selector := url.QueryEscape("app.kubernetes.io/name=" + record.Name)
+	resourcePath := "/api/v1/namespaces/" + url.PathEscape(record.Namespace) + "/pods?labelSelector=" + selector
+	var response podListResponse
+	if err := r.Client.GetJSON(ctx, resourcePath, &response); err != nil {
+		return nil, err
+	}
+	return filterAndSortApplicationPods(response.Items, record.Name), nil
+}
+
+func (r PodLogReader) readPodContainerUsage(ctx context.Context, namespace string) (map[string]map[string]podContainerUsage, error) {
+	resourcePath := kubernetesPodMetricsResourcePath + "/namespaces/" + url.PathEscape(namespace) + "/pods"
+	var response podMetricsListResponse
+	if err := r.Client.GetJSON(ctx, resourcePath, &response); err != nil {
+		return nil, err
+	}
+
+	usageByPod := make(map[string]map[string]podContainerUsage, len(response.Items))
+	for _, item := range response.Items {
+		containers := make(map[string]podContainerUsage, len(item.Containers))
+		for _, container := range item.Containers {
+			cpuValue, err := parseCPUQuantityToCores(container.Usage.CPU)
+			if err != nil {
+				return nil, err
+			}
+			memoryValue, err := parseMemoryQuantityToMiB(container.Usage.Memory)
+			if err != nil {
+				return nil, err
+			}
+			cpuCopy := cpuValue
+			memoryCopy := memoryValue
+			containers[container.Name] = podContainerUsage{
+				CPUCores:  &cpuCopy,
+				MemoryMiB: &memoryCopy,
+			}
+		}
+		usageByPod[item.Metadata.Name] = containers
+	}
+
+	return usageByPod, nil
+}
+
+func buildContainerResourceStatus(resources podContainerResources, usage podContainerUsage) (*application.ContainerResourceStatus, error) {
+	status := &application.ContainerResourceStatus{
+		CPUUsageCores:  usage.CPUCores,
+		MemoryUsageMiB: usage.MemoryMiB,
+	}
+
+	if value, ok := resources.Requests["cpu"]; ok && strings.TrimSpace(value) != "" {
+		parsed, err := parseCPUQuantityToCores(value)
+		if err != nil {
+			return nil, err
+		}
+		status.CPURequestCores = float64Pointer(parsed)
+	}
+	if value, ok := resources.Limits["cpu"]; ok && strings.TrimSpace(value) != "" {
+		parsed, err := parseCPUQuantityToCores(value)
+		if err != nil {
+			return nil, err
+		}
+		status.CPULimitCores = float64Pointer(parsed)
+	}
+	if value, ok := resources.Requests["memory"]; ok && strings.TrimSpace(value) != "" {
+		parsed, err := parseMemoryQuantityToMiB(value)
+		if err != nil {
+			return nil, err
+		}
+		status.MemoryRequestMiB = float64Pointer(parsed)
+	}
+	if value, ok := resources.Limits["memory"]; ok && strings.TrimSpace(value) != "" {
+		parsed, err := parseMemoryQuantityToMiB(value)
+		if err != nil {
+			return nil, err
+		}
+		status.MemoryLimitMiB = float64Pointer(parsed)
+	}
+
+	status.CPURequestUtilization = utilization(status.CPUUsageCores, status.CPURequestCores)
+	status.CPULimitUtilization = utilization(status.CPUUsageCores, status.CPULimitCores)
+	status.MemoryRequestUtilization = utilization(status.MemoryUsageMiB, status.MemoryRequestMiB)
+	status.MemoryLimitUtilization = utilization(status.MemoryUsageMiB, status.MemoryLimitMiB)
+
+	if status.CPUUsageCores == nil &&
+		status.CPURequestCores == nil &&
+		status.CPULimitCores == nil &&
+		status.MemoryUsageMiB == nil &&
+		status.MemoryRequestMiB == nil &&
+		status.MemoryLimitMiB == nil {
+		return nil, nil
+	}
+
+	return status, nil
+}
+
+func buildPodLogResourcePath(namespace string, podName string, containerName string, tailLines int, follow bool) string {
+	query := url.Values{}
+	query.Set("container", containerName)
+	query.Set("tailLines", strconv.Itoa(tailLines))
+	query.Set("timestamps", "true")
+	if follow {
+		query.Set("follow", "true")
+	}
+	return "/api/v1/namespaces/" + url.PathEscape(namespace) + "/pods/" + url.PathEscape(podName) + "/log?" + query.Encode()
+}
+
+func buildContainerLogEvent(podName string, containerName string, rawLine string) application.ContainerLogEvent {
+	trimmed := strings.TrimRight(rawLine, "\r")
+	timestamp := ""
+	message := trimmed
+	if first, rest, ok := strings.Cut(trimmed, " "); ok {
+		if _, err := time.Parse(time.RFC3339Nano, first); err == nil {
+			timestamp = first
+			message = rest
+		}
+	}
+
+	return application.ContainerLogEvent{
+		PodName:       podName,
+		ContainerName: containerName,
+		Timestamp:     timestamp,
+		Message:       message,
+		RawLine:       trimmed,
+	}
+}
+
+func float64Pointer(value float64) *float64 {
+	copy := value
+	return &copy
+}
+
+func utilization(used *float64, allocated *float64) *float64 {
+	if used == nil || allocated == nil || *allocated <= 0 {
+		return nil
+	}
+	value := (*used / *allocated) * 100
+	return &value
+}
+
+func filterAndSortApplicationPods(items []podResponse, appName string) []podResponse {
+	pattern := regexp.MustCompile("^" + regexp.QuoteMeta(appName) + `-[a-z0-9]+(?:-[a-z0-9]+)?$`)
+	filtered := make([]podResponse, 0, len(items))
+	for _, item := range items {
+		if pattern.MatchString(strings.TrimSpace(item.Metadata.Name)) {
+			filtered = append(filtered, item)
+		}
+	}
+
+	sort.SliceStable(filtered, func(i, j int) bool {
+		left := filtered[i]
+		right := filtered[j]
+		if left.Status.Phase == "Running" && right.Status.Phase != "Running" {
+			return true
+		}
+		if left.Status.Phase != "Running" && right.Status.Phase == "Running" {
+			return false
+		}
+		return left.Metadata.CreationTimestamp.After(right.Metadata.CreationTimestamp)
+	})
+
+	return filtered
+}
+
+func selectPrimaryContainer(pod podResponse) (string, podContainerStatus) {
+	statusByName := make(map[string]podContainerStatus, len(pod.Status.ContainerStatuses))
+	for _, status := range pod.Status.ContainerStatuses {
+		statusByName[status.Name] = status
+	}
+
+	for _, container := range pod.Spec.Containers {
+		if isSidecarContainer(container.Name) {
+			continue
+		}
+		return container.Name, statusByName[container.Name]
+	}
+
+	if len(pod.Spec.Containers) == 0 {
+		return "", podContainerStatus{}
+	}
+	first := pod.Spec.Containers[0]
+	return first.Name, statusByName[first.Name]
+}
+
+func isSidecarContainer(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "istio-proxy", "linkerd-proxy", "vault-agent":
+		return true
+	default:
+		return false
+	}
 }
 
 func buildKubernetesMetricSeries(
@@ -605,6 +1272,104 @@ func newHTTPClient(
 
 func (c *apiClient) GetJSON(ctx context.Context, resourcePath string, target any) error {
 	return c.doJSON(ctx, http.MethodGet, resourcePath, nil, "", target)
+}
+
+func (c *apiClient) GetText(ctx context.Context, resourcePath string) (string, error) {
+	if c == nil {
+		return "", fmt.Errorf("kubernetes api client is not configured")
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+resourcePath, nil)
+	if err != nil {
+		return "", fmt.Errorf("create kubernetes api request: %w", err)
+	}
+	if c.BearerTokenProvider != nil {
+		token, err := c.BearerTokenProvider(ctx)
+		if err != nil {
+			return "", fmt.Errorf("resolve kubernetes api bearer token: %w", err)
+		}
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+
+	response, err := c.HTTPClient.Do(request)
+	if err != nil {
+		return "", fmt.Errorf("perform kubernetes api request: %w", err)
+	}
+	defer response.Body.Close()
+
+	responseBody, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", fmt.Errorf("read kubernetes api response: %w", err)
+	}
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		message := strings.TrimSpace(string(responseBody))
+		if message == "" {
+			message = response.Status
+		}
+		return "", apiRequestError{ResourcePath: resourcePath, StatusCode: response.StatusCode, Message: message}
+	}
+
+	return string(responseBody), nil
+}
+
+func (c *apiClient) StreamText(ctx context.Context, resourcePath string, onLine func(string) error) error {
+	if c == nil {
+		return fmt.Errorf("kubernetes api client is not configured")
+	}
+
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.BaseURL+resourcePath, nil)
+	if err != nil {
+		return fmt.Errorf("create kubernetes api request: %w", err)
+	}
+	if c.BearerTokenProvider != nil {
+		token, err := c.BearerTokenProvider(ctx)
+		if err != nil {
+			return fmt.Errorf("resolve kubernetes api bearer token: %w", err)
+		}
+		if token != "" {
+			request.Header.Set("Authorization", "Bearer "+token)
+		}
+	}
+
+	response, err := c.streamingHTTPClient().Do(request)
+	if err != nil {
+		return fmt.Errorf("perform kubernetes api request: %w", err)
+	}
+	defer response.Body.Close()
+
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		body, _ := io.ReadAll(response.Body)
+		message := strings.TrimSpace(string(body))
+		if message == "" {
+			message = response.Status
+		}
+		return apiRequestError{ResourcePath: resourcePath, StatusCode: response.StatusCode, Message: message}
+	}
+
+	scanner := bufio.NewScanner(response.Body)
+	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		if err := onLine(scanner.Text()); err != nil {
+			return err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read kubernetes api stream: %w", err)
+	}
+
+	return nil
+}
+
+func (c *apiClient) streamingHTTPClient() *http.Client {
+	if c == nil || c.HTTPClient == nil {
+		return http.DefaultClient
+	}
+	clone := *c.HTTPClient
+	clone.Timeout = 0
+	return &clone
 }
 
 func (c *apiClient) PatchJSON(ctx context.Context, resourcePath string, body []byte, target any) error {

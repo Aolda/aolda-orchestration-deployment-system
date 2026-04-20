@@ -29,12 +29,14 @@ spec:
               value: /app
             - name: AODS_AUTH_MODE
               value: header
+            - name: AODS_PLATFORM_ADMIN_AUTHORITIES
+              value: /Ajou_Univ/Aolda_Admin,aods:platform:admin
             - name: AODS_ALLOW_DEV_FALLBACK
               value: "true"
             - name: AODS_ALLOWED_ORIGIN
               value: https://aods.jalju.com
             - name: AODS_DEV_GROUPS
-              value: aods:project-a:deploy
+              value: aods:project-a:deploy,/Ajou_Univ/Aolda_Admin
             - name: AODS_DEV_DISPLAY_NAME
               value: 테스트베드 운영자
             - name: AODS_GIT_MODE
@@ -49,6 +51,16 @@ spec:
               value: aods-bot@local
             - name: AODS_GIT_SYNC_TTL
               value: 10s
+            - name: GIT_CONFIG_COUNT
+              value: "2"
+            - name: GIT_CONFIG_KEY_0
+              value: gc.auto
+            - name: GIT_CONFIG_VALUE_0
+              value: "0"
+            - name: GIT_CONFIG_KEY_1
+              value: maintenance.auto
+            - name: GIT_CONFIG_VALUE_1
+              value: "0"
             - name: AODS_GIT_REMOTE
               valueFrom:
                 secretKeyRef:

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync/atomic"
 	"time"
 )
@@ -37,19 +39,21 @@ func WithRequestID(next http.Handler) http.Handler {
 	})
 }
 
-func WithCORS(next http.Handler, allowedOrigin string) http.Handler {
-	origin := allowedOrigin
-	if origin == "" {
-		origin = "*"
-	}
+func WithCORS(next http.Handler, allowedOrigin string, allowDevFallback bool) http.Handler {
+	configuredOrigins := parseAllowedOrigins(allowedOrigin)
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", origin)
+		if origin, ok := selectCORSOrigin(r.Header.Get("Origin"), configuredOrigins, allowDevFallback); ok {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+		}
+		w.Header().Add("Vary", "Origin")
+		w.Header().Add("Vary", "Access-Control-Request-Headers")
+		w.Header().Add("Vary", "Access-Control-Request-Method")
 		w.Header().Set(
 			"Access-Control-Allow-Headers",
 			"Content-Type, Authorization, X-AODS-User-Id, X-AODS-Username, X-AODS-Display-Name, X-AODS-Groups, X-Request-Id",
 		)
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -58,6 +62,65 @@ func WithCORS(next http.Handler, allowedOrigin string) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func parseAllowedOrigins(value string) []string {
+	parts := strings.Split(value, ",")
+	origins := make([]string, 0, len(parts))
+
+	for _, part := range parts {
+		trimmed := strings.TrimSpace(part)
+		if trimmed == "" {
+			continue
+		}
+		origins = append(origins, trimmed)
+	}
+
+	if len(origins) == 0 {
+		return []string{"*"}
+	}
+
+	return origins
+}
+
+func selectCORSOrigin(requestOrigin string, configuredOrigins []string, allowDevFallback bool) (string, bool) {
+	origin := strings.TrimSpace(requestOrigin)
+	if origin == "" {
+		for _, configuredOrigin := range configuredOrigins {
+			if configuredOrigin == "*" {
+				return "*", true
+			}
+		}
+		return "", false
+	}
+
+	for _, configuredOrigin := range configuredOrigins {
+		if configuredOrigin == "*" {
+			return "*", true
+		}
+		if configuredOrigin == origin {
+			return origin, true
+		}
+	}
+
+	if allowDevFallback && isLoopbackOrigin(origin) {
+		return origin, true
+	}
+
+	return "", false
+}
+
+func isLoopbackOrigin(value string) bool {
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return false
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return false
+	}
+
+	hostname := strings.TrimSpace(parsed.Hostname())
+	return hostname == "localhost" || hostname == "127.0.0.1"
 }
 
 func WithNotFoundJSON(mux *http.ServeMux) http.Handler {

@@ -1,0 +1,98 @@
+name: Feature Request
+description: Structured feature request for humans and coding agents
+title: "[feature] "
+labels:
+  - feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        기능 요청은 계약 문서와 영향 범위를 먼저 적어주세요.
+        에이전트가 바로 작업할 수 있도록 API, UI, 정책, Phase 영향을 구체적으로 남기는 형식입니다.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      description: 주로 바뀌는 영역을 선택하세요.
+      options:
+        - Backend API
+        - Frontend UI
+        - Backend + Frontend
+        - Docs / Contracts
+        - GitOps / Platform
+    validations:
+      required: true
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / Goal
+      description: 무엇이 필요하고 왜 필요한지 적어주세요.
+      placeholder: 현재 불편한 점, 목표 사용자 흐름, 기대 결과를 적어주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: contracts
+    attributes:
+      label: Relevant Contracts
+      description: 관련 문서를 적어주세요.
+      placeholder: |
+        예시
+        - docs/internal-platform/openapi.yaml
+        - docs/acceptance-criteria.md
+        - docs/phase1-decisions.md
+        - docs/domain-rules.md
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected_change
+    attributes:
+      label: Expected Change
+      description: API, UI, 정책, manifest 중 무엇이 어떻게 바뀌는지 적어주세요.
+      placeholder: 요청/응답 필드, 화면 동작, 정책 변경, 생성되어야 할 산출물 등을 적어주세요.
+    validations:
+      required: true
+
+  - type: textarea
+    id: files
+    attributes:
+      label: Likely Files / Modules
+      description: 이미 알고 있는 수정 후보 파일이 있으면 적어주세요.
+      placeholder: |
+        예시
+        - backend/internal/application/service.go
+        - backend/internal/server/server.go
+        - frontend/src/api/client.ts
+        - frontend/src/App.tsx
+        - platform/projects.yaml
+    validations:
+      required: false
+
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation Plan
+      description: 기능 완료 후 어떤 검증을 해야 하는지 적어주세요.
+      placeholder: |
+        예시
+        - cd backend && go test ./...
+        - cd frontend && npm run lint
+        - make check
+        - 수동 시나리오 확인
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: guardrails
+    attributes:
+      label: Guardrails
+      options:
+        - label: Phase 1 baseline 을 깨는 later phase 확장이 필요한지 검토했다
+          required: true
+        - label: Source-of-truth 파일과 영향 범위를 확인했다
+          required: true
+        - label: Secret 을 Git이나 Kubernetes Secret 으로 우회하지 않는다는 규칙을 확인했다
+          required: true

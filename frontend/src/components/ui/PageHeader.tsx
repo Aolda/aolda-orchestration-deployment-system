@@ -10,7 +10,7 @@ type PageHeaderProps = {
 
 export function PageHeader({ eyebrow, title, description, actions }: PageHeaderProps) {
   return (
-    <Group justify="space-between" align="end" mb="md">
+    <Group justify="space-between" align="flex-start" wrap="wrap" mb="md">
       <div>
         <Text size="xs" fw={700} tt="uppercase" c="lagoon.5" mb={6}>
           {eyebrow}

@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aods-backend
+spec:
+  template:
+    $patch: replace
+    metadata:
+      labels:
+        app: aods-backend
+    spec:
+      serviceAccountName: aods-backend
+      containers:
+        - name: backend
+          image: aods-backend:orbstack-local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 8080
+              name: http
+          env:
+            - name: AODS_ALLOWED_ORIGIN
+              value: http://localhost:18081
+            - name: AODS_ADDR
+              value: ":8080"
+            - name: AODS_AUTH_MODE
+              value: header
+            - name: AODS_PLATFORM_ADMIN_AUTHORITIES
+              value: /Ajou_Univ/Aolda_Admin,aods:platform:admin
+            - name: AODS_ALLOW_DEV_FALLBACK
+              value: "true"
+            - name: AODS_DEV_GROUPS
+              value: aods:project-a:deploy,aods:project-a:admin,/Ajou_Univ/Aolda_Admin,aods:platform:admin
+            - name: AODS_DEV_DISPLAY_NAME
+              value: 테스트베드 운영자
+            - name: AODS_GIT_MODE
+              value: local
+            - name: AODS_REPO_ROOT
+              value: /app/repo
+            - name: AODS_GIT_BRANCH
+              value: main
+            - name: AODS_GIT_AUTHOR_NAME
+              value: AODS Bot
+            - name: AODS_GIT_AUTHOR_EMAIL
+              value: aods-bot@local
+            - name: AODS_GIT_SYNC_TTL
+              value: 10s
+            - name: AODS_K8S_MODE
+              value: local
+            - name: AODS_K8S_REQUEST_TIMEOUT
+              value: 5s
+            - name: AODS_PROMETHEUS_MODE
+              value: local
+            - name: AODS_PROMETHEUS_REQUEST_TIMEOUT
+              value: 5s
+            - name: AODS_PROMETHEUS_RANGE
+              value: 1h
+            - name: AODS_PROMETHEUS_STEP
+              value: 5m
+            - name: AODS_VAULT_MODE
+              value: local
+            - name: AODS_LOCAL_VAULT_DIR
+              value: /data/local-vault
+            - name: AODS_IMAGE_CHECK_MODE
+              value: local
+            - name: AODS_IMAGE_CHECK_TIMEOUT
+              value: 5s
+          readinessProbe:
+            httpGet:
+              path: /api/v1/projects
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/v1/projects
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}

@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"testing"
+	"time"
 )
 
 func TestRealStoreStageAndFinalizeUsesKVv2Endpoints(t *testing.T) {
@@ -122,5 +124,82 @@ func TestRealStoreAddsNamespaceHeader(t *testing.T) {
 
 	if namespace != "team-a" {
 		t.Fatalf("expected vault namespace header, got %q", namespace)
+	}
+}
+
+func TestRealStoreCleanupStaleDeletesExpiredPendingCommitSecrets(t *testing.T) {
+	t.Helper()
+
+	var deletePaths []string
+	var methods []string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		methods = append(methods, r.Method+" "+r.URL.Path)
+
+		switch {
+		case r.Method == "LIST" && r.URL.Path == "/v1/secret/metadata/aods/staging":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"keys": []string{"req_old", "req_fresh", "req_done"},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/secret/metadata/aods/staging/req_old":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"created_time": time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano),
+					"updated_time": time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano),
+					"custom_metadata": map[string]string{
+						"status":    pendingCommitStatus,
+						"createdAt": time.Now().UTC().Add(-48 * time.Hour).Format(time.RFC3339Nano),
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/secret/metadata/aods/staging/req_fresh":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"created_time": time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano),
+					"updated_time": time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano),
+					"custom_metadata": map[string]string{
+						"status":    pendingCommitStatus,
+						"createdAt": time.Now().UTC().Add(-2 * time.Hour).Format(time.RFC3339Nano),
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/secret/metadata/aods/staging/req_done":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"created_time": time.Now().UTC().Add(-72 * time.Hour).Format(time.RFC3339Nano),
+					"updated_time": time.Now().UTC().Add(-72 * time.Hour).Format(time.RFC3339Nano),
+					"custom_metadata": map[string]string{
+						"status":    "finalized",
+						"createdAt": time.Now().UTC().Add(-72 * time.Hour).Format(time.RFC3339Nano),
+					},
+				},
+			})
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/secret/metadata/aods/staging/req_old":
+			deletePaths = append(deletePaths, r.URL.Path)
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected vault request: %s %s", r.Method, r.URL.Path)
+		}
+	}))
+	defer server.Close()
+
+	store := RealStore{
+		Address: server.URL,
+		Token:   "test-token",
+		Client:  server.Client(),
+	}
+
+	count, err := store.CleanupStale(context.Background(), time.Now().UTC().Add(-24*time.Hour))
+	if err != nil {
+		t.Fatalf("cleanup stale secrets: %v", err)
+	}
+
+	if count != 1 {
+		t.Fatalf("expected 1 cleaned staged secret, got %d", count)
+	}
+	if !slices.Equal(deletePaths, []string{"/v1/secret/metadata/aods/staging/req_old"}) {
+		t.Fatalf("unexpected delete paths: %#v", deletePaths)
 	}
 }

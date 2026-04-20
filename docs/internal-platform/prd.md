@@ -10,6 +10,21 @@
 
 ---
 
+## 1.5 현재 구현 상태 메모 (2026-04-12)
+
+이 PRD는 여전히 **Phase 1 minimum-contract 문서**다.
+
+다만 현재 코드베이스는 Phase 2, 3, 4의 일부 기능을 이미 포함한다.
+따라서 이 문서를 읽을 때는 아래 원칙을 같이 적용한다.
+
+* 이 문서의 본문은 **Phase 1 목표와 비목표**를 고정하는 용도다.
+* 현재 레포의 실제 진행상황은 `docs/current-implementation-status.md` 를 함께 봐야 한다.
+* `Canary`, `Promote`, `Abort`, `Change`, `Environment`, `Policy`, `Cluster`, `Rollback Policy`, `Auto Rollback Executor` 는 현재 코드에 일부 또는 상당 부분 들어와 있다.
+* 단, `pull_request` 는 아직 **실제 GitHub Pull Request 생성/머지 흐름**으로 구현된 것은 아니며, 현재 코드는 review-gated change flow 에 가깝다.
+* 즉, 이 문서는 현재 제품 baseline 설명 문서가 아니다.
+
+---
+
 ## 2. 문제 정의
 
 현재 내부 서비스 배포에는 아래 문제가 있다.
@@ -76,6 +91,11 @@
 
 이 항목들은 **Phase 2 이후**로 미룬다.
 
+주의:
+
+* 이 절은 **Phase 1 인수 범위**를 잠그는 문장이다.
+* 현재 저장소에 later-phase 기능 일부가 선반영되어 있어도, 그것만으로 Phase 1 범위가 넓어지는 것은 아니다.
+
 ---
 
 ## 7. 사용자 시나리오
@@ -135,7 +155,9 @@
 
 ---
 
-## 9. Phase 2 예정 범위
+## 9. Phase 2+ 방향 메모
+
+아래는 제품 확장 방향을 설명하는 로드맵 메모다.
 
 Phase 1이 파일럿 팀에서 실제로 쓰이기 시작하면 아래를 순서대로 연다.
 
@@ -148,6 +170,11 @@ Phase 1이 파일럿 팀에서 실제로 쓰이기 시작하면 아래를 순서
 Phase 2의 핵심은 "배포를 되게 만드는 것"이 아니라 "배포를 더 안전하게 만드는 것"이다. 순서를 뒤집지 않는다.
 
 Phase 2, 3, 4의 상세 로드맵과 handoff guardrail 은 `docs/future-phases-roadmap.md` 를 기준으로 한다.
+
+현재 코드 상태 메모:
+
+* 현재 레포에는 위 항목 중 일부가 이미 선반영돼 있다.
+* 다만 이 PRD는 Phase 1 기준 계약을 설명하는 문서이므로, later-phase 구현 현황은 `docs/current-implementation-status.md` 와 roadmap 의 각 phase 메모를 기준으로 확인한다.
 
 ---
 

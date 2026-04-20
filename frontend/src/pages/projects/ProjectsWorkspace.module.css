@@ -1,0 +1,74 @@
+.layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 320px) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+.layoutSingle {
+  display: block;
+}
+
+.catalogRail {
+  min-width: 0;
+}
+
+.detailPanel {
+  min-width: 0;
+  display: grid;
+  gap: 20px;
+}
+
+.detailPanelSolo {
+  min-width: 0;
+  display: grid;
+  gap: 20px;
+}
+
+.tabsCard {
+  padding: 20px 22px;
+  border-radius: 24px;
+  border: 1px solid #e2e8f0;
+  background: #ffffff;
+  box-shadow: 0 8px 20px -16px rgba(15, 23, 42, 0.3);
+}
+
+.emptyPanel {
+  min-height: 240px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px;
+  border-radius: 24px;
+  border: 1px dashed #cbd5e1;
+  background: rgba(255, 255, 255, 0.78);
+}
+
+.emptyBody {
+  max-width: 36ch;
+  text-align: center;
+  color: #64748b;
+  line-height: 1.6;
+}
+
+@media (max-width: 1100px) {
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .catalogRail {
+    order: 2;
+  }
+
+  .detailPanel {
+    order: 1;
+  }
+}
+
+@media (max-width: 768px) {
+  .tabsCard,
+  .emptyPanel {
+    padding: 18px;
+    border-radius: 20px;
+  }
+}

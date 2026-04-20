@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aods-frontend
+spec:
+  template:
+    $patch: replace
+    metadata:
+      labels:
+        app: aods-frontend
+    spec:
+      containers:
+        - name: frontend
+          image: aods-frontend:orbstack-local
+          imagePullPolicy: Never
+          ports:
+            - containerPort: 80
+              name: http
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20

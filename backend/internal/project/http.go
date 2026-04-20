@@ -72,6 +72,62 @@ func (h Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
+	user, err := h.Users.CurrentUser(r)
+	if err != nil {
+		if errors.Is(err, core.ErrUnauthorized) {
+			core.WriteError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication is required.", nil, false)
+			return
+		}
+
+		core.WriteError(w, r, http.StatusInternalServerError, "AUTH_PROVIDER_ERROR", "Could not resolve the current user.", nil, true)
+		return
+	}
+
+	var request CreateRequest
+	if err := core.DecodeJSON(r, &request); err != nil {
+		core.WriteError(
+			w,
+			r,
+			http.StatusBadRequest,
+			"INVALID_REQUEST",
+			"Request body is invalid.",
+			map[string]any{"error": err.Error()},
+			false,
+		)
+		return
+	}
+
+	project, err := h.Service.Create(r.Context(), user, request)
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusCreated, project)
+}
+
+func (h Handler) DeleteProject(w http.ResponseWriter, r *http.Request) {
+	user, err := h.Users.CurrentUser(r)
+	if err != nil {
+		if errors.Is(err, core.ErrUnauthorized) {
+			core.WriteError(w, r, http.StatusUnauthorized, "UNAUTHORIZED", "Authentication is required.", nil, false)
+			return
+		}
+
+		core.WriteError(w, r, http.StatusInternalServerError, "AUTH_PROVIDER_ERROR", "Could not resolve the current user.", nil, true)
+		return
+	}
+
+	result, err := h.Service.Delete(r.Context(), user, r.PathValue("projectId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, result)
+}
+
 func (h Handler) ListEnvironments(w http.ResponseWriter, r *http.Request) {
 	user, err := h.Users.CurrentUser(r)
 	if err != nil {
@@ -179,9 +235,30 @@ func (h Handler) UpdatePolicies(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h Handler) writeDomainError(w http.ResponseWriter, r *http.Request, err error) {
+	var validationError ValidationError
+	var protectedProjectError ProtectedProjectError
+
 	switch {
+	case errors.As(err, &validationError):
+		core.WriteError(w, r, http.StatusBadRequest, "INVALID_REQUEST", validationError.Message, validationError.Details, false)
+	case errors.As(err, &protectedProjectError):
+		core.WriteError(
+			w,
+			r,
+			http.StatusBadRequest,
+			"PROJECT_DELETE_PROTECTED",
+			"Shared namespace projects cannot be deleted.",
+			map[string]any{
+				"projectId": protectedProjectError.ProjectID,
+				"namespace": protectedProjectError.Namespace,
+				"reason":    protectedProjectError.ReasonCode,
+			},
+			false,
+		)
 	case errors.Is(err, ErrForbidden):
 		core.WriteError(w, r, http.StatusForbidden, "FORBIDDEN", "You do not have permission to access this project.", nil, false)
+	case errors.Is(err, ErrConflict):
+		core.WriteError(w, r, http.StatusConflict, "PROJECT_ALREADY_EXISTS", "A project with this id already exists.", nil, false)
 	case errors.Is(err, ErrNotFound):
 		core.WriteError(w, r, http.StatusNotFound, "PROJECT_NOT_FOUND", "Project was not found.", map[string]any{"projectId": r.PathValue("projectId")}, false)
 	default:

@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/aolda/aods-backend/internal/admin"
 	"github.com/aolda/aods-backend/internal/application"
 	"github.com/aolda/aods-backend/internal/change"
 	"github.com/aolda/aods-backend/internal/cluster"
@@ -19,10 +20,16 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 	userProvider := core.NewUserProvider(cfg)
 
 	projectSource := project.CatalogSource(project.LocalCatalogSource{
-		Path: filepath.Join(cfg.RepoRoot, "platform", "projects.yaml"),
+		Path:                       filepath.Join(cfg.RepoRoot, "platform", "projects.yaml"),
+		RepoRoot:                   cfg.RepoRoot,
+		FluxKustomizationNamespace: cfg.FluxKustomizationNamespace,
+		FluxSourceName:             cfg.FluxSourceName,
 	})
 	clusterSource := cluster.Source(cluster.LocalSource{
-		Path: filepath.Join(cfg.RepoRoot, "platform", "clusters.yaml"),
+		Path:                       filepath.Join(cfg.RepoRoot, "platform", "clusters.yaml"),
+		RepoRoot:                   cfg.RepoRoot,
+		FluxKustomizationNamespace: cfg.FluxKustomizationNamespace,
+		FluxSourceName:             cfg.FluxSourceName,
 	})
 	applicationStore := application.Store(application.LocalManifestStore{
 		RepoRoot:                   cfg.RepoRoot,
@@ -42,8 +49,16 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 			SyncTTL:     cfg.GitSyncTTL,
 		}
 
-		projectSource = project.GitCatalogSource{Repository: repository}
-		clusterSource = cluster.GitSource{Repository: repository}
+		projectSource = project.GitCatalogSource{
+			Repository:                 repository,
+			FluxKustomizationNamespace: cfg.FluxKustomizationNamespace,
+			FluxSourceName:             cfg.FluxSourceName,
+		}
+		clusterSource = cluster.GitSource{
+			Repository:                 repository,
+			FluxKustomizationNamespace: cfg.FluxKustomizationNamespace,
+			FluxSourceName:             cfg.FluxSourceName,
+		}
 		applicationStore = application.GitManifestStore{
 			Repository:                 repository,
 			FluxKustomizationNamespace: cfg.FluxKustomizationNamespace,
@@ -52,12 +67,8 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 		changeStore = change.GitStore{Repository: repository}
 	}
 
-	projectService := &project.Service{
-		Source: projectSource,
-	}
-	clusterService := &cluster.Service{Source: clusterSource}
-
 	metricsReader := application.MetricsReader(application.LocalMetricsReader{})
+	networkExposureReader := application.NetworkExposureReader(kubernetes.LocalNetworkExposureReader{})
 	var prometheusReader application.MetricsReader
 	if cfg.UsePrometheusAPI() {
 		prometheusReader = application.PrometheusMetricsReader{
@@ -77,6 +88,14 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 		} else {
 			kubernetesMetricsReader = reader
 		}
+	}
+	var kubernetesLogsReader application.LogsReader
+	if cfg.UseKubernetesAPI() {
+		reader, err := kubernetes.NewPodLogReader(cfg)
+		if err == nil {
+			kubernetesLogsReader = reader
+		}
+		networkExposureReader = kubernetes.NewNetworkExposureReader(cfg)
 	}
 	switch {
 	case prometheusReader != nil && kubernetesMetricsReader != nil:
@@ -100,6 +119,17 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 		}
 	}
 
+	projectService := &project.Service{
+		Source:                   projectSource,
+		Clusters:                 clusterSource,
+		Secrets:                  secretStore,
+		PlatformAdminAuthorities: cfg.PlatformAdminAuthorities,
+	}
+	clusterService := &cluster.Service{
+		Source:                   clusterSource,
+		PlatformAdminAuthorities: cfg.PlatformAdminAuthorities,
+	}
+
 	imageVerifier := application.ImageVerifier(application.NoopImageVerifier{})
 	if cfg.UseImageVerification() {
 		imageVerifier = application.RegistryImageVerifier{
@@ -108,13 +138,32 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 	}
 
 	applicationService := &application.Service{
-		Projects:      projectService,
-		Store:         applicationStore,
-		StatusReader:  kubernetes.NewSyncStatusReader(cfg),
-		MetricsReader: metricsReader,
-		Secrets:       secretStore,
-		Rollouts:      kubernetes.NewRolloutController(cfg),
-		Images:        imageVerifier,
+		Projects:              projectService,
+		Store:                 applicationStore,
+		StatusReader:          kubernetes.NewSyncStatusReader(cfg),
+		MetricsReader:         metricsReader,
+		NetworkExposureReader: networkExposureReader,
+		LogsReader:            kubernetesLogsReader,
+		Secrets:               secretStore,
+		Rollouts:              kubernetes.NewRolloutController(cfg),
+		Images:                imageVerifier,
+		PollTracker:           application.NewRepositoryPollTracker(cfg.RepositoryPollInterval),
+	}
+	resourceOverviewReader := admin.ResourceOverviewReader(admin.LocalResourceOverviewReader{})
+	if cfg.UseKubernetesAPI() {
+		reader, err := kubernetes.NewFleetResourceReader(cfg)
+		if err != nil {
+			resourceOverviewReader = admin.ErrorResourceOverviewReader{Err: err}
+		} else {
+			resourceOverviewReader = reader
+		}
+	}
+	adminService := &admin.Service{
+		Projects:                 projectSource,
+		Clusters:                 clusterSource,
+		Applications:             applicationStore,
+		ResourceOverviewReader:   resourceOverviewReader,
+		PlatformAdminAuthorities: cfg.PlatformAdminAuthorities,
 	}
 	changeService := &change.Service{
 		Projects:     projectService,
@@ -126,9 +175,16 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 		Service: projectService,
 		Users:   userProvider,
 	}
-	clusterHandler := cluster.Handler{Service: clusterService}
+	clusterHandler := cluster.Handler{
+		Service: clusterService,
+		Users:   userProvider,
+	}
 	changeHandler := change.Handler{
 		Service: changeService,
+		Users:   userProvider,
+	}
+	adminHandler := admin.Handler{
+		Service: adminService,
 		Users:   userProvider,
 	}
 
@@ -140,22 +196,34 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/me", core.CurrentUserHandler(userProvider))
 	mux.HandleFunc("GET /api/v1/clusters", clusterHandler.ListClusters)
+	mux.HandleFunc("POST /api/v1/clusters", clusterHandler.CreateCluster)
+	mux.HandleFunc("GET /api/v1/admin/resource-overview", adminHandler.GetFleetResourceOverview)
 	mux.HandleFunc("GET /api/v1/projects", projectHandler.ListProjects)
+	mux.HandleFunc("POST /api/v1/projects", projectHandler.CreateProject)
+	mux.HandleFunc("DELETE /api/v1/projects/{projectId}", projectHandler.DeleteProject)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/environments", projectHandler.ListEnvironments)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/repositories", projectHandler.ListRepositories)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/policies", projectHandler.GetPolicies)
 	mux.HandleFunc("PATCH /api/v1/projects/{projectId}/policies", projectHandler.UpdatePolicies)
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/changes", changeHandler.Create)
 	mux.HandleFunc("GET /api/v1/projects/{projectId}/applications", applicationHandler.ListApplications)
+	mux.HandleFunc("POST /api/v1/projects/{projectId}/applications/source-preview", applicationHandler.PreviewRepositorySource)
 	mux.HandleFunc("POST /api/v1/projects/{projectId}/applications", applicationHandler.CreateApplication)
+	mux.HandleFunc("DELETE /api/v1/applications/{applicationId}", applicationHandler.DeleteApplication)
 	mux.HandleFunc("PATCH /api/v1/applications/{applicationId}", applicationHandler.PatchApplication)
+	mux.HandleFunc("POST /api/v1/applications/{applicationId}/archive", applicationHandler.ArchiveApplication)
 	mux.HandleFunc("POST /api/v1/applications/{applicationId}/deployments", applicationHandler.CreateDeployment)
 	mux.HandleFunc("GET /api/v1/applications/{applicationId}/deployments", applicationHandler.ListDeployments)
 	mux.HandleFunc("GET /api/v1/applications/{applicationId}/deployments/{deploymentId}", applicationHandler.GetDeployment)
 	mux.HandleFunc("POST /api/v1/applications/{applicationId}/deployments/{deploymentId}/promote", applicationHandler.PromoteDeployment)
 	mux.HandleFunc("POST /api/v1/applications/{applicationId}/deployments/{deploymentId}/abort", applicationHandler.AbortDeployment)
 	mux.HandleFunc("GET /api/v1/applications/{applicationId}/sync-status", applicationHandler.GetSyncStatus)
+	mux.HandleFunc("POST /api/v1/applications/{applicationId}/sync", applicationHandler.SyncRepositoryNow)
+	mux.HandleFunc("GET /api/v1/applications/{applicationId}/network-exposure", applicationHandler.GetNetworkExposure)
 	mux.HandleFunc("GET /api/v1/applications/{applicationId}/metrics", applicationHandler.GetMetrics)
+	mux.HandleFunc("GET /api/v1/applications/{applicationId}/logs", applicationHandler.GetContainerLogs)
+	mux.HandleFunc("GET /api/v1/applications/{applicationId}/logs/targets", applicationHandler.GetContainerLogTargets)
+	mux.HandleFunc("GET /api/v1/applications/{applicationId}/logs/stream", applicationHandler.StreamContainerLogs)
 	mux.HandleFunc("GET /api/v1/applications/{applicationId}/rollback-policies", applicationHandler.GetRollbackPolicy)
 	mux.HandleFunc("POST /api/v1/applications/{applicationId}/rollback-policies", applicationHandler.SaveRollbackPolicy)
 	mux.HandleFunc("GET /api/v1/applications/{applicationId}/events", applicationHandler.GetEvents)
@@ -175,7 +243,7 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 		)
 	})
 
-	return core.WithRequestID(core.WithCORS(mux, cfg.AllowedOrigin)), applicationService, projectService
+	return core.WithRequestID(core.WithCORS(mux, cfg.AllowedOrigin, cfg.AllowDevFallback)), applicationService, projectService
 }
 
 func maxDuration(value time.Duration, fallback time.Duration) time.Duration {

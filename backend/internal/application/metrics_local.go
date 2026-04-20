@@ -13,25 +13,7 @@ func (LocalMetricsReader) Read(ctx context.Context, record Record, duration time
 		return nil, err
 	}
 
-	queryStep := step
-	if queryStep <= 0 {
-		queryStep = 5 * time.Minute
-	}
-	queryWindow := duration
-	if queryWindow <= 0 {
-		queryWindow = time.Hour
-	}
-
-	seed := hashRecord(record.ID)
-	now := time.Now().UTC().Truncate(queryStep)
-
-	return []MetricSeries{
-		buildMetricSeries(now, seed, "request_rate", "Requests", "rpm", 0.0, 0.0, false, queryWindow, queryStep),
-		buildMetricSeries(now, seed+11, "error_rate", "Error Rate", "%", 0.0, 0.0, true, queryWindow, queryStep),
-		buildMetricSeries(now, seed+23, "latency_p95", "P95 Latency", "ms", 0.0, 0.0, false, queryWindow, queryStep),
-		buildMetricSeries(now, seed+31, "cpu_usage", "CPU Usage", "cores", 0.0, 0.0, false, queryWindow, queryStep),
-		buildMetricSeries(now, seed+47, "memory_usage", "Memory Usage", "MiB", 0.0, 0.0, true, queryWindow, queryStep),
-	}, nil
+	return []MetricSeries{}, nil
 }
 
 func buildMetricSeries(

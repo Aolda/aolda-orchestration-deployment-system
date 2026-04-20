@@ -1,4 +1,4 @@
-.PHONY: backend-run frontend-run check setup doctor deploy-testbed
+.PHONY: backend-run frontend-run check check-backend check-frontend check-manifests setup doctor install-self-hosted-kubeconfig deploy-testbed
 
 setup:
 	@echo "Setting up basic directories..."
@@ -13,12 +13,28 @@ frontend-run:
 	@cd frontend && npm run dev
 
 check:
-	@echo "Running checks for frontend and backend..."
-	@cd backend && go vet ./...
-	@cd frontend && npm run lint
+	@echo "Running full validation for backend, manifests, and frontend..."
+	@$(MAKE) check-backend
+	@$(MAKE) check-manifests
+	@$(MAKE) check-frontend
+
+check-backend:
+	@echo "Checking backend..."
+	@bash scripts/check-backend.sh
+
+check-frontend:
+	@echo "Checking frontend..."
+	@cd frontend && npm run check
+
+check-manifests:
+	@echo "Checking generated Kubernetes manifests..."
+	@bash scripts/validate-manifests.sh
 
 doctor:
 	@bash scripts/doctor.sh
+
+install-self-hosted-kubeconfig:
+	@bash scripts/install-self-hosted-kubeconfig.sh
 
 deploy-testbed:
 	@bash scripts/deploy-testbed.sh

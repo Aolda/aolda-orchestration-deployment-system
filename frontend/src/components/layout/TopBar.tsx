@@ -7,6 +7,7 @@ type TopBarProps = {
   title: string
   description: string
   actions?: ReactNode
+  metaBadges?: ReactNode
   userLabel?: string
   roleLabel?: string
 }
@@ -16,6 +17,7 @@ export function TopBar({
   title,
   description,
   actions,
+  metaBadges,
   userLabel,
   roleLabel,
 }: TopBarProps) {
@@ -35,6 +37,7 @@ export function TopBar({
           </div>
           <div className={classes.topbarTitle}>{title}</div>
           <Text className={classes.topbarBody}>{description}</Text>
+          {metaBadges ? <Group gap="xs" className={classes.topbarMetaBadges}>{metaBadges}</Group> : null}
         </div>
 
         <div className={classes.topbarActions}>

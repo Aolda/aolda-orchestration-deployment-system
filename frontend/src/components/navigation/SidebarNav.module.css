@@ -1,0 +1,66 @@
+.projectRail {
+  margin-top: 10px;
+  margin-left: 14px;
+  padding-left: 14px;
+  border-left: 1px solid rgba(148, 163, 184, 0.35);
+}
+
+.projectRailLabel {
+  margin-bottom: 10px;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #64748b;
+}
+
+.projectRailEmpty {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: #94a3b8;
+}
+
+.projectItem {
+  display: grid;
+  gap: 4px;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 14px;
+  border: 1px solid transparent;
+  background: rgba(248, 250, 252, 0.72);
+  transition: background 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+
+.projectItem:hover {
+  transform: translateY(-1px);
+  border-color: rgba(29, 102, 214, 0.18);
+  background: rgba(239, 246, 255, 0.82);
+}
+
+.projectItemActive {
+  border-color: rgba(29, 102, 214, 0.32);
+  background: rgba(219, 234, 254, 0.88);
+}
+
+.projectItemHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.projectName {
+  font-size: 0.9rem;
+  font-weight: 700;
+  line-height: 1.35;
+  color: #0f172a;
+}
+
+.projectMeta {
+  font-size: 0.8rem;
+  color: #64748b;
+}
+
+.projectRailAction {
+  margin-bottom: 12px;
+}

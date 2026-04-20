@@ -57,7 +57,12 @@ func TestRepositoryRunOutputDisablesInteractiveGitPrompts(t *testing.T) {
 	scriptPath := tempDir + "/git"
 	script := "#!/bin/sh\n" +
 		"if [ \"$GIT_TERMINAL_PROMPT\" != \"0\" ]; then exit 11; fi\n" +
-		"if [ \"$GCM_INTERACTIVE\" != \"Never\" ]; then exit 12; fi\n"
+		"if [ \"$GCM_INTERACTIVE\" != \"Never\" ]; then exit 12; fi\n" +
+		"if [ \"$GIT_CONFIG_COUNT\" != \"2\" ]; then exit 13; fi\n" +
+		"if [ \"$GIT_CONFIG_KEY_0\" != \"gc.auto\" ]; then exit 14; fi\n" +
+		"if [ \"$GIT_CONFIG_VALUE_0\" != \"0\" ]; then exit 15; fi\n" +
+		"if [ \"$GIT_CONFIG_KEY_1\" != \"maintenance.auto\" ]; then exit 16; fi\n" +
+		"if [ \"$GIT_CONFIG_VALUE_1\" != \"0\" ]; then exit 17; fi\n"
 	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
 	}

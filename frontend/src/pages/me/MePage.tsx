@@ -2,13 +2,16 @@ import { Badge, Group, List, SimpleGrid, Text } from '@mantine/core'
 import type { CurrentUser, ProjectSummary } from '../../types/api'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { SurfaceCard } from '../../components/ui/SurfaceCard'
+import { StatePanel } from '../../components/ui/StatePanel'
 
 type MePageProps = {
   user: CurrentUser | null
   projects: ProjectSummary[]
+  loading?: boolean
+  errorMessage?: string | null
 }
 
-export function MePage({ user, projects }: MePageProps) {
+export function MePage({ user, projects, loading = false, errorMessage }: MePageProps) {
   return (
     <>
       <PageHeader
@@ -17,13 +20,38 @@ export function MePage({ user, projects }: MePageProps) {
         description="현재 로그인 사용자, 그룹, 접근 가능한 프로젝트를 보여줍니다."
       />
 
+      {loading ? (
+        <StatePanel
+          kind="loading"
+          title="내 정보를 불러오는 중"
+          description="현재 로그인 사용자와 접근 가능한 프로젝트를 조회하고 있습니다."
+        />
+      ) : errorMessage ? (
+        <StatePanel
+          kind="partial"
+          title="일부 사용자 정보를 불러오지 못했습니다"
+          description={errorMessage}
+        />
+      ) : null}
+
       <SimpleGrid cols={{ base: 1, md: 3 }} spacing="md">
         <SurfaceCard>
           <Text fw={700} c="lagoon.8" mb="sm">
             사용자
           </Text>
-          <Text c="lagoon.9">{user?.displayName || user?.username || '이름 없음'}</Text>
-          <Text c="lagoon.4">{user?.id || '-'}</Text>
+          {user ? (
+            <>
+              <Text c="lagoon.9">{user.displayName || user.username || '이름 없음'}</Text>
+              <Text c="lagoon.4">{user.id || '-'}</Text>
+            </>
+          ) : (
+            <StatePanel
+              kind="partial"
+              withCard={false}
+              title="사용자 메타데이터를 받지 못했습니다"
+              description="세션은 열려 있지만 사용자 식별 정보가 비어 있습니다."
+            />
+          )}
         </SurfaceCard>
 
         <SurfaceCard>
@@ -38,7 +66,12 @@ export function MePage({ user, projects }: MePageProps) {
                 </Badge>
               ))
             ) : (
-              <Text c="lagoon.4">그룹 없음</Text>
+              <StatePanel
+                kind="empty"
+                withCard={false}
+                title="연결된 그룹이 없습니다"
+                description="추가 그룹 매핑이 없거나 현재 사용자에게 그룹 정보가 노출되지 않았습니다."
+              />
             )}
           </Group>
         </SurfaceCard>
@@ -56,7 +89,12 @@ export function MePage({ user, projects }: MePageProps) {
               ))}
             </List>
           ) : (
-            <Text c="lagoon.4">프로젝트 없음</Text>
+            <StatePanel
+              kind="empty"
+              withCard={false}
+              title="접근 가능한 프로젝트가 없습니다"
+              description="현재 계정에 연결된 프로젝트 권한이 없거나 아직 프로젝트가 구성되지 않았습니다."
+            />
           )}
         </SurfaceCard>
       </SimpleGrid>

@@ -102,6 +102,11 @@
   line-height: 1.5;
 }
 
+.topbarMetaBadges {
+  margin-top: 12px;
+  flex-wrap: wrap;
+}
+
 .topbarActions {
   display: flex;
   flex-wrap: wrap;

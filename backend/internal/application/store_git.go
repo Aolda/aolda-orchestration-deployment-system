@@ -85,6 +85,46 @@ func (s GitManifestStore) CreateApplication(
 	return record, nil
 }
 
+func (s GitManifestStore) ArchiveApplication(ctx context.Context, applicationID string, archivedBy string) (ApplicationLifecycleResponse, error) {
+	if s.Repository == nil {
+		return ApplicationLifecycleResponse{}, fmt.Errorf("git manifest repository is not configured")
+	}
+
+	var response ApplicationLifecycleResponse
+	err := s.Repository.WithWrite(ctx, fmt.Sprintf("feat: archive application %s", applicationID), func(repoDir string) error {
+		item, err := s.localStore(repoDir).ArchiveApplication(ctx, applicationID, archivedBy)
+		if err != nil {
+			return err
+		}
+		response = item
+		return nil
+	})
+	if err != nil {
+		return ApplicationLifecycleResponse{}, err
+	}
+	return response, nil
+}
+
+func (s GitManifestStore) DeleteApplication(ctx context.Context, applicationID string) (ApplicationLifecycleResponse, error) {
+	if s.Repository == nil {
+		return ApplicationLifecycleResponse{}, fmt.Errorf("git manifest repository is not configured")
+	}
+
+	var response ApplicationLifecycleResponse
+	err := s.Repository.WithWrite(ctx, fmt.Sprintf("feat: delete application %s", applicationID), func(repoDir string) error {
+		item, err := s.localStore(repoDir).DeleteApplication(ctx, applicationID)
+		if err != nil {
+			return err
+		}
+		response = item
+		return nil
+	})
+	if err != nil {
+		return ApplicationLifecycleResponse{}, err
+	}
+	return response, nil
+}
+
 func (s GitManifestStore) UpdateApplicationImage(
 	ctx context.Context,
 	project ProjectContext,

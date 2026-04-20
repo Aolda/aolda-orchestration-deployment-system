@@ -16,6 +16,8 @@
 - `make`
 - `go`
 - `node` and `npm`
+- `kubectl`
+- `curl`
 - `codex` or `claude`
 
 다음 항목은 하네스 확장 시 선택적으로 필요합니다.
@@ -25,7 +27,7 @@
 - `gws`
 - ClawFlows related tooling
 
-gstack## 4. Optional Harness Integration Inputs
+## 4. Optional Harness Integration Inputs
 - `config/mcporter.json`
   Notion sync를 실제로 활성화할 때만 필요한 로컬 토큰 파일입니다. 저장소에 커밋하면 안 됩니다.
 - `GCAL_CALENDAR_ID`
@@ -53,31 +55,36 @@ AODS/
 ```
 
 ## 6. Environment Variable Setup
+현재 AODS dev 기본값은 local/mock adapter 가 아니라 self-hosted dev cluster 입니다.
 프로젝트 전용 환경변수는 글로벌 셸보다 `.envrc`로 관리하는 편이 안전합니다.
 
 예시:
 
 ```zsh
-export GCAL_CALENDAR_ID="your-calendar-id@group.calendar.google.com"
+cp .envrc.example .envrc
 ```
 
 `direnv`를 쓰지 않는 경우에는 현재 셸에서 직접 export 해도 됩니다.
 
 ```zsh
-export GCAL_CALENDAR_ID="your-calendar-id@group.calendar.google.com"
+export AODS_K8S_KUBECONFIG="$HOME/.kube/aods-self-hosted.yaml"
 ```
 
 ## 7. Bootstrap Steps
 1. 저장소 루트로 이동합니다.
-2. `config/`와 `scripts/` 디렉터리를 준비합니다.
-3. Notion sync가 필요하면 `config/mcporter.json`을 로컬에 배치합니다.
-4. Google Calendar 연동이 필요하면 `.envrc` 또는 현재 셸에 `GCAL_CALENDAR_ID`를 설정합니다.
-5. `bash scripts/doctor.sh`로 기본 세팅을 점검합니다.
-6. `make backend-run`, `make frontend-run`, `make check`가 최소한 동작하는지 확인합니다.
+2. self-hosted kubeconfig를 `~/.kube/aods-self-hosted.yaml`에 설치합니다.
+3. `.envrc.example`를 기반으로 `.envrc`를 만들고 real dev 값으로 채웁니다.
+4. Notion sync가 필요하면 `config/mcporter.json`을 로컬에 배치합니다.
+5. Google Calendar 연동이 필요하면 `.envrc` 또는 현재 셸에 `GCAL_CALENDAR_ID`를 설정합니다.
+6. `bash scripts/doctor.sh`로 real dev baseline을 점검합니다.
+7. `make backend-run`, `make frontend-run`, `make check`가 최소한 동작하는지 확인합니다.
 
 ## 8. Verification Commands
 
 ```zsh
+make install-self-hosted-kubeconfig
+KUBECONFIG="$HOME/.kube/aods-self-hosted.yaml" kubectl get nodes -o wide
+cp .envrc.example .envrc
 test -f config/mcporter.json
 printenv GCAL_CALENDAR_ID
 bash scripts/doctor.sh
@@ -86,7 +93,10 @@ make frontend-run
 make check
 ```
 
-위 두 줄은 외부 연동을 실제로 사용할 때만 확인하면 됩니다.
+위 optional 확인 항목은 외부 연동을 실제로 사용할 때만 확인하면 됩니다.
+
+`make backend-run` 은 `scripts/backend-run.sh` 를 통해 self-hosted dev cluster, real Git remote, real Prometheus, real Vault 기준으로 서버를 올린다.
+Prometheus/Vault URL 이 localhost 면 필요한 `kubectl port-forward` 는 자동으로 열린다.
 
 ## 9. Separation Rules
 - `backend/`와 `frontend/`는 제품 코드입니다.

@@ -9,6 +9,7 @@ import (
 )
 
 type LocalSyncStatusReader struct{}
+type LocalNetworkExposureReader struct{}
 
 func (LocalSyncStatusReader) Read(ctx context.Context, record application.Record) (application.SyncInfo, error) {
 	if err := ctx.Err(); err != nil {
@@ -21,8 +22,8 @@ func (LocalSyncStatusReader) Read(ctx context.Context, record application.Record
 	}
 
 	return application.SyncInfo{
-		Status:     application.SyncStatusSynced,
-		Message:    "로컬 어댑터 기준으로 현재 워크스페이스 상태가 이미 반영된 것으로 판단했습니다.",
+		Status:     application.SyncStatusUnknown,
+		Message:    "Kubernetes/Flux 연동이 설정되지 않아 동기화 상태를 확인할 수 없습니다.",
 		ObservedAt: observedAt,
 	}, nil
 }
@@ -37,6 +38,45 @@ func (r LocalSyncStatusReader) ReadMany(ctx context.Context, records []applicati
 		items[record.ID] = info
 	}
 	return items, nil
+}
+
+func (LocalNetworkExposureReader) Read(ctx context.Context, record application.Record) (application.NetworkExposureInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return application.NetworkExposureInfo{}, err
+	}
+
+	observedAt := record.UpdatedAt
+	if observedAt.IsZero() {
+		observedAt = time.Now().UTC()
+	}
+
+	if !record.LoadBalancerEnabled {
+		return application.NetworkExposureInfo{
+			Status:      application.NetworkExposureStatusInternal,
+			Message:     "현재는 내부 전용(ClusterIP) 서비스로 운영 중입니다.",
+			ServiceType: "ClusterIP",
+			ObservedAt:  observedAt,
+		}, nil
+	}
+
+	return application.NetworkExposureInfo{
+		Status:      application.NetworkExposureStatusPending,
+		Message:     "Kubernetes API 연동이 설정되지 않아 실제 LoadBalancer 준비 상태를 조회할 수 없습니다. 현재는 요청 저장 상태만 확인할 수 있습니다.",
+		ServiceType: "LoadBalancer",
+		ObservedAt:  observedAt,
+	}, nil
+}
+
+func NewNetworkExposureReader(cfg core.Config) application.NetworkExposureReader {
+	if !cfg.UseKubernetesAPI() {
+		return LocalNetworkExposureReader{}
+	}
+
+	reader, err := NewServiceNetworkExposureReader(cfg)
+	if err != nil {
+		return ErrorNetworkExposureReader{Err: err}
+	}
+	return reader
 }
 
 type LocalRolloutController struct{}
@@ -57,16 +97,14 @@ func (LocalRolloutController) GetRollout(ctx context.Context, record application
 	if err := ctx.Err(); err != nil {
 		return application.RolloutInfo{}, err
 	}
-	weight := 100
-	step := 4
-	return application.RolloutInfo{
-		Phase:          "Healthy",
-		CurrentStep:    &step,
-		CanaryWeight:   &weight,
-		StableRevision: "stable",
-		CanaryRevision: record.Image,
-		Message:        "로컬 롤아웃 어댑터 기준으로 현재 배포가 완료된 것으로 판단했습니다.",
-	}, nil
+
+	return application.RolloutInfo{}, application.ValidationError{
+		Message: "rollout integration is not configured",
+		Details: map[string]any{
+			"applicationId": record.ID,
+			"mode":          "local",
+		},
+	}
 }
 
 func (LocalRolloutController) Promote(ctx context.Context, record application.Record, full bool) (application.RolloutInfo, error) {
@@ -74,15 +112,5 @@ func (LocalRolloutController) Promote(ctx context.Context, record application.Re
 }
 
 func (LocalRolloutController) Abort(ctx context.Context, record application.Record) (application.RolloutInfo, error) {
-	if err := ctx.Err(); err != nil {
-		return application.RolloutInfo{}, err
-	}
-	weight := 0
-	return application.RolloutInfo{
-		Phase:          "Degraded",
-		CanaryWeight:   &weight,
-		StableRevision: "stable",
-		CanaryRevision: record.Image,
-		Message:        "로컬 롤아웃 어댑터 기준으로 중단 요청을 반영했습니다.",
-	}, nil
+	return LocalRolloutController{}.GetRollout(ctx, record)
 }

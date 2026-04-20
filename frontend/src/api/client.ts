@@ -1,32 +1,49 @@
 import type {
   Application,
   ApplicationListResponse,
+  ApplicationLifecycleResponse,
   ApplicationMetricsResponse,
   ChangeRecord,
   ClusterListResponse,
+  ClusterSummary,
+  ContainerLogEvent,
+  ContainerLogsResponse,
+  ContainerLogTargetsResponse,
   CreateApplicationRequest,
+  PreviewApplicationSourceRequest,
+  PreviewApplicationSourceResponse,
+  CreateClusterRequest,
   CreateChangeRequest,
   CreateDeploymentRequest,
+  CreateProjectRequest,
   CurrentUser,
   DeploymentRecord,
   DeploymentListResponse,
   EnvironmentListResponse,
   ErrorResponse,
   EventListResponse,
+  FleetResourceOverviewResponse,
+  NetworkExposureResponse,
   ProjectListResponse,
+  ProjectLifecycleResponse,
+  ProjectSummary,
   ProjectPolicy,
+  RepositorySyncResponse,
   RepositoryListResponse,
   RollbackPolicy,
   SyncStatusResponse,
   UpdateApplicationRequest,
 } from '../types/api'
 import {
+  clearEmergencyAuthSession,
   clearOIDCSession,
   ensureOIDCAccessToken,
+  hasEmergencyAuthSession,
   isOIDCAuthEnabled,
 } from '../auth/oidc'
 
 const apiBaseUrl = (import.meta.env.VITE_API_BASE_URL ?? 'http://localhost:8080').trim()
+const apiRequestTimeoutMs = Number(import.meta.env.VITE_AODS_API_REQUEST_TIMEOUT_MS ?? '15000')
 
 function buildApiUrl(path: string) {
   const normalizedBase = apiBaseUrl.replace(/\/+$/, '')
@@ -45,34 +62,58 @@ function buildApiUrl(path: string) {
 
 export class ApiError extends Error {
   code: string
+  details?: Record<string, unknown>
 
-  constructor(message: string, code: string) {
+  constructor(message: string, code: string, details?: Record<string, unknown>) {
     super(message)
     this.code = code
+    this.details = details
   }
 }
 
-async function request<T>(path: string, init?: RequestInit) {
-  const headers = new Headers(init?.headers ?? {})
+async function buildRequestHeaders(initHeaders?: HeadersInit) {
+  const headers = new Headers(initHeaders ?? {})
   if (!headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
   }
 
-  if (isOIDCAuthEnabled() && !headers.has('Authorization')) {
+  if (isOIDCAuthEnabled() && !hasEmergencyAuthSession() && !headers.has('Authorization')) {
     const accessToken = await ensureOIDCAccessToken()
     if (accessToken) {
       headers.set('Authorization', `Bearer ${accessToken}`)
     }
   }
 
-  const response = await fetch(buildApiUrl(path), {
+  return headers
+}
+
+function handleUnauthorizedResponse(response: Response) {
+  if (response.status === 401 && isOIDCAuthEnabled()) {
+    clearOIDCSession()
+    clearEmergencyAuthSession()
+  }
+}
+
+function parseApiErrorPayload(text: string) {
+  if (!text) {
+    return null
+  }
+  try {
+    return JSON.parse(text) as ErrorResponse
+  } catch {
+    return null
+  }
+}
+
+async function request<T>(path: string, init?: RequestInit) {
+  const headers = await buildRequestHeaders(init?.headers)
+
+  const response = await fetchWithTimeout(buildApiUrl(path), {
     ...init,
     headers,
   })
 
-  if (response.status === 401 && isOIDCAuthEnabled()) {
-    clearOIDCSession()
-  }
+  handleUnauthorizedResponse(response)
 
   const text = await response.text()
   const payload = text ? (JSON.parse(text) as T | ErrorResponse) : null
@@ -82,10 +123,108 @@ async function request<T>(path: string, init?: RequestInit) {
     throw new ApiError(
       errorPayload?.error.message ?? response.statusText,
       errorPayload?.error.code ?? 'UNKNOWN_ERROR',
+      errorPayload?.error.details,
     )
   }
 
   return payload as T
+}
+
+async function fetchWithTimeout(input: RequestInfo | URL, init?: RequestInit) {
+  const controller = new AbortController()
+  const timeout = window.setTimeout(() => controller.abort(), apiRequestTimeoutMs)
+
+  try {
+    return await fetch(input, {
+      ...init,
+      signal: init?.signal ?? controller.signal,
+    })
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') {
+      throw new ApiError(
+        `AODS API 응답이 지연되어 요청을 중단했습니다. ${Math.round(apiRequestTimeoutMs / 1000)}초 뒤 다시 시도하세요.`,
+        'REQUEST_TIMEOUT',
+      )
+    }
+    if (error instanceof TypeError) {
+      throw new ApiError(
+        'AODS API에 연결하지 못했습니다. 백엔드가 실행 중인지 확인하세요.',
+        'NETWORK_ERROR',
+      )
+    }
+    throw error
+  } finally {
+    window.clearTimeout(timeout)
+  }
+}
+
+type StreamApplicationLogsOptions = {
+  podName: string
+  containerName: string
+  tailLines?: number
+  signal?: AbortSignal
+  onEvent: (event: ContainerLogEvent) => void
+}
+
+function parseSSEMessage(chunk: string) {
+  let event = 'message'
+  const dataLines: string[] = []
+
+  chunk.split('\n').forEach((line) => {
+    if (line.startsWith('event:')) {
+      event = line.slice('event:'.length).trim()
+      return
+    }
+    if (line.startsWith('data:')) {
+      dataLines.push(line.slice('data:'.length).trimStart())
+    }
+  })
+
+  return {
+    event,
+    data: dataLines.join('\n'),
+  }
+}
+
+async function consumeSSEStream(
+  response: Response,
+  { onEvent, signal }: Pick<StreamApplicationLogsOptions, 'onEvent' | 'signal'>,
+) {
+  if (!response.body) {
+    return
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  while (true) {
+    const { done, value } = await reader.read()
+    buffer += decoder.decode(value ?? new Uint8Array(), { stream: !done }).replace(/\r\n/g, '\n')
+
+    let boundary = buffer.indexOf('\n\n')
+    while (boundary >= 0) {
+      const rawMessage = buffer.slice(0, boundary)
+      buffer = buffer.slice(boundary + 2)
+      const message = parseSSEMessage(rawMessage)
+
+      if (message.event === 'log' && message.data) {
+        onEvent(JSON.parse(message.data) as ContainerLogEvent)
+      } else if (message.event === 'error' && message.data) {
+        const payload = JSON.parse(message.data) as { message?: string }
+        throw new ApiError(payload.message ?? '로그 스트림 처리 중 오류가 발생했습니다.', 'STREAM_ERROR')
+      }
+
+      boundary = buffer.indexOf('\n\n')
+    }
+
+    if (done) {
+      break
+    }
+    if (signal?.aborted) {
+      return
+    }
+  }
 }
 
 export const api = {
@@ -95,8 +234,25 @@ export const api = {
   getProjects() {
     return request<ProjectListResponse>('/api/v1/projects')
   },
+  createProject(body: CreateProjectRequest) {
+    return request<ProjectSummary>('/api/v1/projects', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
+  deleteProject(projectId: string) {
+    return request<ProjectLifecycleResponse>(`/api/v1/projects/${projectId}`, {
+      method: 'DELETE',
+    })
+  },
   getApplications(projectId: string) {
     return request<ApplicationListResponse>(`/api/v1/projects/${projectId}/applications`)
+  },
+  previewApplicationSource(projectId: string, body: PreviewApplicationSourceRequest) {
+    return request<PreviewApplicationSourceResponse>(`/api/v1/projects/${projectId}/applications/source-preview`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
   },
   createApplication(projectId: string, body: CreateApplicationRequest) {
     return request<Application>(`/api/v1/projects/${projectId}/applications`, {
@@ -121,6 +277,15 @@ export const api = {
   },
   getClusters() {
     return request<ClusterListResponse>('/api/v1/clusters')
+  },
+  getAdminResourceOverview() {
+    return request<FleetResourceOverviewResponse>('/api/v1/admin/resource-overview')
+  },
+  createCluster(body: CreateClusterRequest) {
+    return request<ClusterSummary>('/api/v1/clusters', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
   },
   createChange(projectId: string, body: CreateChangeRequest) {
     return request<ChangeRecord>(`/api/v1/projects/${projectId}/changes`, {
@@ -152,6 +317,16 @@ export const api = {
       body: JSON.stringify(body),
     })
   },
+  archiveApplication(applicationId: string) {
+    return request<ApplicationLifecycleResponse>(`/api/v1/applications/${applicationId}/archive`, {
+      method: 'POST',
+    })
+  },
+  deleteApplication(applicationId: string) {
+    return request<ApplicationLifecycleResponse>(`/api/v1/applications/${applicationId}`, {
+      method: 'DELETE',
+    })
+  },
   createDeployment(applicationId: string, imageTag: string, environment?: string) {
     const body: CreateDeploymentRequest = { imageTag, environment }
     return request(`/api/v1/applications/${applicationId}/deployments`, {
@@ -180,6 +355,14 @@ export const api = {
   getSyncStatus(applicationId: string) {
     return request<SyncStatusResponse>(`/api/v1/applications/${applicationId}/sync-status`)
   },
+  syncApplicationRepository(applicationId: string) {
+    return request<RepositorySyncResponse>(`/api/v1/applications/${applicationId}/sync`, {
+      method: 'POST',
+    })
+  },
+  getApplicationNetworkExposure(applicationId: string) {
+    return request<NetworkExposureResponse>(`/api/v1/applications/${applicationId}/network-exposure`)
+  },
   getMetrics(applicationId: string, range?: string) {
     const params = new URLSearchParams()
     if (range) {
@@ -201,5 +384,48 @@ export const api = {
   },
   getEvents(applicationId: string) {
     return request<EventListResponse>(`/api/v1/applications/${applicationId}/events`)
+  },
+  getApplicationLogs(applicationId: string, tailLines = 120) {
+    const params = new URLSearchParams()
+    params.set('tailLines', String(tailLines))
+    return request<ContainerLogsResponse>(
+      `/api/v1/applications/${applicationId}/logs?${params.toString()}`,
+    )
+  },
+  getApplicationLogTargets(applicationId: string) {
+    return request<ContainerLogTargetsResponse>(`/api/v1/applications/${applicationId}/logs/targets`)
+  },
+  async streamApplicationLogs(applicationId: string, options: StreamApplicationLogsOptions) {
+    const params = new URLSearchParams()
+    params.set('podName', options.podName)
+    params.set('containerName', options.containerName)
+    params.set('tailLines', String(options.tailLines ?? 120))
+
+    const headers = await buildRequestHeaders({
+      Accept: 'text/event-stream',
+    })
+    headers.delete('Content-Type')
+
+    const response = await fetch(
+      buildApiUrl(`/api/v1/applications/${applicationId}/logs/stream?${params.toString()}`),
+      {
+        method: 'GET',
+        headers,
+        signal: options.signal,
+      },
+    )
+
+    handleUnauthorizedResponse(response)
+
+    if (!response.ok) {
+      const text = await response.text()
+      const payload = parseApiErrorPayload(text)
+      throw new ApiError(
+        payload?.error.message ?? response.statusText,
+        payload?.error.code ?? 'UNKNOWN_ERROR',
+      )
+    }
+
+    await consumeSSEStream(response, options)
   },
 }
