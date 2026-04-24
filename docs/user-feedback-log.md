@@ -548,6 +548,15 @@
 * References: `frontend/src/App.tsx`
 * Status: applied
 
+### 2026-04-24 - FB-055 - LoadBalancer 처리 단계에서 외부 접속 진입점을 바로 열 수 있어야 함
+
+* Area: Frontend / Network Exposure UX
+* User signal: `그 lb 관련해서 열어주는 곳에 대해서 외부 인터넷 연결 이라는 곳을 만들고 버튼으로 클릭 시 https://itda.aoldacloud.com/login로 가도록 ㄱ`
+* Interpreted intent: LoadBalancer 노출 절차를 확인하는 화면에서 운영자가 외부 인터넷 진입점을 바로 열어 실제 접속 상태를 확인할 수 있어야 한다.
+* Action: LoadBalancer 외부 공개 처리 단계 아래에 `외부 인터넷 연결` 액션을 추가하고, 버튼 클릭 시 `https://itda.aoldacloud.com/login` 을 새 탭으로 열도록 연결했다.
+* References: `frontend/src/App.tsx`
+* Status: applied
+
 ## 운영 메모
 
 앞으로 에이전트는 아래 순서를 기본으로 따른다.

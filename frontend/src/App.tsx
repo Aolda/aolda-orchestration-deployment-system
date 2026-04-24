@@ -45,6 +45,7 @@ import {
   IconCpu,
   IconDatabase,
   IconBolt,
+  IconExternalLink,
   IconUser,
 } from '@tabler/icons-react'
 import { ApiError, api } from './api/client'
@@ -110,6 +111,7 @@ const repositoryPollIntervalOptions = [
 ]
 const projectRefreshIntervalMs = 15000
 const applicationDetailsRefreshIntervalMs = 15000
+const externalInternetConnectionURL = 'https://itda.aoldacloud.com/login'
 const showProjectComposer = false
 const showRollbackPolicyControls = false
 const showServiceMeshControls = false
@@ -4901,6 +4903,26 @@ export default function App() {
                             </div>
                           ))}
                         </div>
+                        <Divider my="md" />
+                        <Group justify="space-between" align="center" gap="md">
+                          <Stack gap={2}>
+                            <Text fw={800}>외부 인터넷 연결</Text>
+                            <Text size="sm" c="dimmed">
+                              인터넷에서 접속 가능한 진입점으로 이동합니다.
+                            </Text>
+                          </Stack>
+                          <Button
+                            component="a"
+                            href={externalInternetConnectionURL}
+                            target="_blank"
+                            rel="noreferrer"
+                            variant="filled"
+                            color="lagoon.6"
+                            leftSection={<IconExternalLink size={16} />}
+                          >
+                            외부 인터넷 연결
+                          </Button>
+                        </Group>
                       </div>
                     </Stack>
                   ) : (
