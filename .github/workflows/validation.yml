@@ -4,7 +4,11 @@ on:
   pull_request:
   push:
     branches:
-      - main
+      - "**"
+
+permissions:
+  contents: read
+  packages: write
 
 jobs:
   backend:
@@ -81,5 +85,28 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Build backend and frontend images
-        run: make check-images
+      - name: Prepare image tags
+        id: image-tags
+        shell: bash
+        run: |
+          owner="$(printf '%s' "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "backend=ghcr.io/${owner}/aods-backend:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+          echo "frontend=ghcr.io/${owner}/aods-frontend:${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
+
+      - name: Build backend image
+        run: docker build -t "${{ steps.image-tags.outputs.backend }}" ./backend
+
+      - name: Build frontend image
+        run: docker build -t "${{ steps.image-tags.outputs.frontend }}" ./frontend
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: printf '%s' "${GITHUB_TOKEN}" | docker login ghcr.io -u "${GITHUB_ACTOR}" --password-stdin
+
+      - name: Push images to GHCR
+        if: github.event_name == 'push'
+        run: |
+          docker push "${{ steps.image-tags.outputs.backend }}"
+          docker push "${{ steps.image-tags.outputs.frontend }}"
