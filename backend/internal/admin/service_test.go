@@ -149,13 +149,13 @@ func TestGetFleetResourceOverviewBuildsServiceEfficiencySnapshot(t *testing.T) {
 				},
 			},
 		},
-		PlatformAdminAuthorities: []string{"/Ajou_Univ/Aolda_Admin"},
+		PlatformAdminAuthorities: []string{"aods:platform:admin"},
 	}
 
 	response, err := service.GetFleetResourceOverview(context.Background(), core.User{
 		ID:       "admin-1",
 		Username: "platform-admin",
-		Groups:   []string{"/Ajou_Univ/Aolda_Admin"},
+		Groups:   []string{"aods:platform:admin"},
 	})
 	if err != nil {
 		t.Fatalf("expected no error, got %v", err)

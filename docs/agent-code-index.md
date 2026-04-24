@@ -60,8 +60,11 @@
 * `docs/domain-rules.md`
   - 절대 제약 사항이다. GitOps 구조, Vault 모델, 권한 모델, 프론트/백엔드 컨벤션이 여기에 묶여 있다.
 * `docs/keycloak-group-auth-model.md`
-  - 현재 저장소에서 권장하는 Keycloak 연동 모델이다.
-  - auth 작업에서는 새 role 체계를 임의로 설계하기 전에 이 문서를 먼저 확인한다.
+  - 현재 저장소에서 권장하는 Keycloak role 기반 연동 모델이다.
+  - auth 작업에서는 platform admin 을 group path 로 되돌리기 전에 이 문서를 먼저 확인한다.
+* `docs/keycloak-operator-guide.md`
+  - Keycloak 운영자가 AODS client role, 사용자 role 할당, token claim, 장애 대응을 설정하는 절차서다.
+  - 운영 안내를 작성하거나 배포 전 권한 검증을 할 때 이 문서를 기준으로 삼는다.
 * `docs/current-implementation-status.md`
   - 실제 코드가 어디까지 들어와 있는지 보는 현실 체크 문서다.
 * `docs/backend-worklist.md`

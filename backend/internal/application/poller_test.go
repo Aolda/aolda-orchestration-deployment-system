@@ -188,6 +188,11 @@ func (s *autoRollbackStore) PatchApplication(ctx context.Context, project Projec
 	return s.record, nil
 }
 
+func (s *autoRollbackStore) SaveApplicationSecretPath(ctx context.Context, project ProjectContext, applicationID string, secretPath string) (Record, error) {
+	s.record.SecretPath = secretPath
+	return s.record, nil
+}
+
 func (s *autoRollbackStore) ListDeployments(ctx context.Context, applicationID string) ([]DeploymentRecord, error) {
 	return append([]DeploymentRecord(nil), s.deployments...), nil
 }

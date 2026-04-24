@@ -19,6 +19,48 @@
       "story": "프로젝트를 선택하면 운영 탭과 프로젝트 컨텍스트가 열린다."
     },
     {
+      "id": "US-APP-001",
+      "screen": "ApplicationWizard",
+      "persona": "deployer",
+      "story": "새 애플리케이션 생성은 기본으로 공개 저장소 기준의 GitHub 등록 흐름을 보여준다."
+    },
+    {
+      "id": "US-APP-002",
+      "screen": "ApplicationWizard",
+      "persona": "deployer",
+      "story": "GitHub 등록에서 저장소 URL 없이 다음 단계로 넘어가면 검증 메시지와 입력 포커스를 제공한다."
+    },
+    {
+      "id": "US-APP-003",
+      "screen": "ApplicationWizard",
+      "persona": "deployer",
+      "story": "공개 저장소는 토큰 없이도 설정 파일 확인 단계로 이동할 수 있다."
+    },
+    {
+      "id": "US-APP-004",
+      "screen": "ApplicationWizard",
+      "persona": "deployer",
+      "story": "레지스트리 사용자명과 토큰을 하나만 입력하면 생성 전 검증 메시지를 보여준다."
+    },
+    {
+      "id": "US-APP-005",
+      "screen": "ApplicationWizard",
+      "persona": "deployer",
+      "story": "비밀값 입력칸은 브라우저 자동완성을 방지한다."
+    },
+    {
+      "id": "US-APP-006",
+      "screen": "ApplicationWizard",
+      "persona": "deployer",
+      "story": "설정 파일 확인 단계에서 여러 서비스를 보여주고 원하는 serviceId를 선택할 수 있다."
+    },
+    {
+      "id": "US-APP-007",
+      "screen": "ApplicationWizard",
+      "persona": "deployer",
+      "story": "빠른 생성 모드는 저장소 설정 파일 확인 단계를 건너뛰고 배포 설정으로 이동한다."
+    },
+    {
       "id": "US-CHG-001",
       "screen": "ChangesWorkspace",
       "persona": "viewer",

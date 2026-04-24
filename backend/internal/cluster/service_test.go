@@ -144,10 +144,10 @@ func TestServiceCreateAllowsConfiguredPlatformAdminAuthority(t *testing.T) {
 	store := &stubStore{}
 	service := Service{
 		Source:                   store,
-		PlatformAdminAuthorities: []string{"/Ajou_Univ/Aolda_Admin"},
+		PlatformAdminAuthorities: []string{"aods:platform:admin"},
 	}
 
-	cluster, err := service.Create(context.Background(), core.User{Groups: []string{"/Ajou_Univ/Aolda_Admin"}}, CreateRequest{
+	cluster, err := service.Create(context.Background(), core.User{Groups: []string{"aods:platform:admin"}}, CreateRequest{
 		ID:   "edge",
 		Name: "Edge Cluster",
 	})

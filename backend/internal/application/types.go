@@ -45,6 +45,42 @@ type SecretEntry struct {
 	Value string `json:"value"`
 }
 
+type SecretKeySummary struct {
+	Key string `json:"key"`
+}
+
+type SecretVersionSummary struct {
+	Version   int        `json:"version"`
+	CreatedAt *time.Time `json:"createdAt,omitempty"`
+	UpdatedBy string     `json:"updatedBy,omitempty"`
+	Current   bool       `json:"current"`
+	Deleted   bool       `json:"deleted,omitempty"`
+	Destroyed bool       `json:"destroyed,omitempty"`
+	KeyCount  int        `json:"keyCount,omitempty"`
+}
+
+type ApplicationSecretsResponse struct {
+	ApplicationID     string             `json:"applicationId"`
+	SecretPath        string             `json:"secretPath"`
+	Configured        bool               `json:"configured"`
+	VersioningEnabled bool               `json:"versioningEnabled"`
+	CurrentVersion    int                `json:"currentVersion,omitempty"`
+	UpdatedAt         *time.Time         `json:"updatedAt,omitempty"`
+	Items             []SecretKeySummary `json:"items"`
+}
+
+type ApplicationSecretVersionsResponse struct {
+	ApplicationID  string                 `json:"applicationId"`
+	SecretPath     string                 `json:"secretPath"`
+	CurrentVersion int                    `json:"currentVersion,omitempty"`
+	Items          []SecretVersionSummary `json:"items"`
+}
+
+type UpdateSecretsRequest struct {
+	Set    []SecretEntry `json:"set,omitempty"`
+	Delete []string      `json:"delete,omitempty"`
+}
+
 type ResourceQuantity struct {
 	CPU    string `json:"cpu,omitempty"`
 	Memory string `json:"memory,omitempty"`
@@ -295,6 +331,79 @@ type SyncStatusResponse struct {
 	Message        string                `json:"message,omitempty"`
 	ObservedAt     time.Time             `json:"observedAt,omitempty"`
 	RepositoryPoll *RepositoryPollStatus `json:"repositoryPoll,omitempty"`
+}
+
+type HealthStatus string
+
+const (
+	HealthStatusHealthy  HealthStatus = "Healthy"
+	HealthStatusWarning  HealthStatus = "Warning"
+	HealthStatusCritical HealthStatus = "Critical"
+	HealthStatusUnknown  HealthStatus = "Unknown"
+)
+
+type HealthSignalStatus string
+
+const (
+	HealthSignalOK          HealthSignalStatus = "OK"
+	HealthSignalWarning     HealthSignalStatus = "Warning"
+	HealthSignalCritical    HealthSignalStatus = "Critical"
+	HealthSignalUnknown     HealthSignalStatus = "Unknown"
+	HealthSignalUnavailable HealthSignalStatus = "Unavailable"
+)
+
+type HealthSignal struct {
+	Key        string             `json:"key"`
+	Status     HealthSignalStatus `json:"status"`
+	Message    string             `json:"message"`
+	ObservedAt time.Time          `json:"observedAt,omitempty"`
+	Details    map[string]any     `json:"details,omitempty"`
+}
+
+type ApplicationHealthSnapshot struct {
+	ApplicationID      string            `json:"applicationId"`
+	Name               string            `json:"name"`
+	Namespace          string            `json:"namespace"`
+	Status             HealthStatus      `json:"status"`
+	SyncStatus         SyncStatus        `json:"syncStatus"`
+	DeploymentStrategy string            `json:"deploymentStrategy"`
+	Metrics            []MetricSeries    `json:"metrics"`
+	LatestDeployment   *DeploymentRecord `json:"latestDeployment,omitempty"`
+	Signals            []HealthSignal    `json:"signals"`
+}
+
+type ProjectHealthResponse struct {
+	ProjectID  string                      `json:"projectId"`
+	ObservedAt time.Time                   `json:"observedAt"`
+	Items      []ApplicationHealthSnapshot `json:"items"`
+}
+
+type MetricSeriesDiagnostic struct {
+	Key         string             `json:"key"`
+	Label       string             `json:"label"`
+	Unit        string             `json:"unit"`
+	Status      HealthSignalStatus `json:"status"`
+	Message     string             `json:"message"`
+	PointCount  int                `json:"pointCount"`
+	ValueCount  int                `json:"valueCount"`
+	LatestValue *float64           `json:"latestValue,omitempty"`
+}
+
+type MetricsScrapeTarget struct {
+	Name     string `json:"name"`
+	Port     string `json:"port"`
+	Path     string `json:"path"`
+	Required bool   `json:"required"`
+}
+
+type MetricsDiagnosticsResponse struct {
+	ApplicationID string                   `json:"applicationId"`
+	CheckedAt     time.Time                `json:"checkedAt"`
+	Status        HealthSignalStatus       `json:"status"`
+	Message       string                   `json:"message"`
+	MeshEnabled   bool                     `json:"meshEnabled"`
+	ScrapeTargets []MetricsScrapeTarget    `json:"scrapeTargets"`
+	Series        []MetricSeriesDiagnostic `json:"series"`
 }
 
 type RepositorySyncResponse struct {

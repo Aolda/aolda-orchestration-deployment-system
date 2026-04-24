@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "type": "object",
+  "required": ["apiVersion", "kind", "metadata", "spec"],
+  "properties": {
+    "apiVersion": { "const": "monitoring.coreos.com/v1" },
+    "kind": { "const": "PrometheusRule" },
+    "metadata": { "type": "object", "required": ["name", "namespace"], "additionalProperties": true },
+    "spec": { "type": "object", "required": ["groups"], "additionalProperties": true }
+  },
+  "additionalProperties": true
+}

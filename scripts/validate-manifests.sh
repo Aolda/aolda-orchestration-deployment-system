@@ -126,6 +126,7 @@ prepare_server_validation() {
     crd/kustomizations.kustomize.toolkit.fluxcd.io \
     crd/externalsecrets.external-secrets.io \
     crd/servicemonitors.monitoring.coreos.com \
+    crd/prometheusrules.monitoring.coreos.com \
     crd/rollouts.argoproj.io \
     crd/virtualservices.networking.istio.io \
     crd/destinationrules.networking.istio.io >/dev/null

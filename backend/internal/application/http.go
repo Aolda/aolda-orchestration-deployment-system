@@ -37,6 +37,21 @@ func (h Handler) ListApplications(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (h Handler) GetProjectHealth(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	response, err := h.Service.GetProjectHealth(r.Context(), user, r.PathValue("projectId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
 func (h Handler) CreateApplication(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.currentUser(w, r)
 	if !ok {
@@ -170,6 +185,102 @@ func (h Handler) PatchApplication(w http.ResponseWriter, r *http.Request) {
 	core.WriteJSON(w, http.StatusOK, application)
 }
 
+func (h Handler) GetApplicationSecrets(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	response, err := h.Service.GetApplicationSecrets(r.Context(), user, r.PathValue("applicationId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) UpdateApplicationSecrets(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	var request UpdateSecretsRequest
+	if err := core.DecodeJSON(r, &request); err != nil {
+		core.WriteError(
+			w,
+			r,
+			http.StatusBadRequest,
+			"INVALID_REQUEST",
+			"Request body is invalid.",
+			map[string]any{"error": err.Error()},
+			false,
+		)
+		return
+	}
+
+	response, err := h.Service.UpdateApplicationSecrets(
+		r.Context(),
+		user,
+		r.PathValue("applicationId"),
+		request,
+		core.RequestID(r.Context()),
+	)
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) ListApplicationSecretVersions(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	response, err := h.Service.ListApplicationSecretVersions(r.Context(), user, r.PathValue("applicationId"))
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) RestoreApplicationSecretVersion(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	version, err := strconv.Atoi(r.PathValue("version"))
+	if err != nil {
+		core.WriteError(
+			w,
+			r,
+			http.StatusBadRequest,
+			"INVALID_REQUEST",
+			"Secret version must be a valid integer.",
+			map[string]any{"field": "version"},
+			false,
+		)
+		return
+	}
+
+	response, err := h.Service.RestoreApplicationSecretVersion(
+		r.Context(),
+		user,
+		r.PathValue("applicationId"),
+		version,
+		core.RequestID(r.Context()),
+	)
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
 func (h Handler) ArchiveApplication(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.currentUser(w, r)
 	if !ok {
@@ -251,25 +362,26 @@ func (h Handler) GetMetrics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse range and step from query parameters
-	durationStr := r.URL.Query().Get("range")
-	stepStr := r.URL.Query().Get("step")
-
-	duration := 15 * time.Minute
-	if durationStr != "" {
-		if d, err := time.ParseDuration(durationStr); err == nil {
-			duration = d
-		}
-	}
-
-	step := time.Minute
-	if stepStr != "" {
-		if s, err := time.ParseDuration(stepStr); err == nil {
-			step = s
-		}
-	}
+	duration, step := parseMetricWindow(r)
 
 	response, err := h.Service.GetMetrics(r.Context(), user, r.PathValue("applicationId"), duration, step)
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
+func (h Handler) GetMetricsDiagnostics(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	duration, step := parseMetricWindow(r)
+
+	response, err := h.Service.GetMetricsDiagnostics(r.Context(), user, r.PathValue("applicationId"), duration, step)
 	if err != nil {
 		h.writeDomainError(w, r, err)
 		return
@@ -395,6 +507,24 @@ func parseTailLines(w http.ResponseWriter, r *http.Request) (int, bool) {
 		tailLines = parsed
 	}
 	return tailLines, true
+}
+
+func parseMetricWindow(r *http.Request) (time.Duration, time.Duration) {
+	duration := 15 * time.Minute
+	if raw := r.URL.Query().Get("range"); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			duration = parsed
+		}
+	}
+
+	step := time.Minute
+	if raw := r.URL.Query().Get("step"); raw != "" {
+		if parsed, err := time.ParseDuration(raw); err == nil {
+			step = parsed
+		}
+	}
+
+	return duration, step
 }
 
 func (h Handler) ListDeployments(w http.ResponseWriter, r *http.Request) {

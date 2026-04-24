@@ -43,6 +43,7 @@ func TestGitModeCreateAndRedeployApplication(t *testing.T) {
 		"deployment.yaml",
 		"service.yaml",
 		"servicemonitor.yaml",
+		"prometheusrule.yaml",
 		"externalsecret.yaml",
 	} {
 		if _, err := os.Stat(filepath.Join(appDir, fileName)); err != nil {
@@ -60,6 +61,13 @@ func TestGitModeCreateAndRedeployApplication(t *testing.T) {
 	}
 	if !strings.Contains(string(serviceMonitorManifest), "kind: ServiceMonitor") {
 		t.Fatal("expected remote checkout to contain ServiceMonitor manifest")
+	}
+	prometheusRuleManifest, err := os.ReadFile(filepath.Join(appDir, "prometheusrule.yaml"))
+	if err != nil {
+		t.Fatalf("read remote prometheusrule manifest: %v", err)
+	}
+	if !strings.Contains(string(prometheusRuleManifest), "kind: PrometheusRule") {
+		t.Fatal("expected remote checkout to contain PrometheusRule manifest")
 	}
 	assertFluxBootstrapFiles(t, verifyDir, "default")
 	assertFluxChildManifestPath(t, verifyDir, "default", "project-a-git-app", "./apps/project-a/git-app/overlays/shared", true)

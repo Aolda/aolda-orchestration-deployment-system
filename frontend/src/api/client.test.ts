@@ -57,4 +57,40 @@ describe('api client timeouts', () => {
       code: 'NETWORK_ERROR',
     })
   })
+
+  it('로그 스트림 API 오류의 details를 보존한다', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'INTEGRATION_ERROR',
+              message: 'An unexpected integration error occurred.',
+              details: {
+                error: 'kubernetes api /api/v1/namespaces/shared/pods/missing/log failed with status 404',
+              },
+            },
+          }),
+          {
+            status: 500,
+            headers: { 'Content-Type': 'application/json' },
+          },
+        ),
+      ),
+    )
+
+    await expect(
+      api.streamApplicationLogs('shared__moltbot-front-poc-web', {
+        podName: 'missing',
+        containerName: 'web',
+        onEvent: vi.fn(),
+      }),
+    ).rejects.toMatchObject({
+      code: 'INTEGRATION_ERROR',
+      details: {
+        error: 'kubernetes api /api/v1/namespaces/shared/pods/missing/log failed with status 404',
+      },
+    })
+  })
 })

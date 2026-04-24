@@ -3,6 +3,8 @@ import type {
   ApplicationListResponse,
   ApplicationLifecycleResponse,
   ApplicationMetricsResponse,
+  ApplicationSecretsResponse,
+  ApplicationSecretVersionsResponse,
   ChangeRecord,
   ClusterListResponse,
   ClusterSummary,
@@ -23,8 +25,10 @@ import type {
   ErrorResponse,
   EventListResponse,
   FleetResourceOverviewResponse,
+  MetricsDiagnosticsResponse,
   NetworkExposureResponse,
   ProjectListResponse,
+  ProjectHealthResponse,
   ProjectLifecycleResponse,
   ProjectSummary,
   ProjectPolicy,
@@ -33,6 +37,7 @@ import type {
   RollbackPolicy,
   SyncStatusResponse,
   UpdateApplicationRequest,
+  UpdateApplicationSecretsRequest,
 } from '../types/api'
 import {
   clearEmergencyAuthSession,
@@ -248,6 +253,9 @@ export const api = {
   getApplications(projectId: string) {
     return request<ApplicationListResponse>(`/api/v1/projects/${projectId}/applications`)
   },
+  getProjectHealth(projectId: string) {
+    return request<ProjectHealthResponse>(`/api/v1/projects/${projectId}/health`)
+  },
   previewApplicationSource(projectId: string, body: PreviewApplicationSourceRequest) {
     return request<PreviewApplicationSourceResponse>(`/api/v1/projects/${projectId}/applications/source-preview`, {
       method: 'POST',
@@ -317,6 +325,23 @@ export const api = {
       body: JSON.stringify(body),
     })
   },
+  getApplicationSecrets(applicationId: string) {
+    return request<ApplicationSecretsResponse>(`/api/v1/applications/${applicationId}/secrets`)
+  },
+  updateApplicationSecrets(applicationId: string, body: UpdateApplicationSecretsRequest) {
+    return request<ApplicationSecretsResponse>(`/api/v1/applications/${applicationId}/secrets`, {
+      method: 'PUT',
+      body: JSON.stringify(body),
+    })
+  },
+  getApplicationSecretVersions(applicationId: string) {
+    return request<ApplicationSecretVersionsResponse>(`/api/v1/applications/${applicationId}/secrets/versions`)
+  },
+  restoreApplicationSecretVersion(applicationId: string, version: number) {
+    return request<ApplicationSecretsResponse>(`/api/v1/applications/${applicationId}/secrets/versions/${version}/restore`, {
+      method: 'POST',
+    })
+  },
   archiveApplication(applicationId: string) {
     return request<ApplicationLifecycleResponse>(`/api/v1/applications/${applicationId}/archive`, {
       method: 'POST',
@@ -373,6 +398,16 @@ export const api = {
       `/api/v1/applications/${applicationId}/metrics${query}`,
     )
   },
+  getMetricsDiagnostics(applicationId: string, range?: string) {
+    const params = new URLSearchParams()
+    if (range) {
+      params.append('range', range)
+    }
+    const query = params.toString() ? `?${params.toString()}` : ''
+    return request<MetricsDiagnosticsResponse>(
+      `/api/v1/applications/${applicationId}/metrics/diagnostics${query}`,
+    )
+  },
   getRollbackPolicy(applicationId: string) {
     return request<RollbackPolicy>(`/api/v1/applications/${applicationId}/rollback-policies`)
   },
@@ -423,6 +458,7 @@ export const api = {
       throw new ApiError(
         payload?.error.message ?? response.statusText,
         payload?.error.code ?? 'UNKNOWN_ERROR',
+        payload?.error.details,
       )
     }
 

@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -57,8 +59,8 @@ func (s LocalStore) StageAt(
 	}
 
 	document := map[string]any{
-		"path": staged.StagingPath,
-		"data": data,
+		"path":     staged.StagingPath,
+		"data":     data,
 		"metadata": documentMetadata,
 	}
 
@@ -74,12 +76,48 @@ func (s LocalStore) Finalize(ctx context.Context, staged application.StagedSecre
 		return err
 	}
 
-	document := map[string]any{
-		"path": staged.FinalPath,
-		"data": data,
+	stagedDocument, _ := readLocalDocument(pathToFile(s.RootDir, staged.StagingPath))
+	document, err := readLocalDocument(pathToFile(s.RootDir, staged.FinalPath))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	previousData := cloneStringMap(document.Data)
+	document.Path = staged.FinalPath
+	if document.Metadata == nil {
+		document.Metadata = map[string]any{}
+	}
+	if document.Versions == nil {
+		document.Versions = map[string]localVaultVersion{}
+	}
+	if len(document.Versions) == 0 && len(previousData) > 0 {
+		createdAt := metadataString(document.Metadata, "updatedAt")
+		if createdAt == "" {
+			createdAt = time.Now().UTC().Format(time.RFC3339Nano)
+		}
+		document.Versions["1"] = localVaultVersion{
+			Data:      previousData,
+			CreatedAt: createdAt,
+			Metadata:  cloneAnyMap(document.Metadata),
+		}
+		document.Metadata["currentVersion"] = float64(1)
 	}
 
-	if err := s.writeDocument(pathToFile(s.RootDir, staged.FinalPath), document); err != nil {
+	version := localCurrentVersion(document) + 1
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	versionMetadata := cloneAnyMap(stagedDocument.Metadata)
+	versionMetadata["status"] = "finalized"
+	versionMetadata["updatedAt"] = now
+	document.Data = cloneStringMap(data)
+	document.Metadata = cloneAnyMap(versionMetadata)
+	document.Metadata["currentVersion"] = float64(version)
+	document.Metadata["updatedAt"] = now
+	document.Versions[strconv.Itoa(version)] = localVaultVersion{
+		Data:      cloneStringMap(data),
+		CreatedAt: now,
+		Metadata:  versionMetadata,
+	}
+
+	if err := writeLocalDocument(pathToFile(s.RootDir, staged.FinalPath), document); err != nil {
 		return err
 	}
 
@@ -104,14 +142,60 @@ func (s LocalStore) Get(ctx context.Context, logicalPath string) (map[string]str
 		return nil, fmt.Errorf("read local secret: %w", err)
 	}
 
-	var document struct {
-		Data map[string]string `json:"data"`
-	}
+	var document localVaultDocument
 	if err := json.Unmarshal(data, &document); err != nil {
 		return nil, fmt.Errorf("decode local secret: %w", err)
 	}
 
-	return document.Data, nil
+	return cloneStringMap(document.Data), nil
+}
+
+func (s LocalStore) ListVersions(ctx context.Context, logicalPath string) (application.ApplicationSecretVersionsResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return application.ApplicationSecretVersionsResponse{}, err
+	}
+	if strings.TrimSpace(s.RootDir) == "" {
+		return application.ApplicationSecretVersionsResponse{}, fmt.Errorf("local vault root directory is required")
+	}
+
+	document, err := readLocalDocument(pathToFile(s.RootDir, logicalPath))
+	if os.IsNotExist(err) {
+		return application.ApplicationSecretVersionsResponse{SecretPath: logicalPath, Items: []application.SecretVersionSummary{}}, nil
+	}
+	if err != nil {
+		return application.ApplicationSecretVersionsResponse{}, err
+	}
+	return localVersionResponse(logicalPath, document), nil
+}
+
+func (s LocalStore) GetVersion(ctx context.Context, logicalPath string, version int) (map[string]string, application.SecretVersionSummary, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, application.SecretVersionSummary{}, err
+	}
+	if version <= 0 {
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("local vault version must be positive")
+	}
+
+	document, err := readLocalDocument(pathToFile(s.RootDir, logicalPath))
+	if err != nil {
+		return nil, application.SecretVersionSummary{}, err
+	}
+	if len(document.Versions) == 0 && len(document.Data) > 0 {
+		document.Versions = map[string]localVaultVersion{
+			"1": {
+				Data:      cloneStringMap(document.Data),
+				CreatedAt: metadataString(document.Metadata, "updatedAt"),
+				Metadata:  cloneAnyMap(document.Metadata),
+			},
+		}
+	}
+	item, ok := document.Versions[strconv.Itoa(version)]
+	if !ok {
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("local vault version %d was not found", version)
+	}
+	summary := localVersionSummary(version, item, localCurrentVersion(document))
+	summary.KeyCount = len(item.Data)
+	return cloneStringMap(item.Data), summary, nil
 }
 
 func (s LocalStore) Delete(ctx context.Context, logicalPath string) error {
@@ -193,6 +277,137 @@ func pathToFile(root string, logicalPath string) string {
 	return filepath.Join(root, strings.TrimPrefix(logicalPath, "secret/")) + ".json"
 }
 
+type localVaultDocument struct {
+	Path     string                       `json:"path"`
+	Data     map[string]string            `json:"data"`
+	Metadata map[string]any               `json:"metadata,omitempty"`
+	Versions map[string]localVaultVersion `json:"versions,omitempty"`
+}
+
+type localVaultVersion struct {
+	Data      map[string]string `json:"data"`
+	CreatedAt string            `json:"createdAt,omitempty"`
+	Deleted   bool              `json:"deleted,omitempty"`
+	Destroyed bool              `json:"destroyed,omitempty"`
+	Metadata  map[string]any    `json:"metadata,omitempty"`
+}
+
+func readLocalDocument(path string) (localVaultDocument, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return localVaultDocument{}, err
+	}
+	var document localVaultDocument
+	if err := json.Unmarshal(data, &document); err != nil {
+		return localVaultDocument{}, fmt.Errorf("decode local vault document: %w", err)
+	}
+	if document.Data == nil {
+		document.Data = map[string]string{}
+	}
+	if document.Metadata == nil {
+		document.Metadata = map[string]any{}
+	}
+	return document, nil
+}
+
+func writeLocalDocument(path string, document localVaultDocument) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create local vault directory: %w", err)
+	}
+	content, err := json.MarshalIndent(document, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode local vault document: %w", err)
+	}
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		return fmt.Errorf("write local vault document: %w", err)
+	}
+	return nil
+}
+
+func localVersionResponse(logicalPath string, document localVaultDocument) application.ApplicationSecretVersionsResponse {
+	currentVersion := localCurrentVersion(document)
+	keys := make([]int, 0, len(document.Versions))
+	for rawVersion := range document.Versions {
+		version, err := strconv.Atoi(rawVersion)
+		if err == nil {
+			keys = append(keys, version)
+		}
+	}
+	if len(keys) == 0 && len(document.Data) > 0 {
+		keys = append(keys, 1)
+		document.Versions = map[string]localVaultVersion{
+			"1": {
+				Data:      cloneStringMap(document.Data),
+				CreatedAt: metadataString(document.Metadata, "updatedAt"),
+				Metadata:  cloneAnyMap(document.Metadata),
+			},
+		}
+		currentVersion = 1
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(keys)))
+
+	items := make([]application.SecretVersionSummary, 0, len(keys))
+	for _, version := range keys {
+		item := document.Versions[strconv.Itoa(version)]
+		items = append(items, localVersionSummary(version, item, currentVersion))
+	}
+	return application.ApplicationSecretVersionsResponse{
+		SecretPath:     logicalPath,
+		CurrentVersion: currentVersion,
+		Items:          items,
+	}
+}
+
+func localVersionSummary(version int, item localVaultVersion, currentVersion int) application.SecretVersionSummary {
+	var createdAt *time.Time
+	if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(item.CreatedAt)); err == nil {
+		createdAt = &parsed
+	}
+	updatedBy := metadataString(item.Metadata, "updatedBy")
+	if updatedBy == "" {
+		updatedBy = metadataString(item.Metadata, "createdBy")
+	}
+	return application.SecretVersionSummary{
+		Version:   version,
+		CreatedAt: createdAt,
+		UpdatedBy: updatedBy,
+		Current:   version == currentVersion,
+		Deleted:   item.Deleted,
+		Destroyed: item.Destroyed,
+		KeyCount:  len(item.Data),
+	}
+}
+
+func localCurrentVersion(document localVaultDocument) int {
+	if version := metadataInt(document.Metadata, "currentVersion"); version > 0 {
+		return version
+	}
+	current := 0
+	for rawVersion := range document.Versions {
+		version, err := strconv.Atoi(rawVersion)
+		if err == nil && version > current {
+			current = version
+		}
+	}
+	return current
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	cloned := map[string]string{}
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func cloneAnyMap(values map[string]any) map[string]any {
+	cloned := map[string]any{}
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
 func isLocalStagingFileStale(path string, cutoff time.Time) (bool, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -236,6 +451,30 @@ func metadataString(metadata map[string]any, key string) string {
 		return ""
 	}
 	return strings.TrimSpace(text)
+}
+
+func metadataInt(metadata map[string]any, key string) int {
+	if metadata == nil {
+		return 0
+	}
+	value, ok := metadata[key]
+	if !ok {
+		return 0
+	}
+	switch typed := value.(type) {
+	case int:
+		return typed
+	case int64:
+		return int(typed)
+	case float64:
+		return int(typed)
+	case string:
+		parsed, err := strconv.Atoi(strings.TrimSpace(typed))
+		if err == nil {
+			return parsed
+		}
+	}
+	return 0
 }
 
 func metadataTime(metadata map[string]any, key string) (time.Time, bool) {

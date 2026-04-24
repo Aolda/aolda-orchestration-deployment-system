@@ -44,6 +44,15 @@
 
 ## Entries
 
+### 2026-04-24 - FB-039 - Vault에 넣은 앱 환경 변수는 나중에 수정할 수 있어야 함
+
+* Area: Frontend / Backend / Vault-backed Application Secrets
+* User signal: `그 vault에 대해서 추후에 해당 넣은 env에 대해서 수정할 수 있는 페이지가 있어야할 것 같은데`
+* Interpreted intent: 앱 생성 때 Vault에 저장한 `.env` 값은 일회성 입력으로 끝나면 안 되고, 운영 센터에서 값 노출 없이 키 추가/교체/삭제를 할 수 있어야 한다.
+* Action: 앱 운영 센터에 환경 변수 탭을 추가하고, 백엔드에는 key-only 조회와 `set/delete` 기반 Vault Secret 갱신 API를 둔다.
+* References: `frontend/src/App.tsx`, `backend/internal/application/service.go`, `docs/internal-platform/openapi.yaml`
+* Status: applied
+
 ### 2026-04-18 - FB-038 - 외부 공개 단계는 멈춤이 아니라 실제 오류/준비 상태를 보여줘야 함
 
 * Area: Frontend / Application Network Exposure
@@ -438,6 +447,105 @@
 * Interpreted intent: 로컬에서 프론트와 백엔드 스키마가 어긋난 상태면 사용자는 generic JSON 오류보다 “백엔드를 다시 시작해야 한다”는 직접적인 안내를 받아야 한다.
 * Action: frontend `ApiError`에 server `details`를 실어 나르도록 보강하고, 애플리케이션 네트워크 설정 저장 실패 시 `unknown field "meshEnabled"` / `unknown field "loadBalancerEnabled"` 응답을 감지하면 백엔드 재시작 필요 메시지로 번역하도록 수정했다. 로컬 backend도 최신 코드로 재시작해 실제 `PATCH /api/v1/applications/{applicationId}` 저장이 정상 동작하는 것까지 확인했다.
 * References: `frontend/src/api/client.ts`, `frontend/src/App.tsx`
+* Status: applied
+
+### 2026-04-24 - FB-044 - 모니터링은 보기만 하는 대시보드가 아니라 알림과 진단까지 포함해야 함
+
+* Area: Backend / GitOps / Observability
+* User signal: `지금 해당 레포지토리에서 올라온 서비스들에 대해 모니터링을 어케하고 있음?` / `이걸 보고 너가 생각하는 개선안은?` / `ㅇㅇ 그렇게 진행해줘봐 그럼`
+* Interpreted intent: 현재 Prometheus metrics 조회와 UI polling만으로는 운영 플랫폼의 모니터링 기준이 부족하다. 앱별 alert rule, 프로젝트 단위 health snapshot, metrics가 비었을 때의 진단 정보가 필요하다.
+* Action: 앱 manifest base에 `PrometheusRule` 생성을 추가하고, `GET /api/v1/projects/{projectId}/health`, `GET /api/v1/applications/{applicationId}/metrics/diagnostics` API 계약과 backend 구현, frontend API client 타입을 추가했다. 프로젝트 모니터링 refresh 는 앱별 `metrics/deployments` 루프 대신 project health snapshot 한 번으로 metrics/latest deployment 요약을 받도록 전환했다. 검증 진입점은 `make check-observability` 로 분리해 변경별 커버리지를 명확히 했다.
+* References: `backend/internal/application/store_local.go`, `backend/internal/application/service.go`, `backend/internal/application/http.go`, `backend/internal/server/server.go`, `frontend/src/api/client.ts`, `frontend/src/types/api.ts`, `docs/internal-platform/openapi.yaml`
+* Status: applied
+
+### 2026-04-24 - FB-045 - `.env` 값도 Vault 기능으로 버전 관리하고 필요하면 복원할 수 있어야 함
+
+* Area: Backend / Vault / Frontend Operations UX
+* User signal: `해당 .env에 대해서 vault에 있는 기능을 사용해서 버전관리를 할 수 있게도 해줘봐`
+* Interpreted intent: Git에는 ExternalSecret 참조만 남기고 실제 env 값은 Vault KV v2 version history로 추적해야 한다. UI는 값 노출 없이 버전 메타데이터를 보여주고, 특정 버전을 복원할 수 있어야 한다.
+* Action: Vault KV v2 metadata 기반 version list / restore API와 운영 화면의 버전 히스토리, 복원 액션을 추가했다. 저장/복원 후 실행 중인 Pod에는 다음 rollout 또는 재시작부터 반영된다는 안내도 함께 노출한다.
+* References: `backend/internal/application/service.go`, `backend/internal/vault/real.go`, `backend/internal/vault/local.go`, `frontend/src/App.tsx`, `docs/internal-platform/openapi.yaml`
+* Status: applied
+
+### 2026-04-24 - FB-046 - 애플리케이션별 `확인 불가` 상태에는 이유가 바로 보여야 함
+
+* Area: Frontend / Observability UX
+* User signal: `애플리케이션별에 대해서 확인 불가인데 왜 확인 불가인지 나왔으면 좋겠는데`
+* Interpreted intent: 앱 카드가 `확인 불가` 배지만 보여주면 운영자는 Flux/Kubernetes/health snapshot 중 어디가 원인인지 알 수 없다. 이미 backend health signal 에 이유가 있으면 카드에서 바로 보여줘야 한다.
+* Action: project health snapshot 의 sync/health signal message 를 애플리케이션별 카드에 노출했다.
+* References: `frontend/src/App.tsx`
+* Status: applied
+
+### 2026-04-24 - FB-047 - 컨테이너 로그 실패는 실제 원인과 복구 흐름을 보여줘야 함
+
+* Area: Frontend / Kubernetes Logs UX
+* User signal: `Kubernetes에서 컨테이너 로그를 가져오지 못했습니다. 잠시 후 다시 시도하세요. 래 이것도 고쳐줘`
+* Interpreted intent: 로그 조회 실패 화면이 generic 재시도 안내만 보여주면 운영자는 Kubernetes API 오류인지, rollout으로 선택 pod/container가 사라진 것인지 구분할 수 없다. 가능한 경우 실제 Kubernetes 원인을 보여주고 stale 로그 대상은 자동으로 다시 찾아야 한다.
+* Action: 로그 스트림 API 에러에서 backend `details`를 보존하고, Kubernetes 404/not found 및 stale pod/container 오류를 감지하면 로그 대상을 자동 refresh하도록 처리했다. 그 외 Kubernetes 연동 오류는 실제 원인을 포함해 표시한다.
+* References: `frontend/src/api/client.ts`, `frontend/src/App.tsx`
+* Status: applied
+
+### 2026-04-24 - FB-048 - 로그 화면에서 운영자가 직접 즉시 갱신할 수 있어야 함
+
+* Area: Frontend / Kubernetes Logs UX
+* User signal: `로그에 대해서 바로 업데이트 할 수 있는 버튼도 만들어줘`
+* Interpreted intent: 자동 스트리밍만으로는 rollout 직후나 오류 복구 시 운영자가 현재 pod/container 상태를 즉시 다시 확인하기 어렵다. 로그 대상과 최근 로그를 수동으로 재조회하는 버튼이 필요하다.
+* Action: Pod / Container 로그 카드에 `로그 업데이트` 버튼을 추가해 현재 로그 target을 다시 읽고 스트림을 새로 연결하도록 했다.
+* References: `frontend/src/App.tsx`
+* Status: applied
+
+### 2026-04-24 - FB-049 - 클러스터 탭은 platform admin 전용이어야 함
+
+* Area: Frontend / Navigation Authorization
+* User signal: `클러스터 탭까지 admin-only로 잠겨줘 그냥`
+* Interpreted intent: 클러스터 카탈로그는 일반 프로젝트 운영자에게 글로벌 탭으로 노출하지 않고, platform admin 권한에서만 접근 가능해야 한다.
+* Action: 사이드바 글로벌 섹션을 권한별로 필터링해 비관리자에게 `클러스터` 탭을 숨기고, 비관리자 bootstrap에서는 클러스터 카탈로그 API도 호출하지 않도록 정리했다.
+* References: `frontend/src/App.tsx`, `frontend/src/app/layout/AppShell.tsx`, `frontend/src/components/navigation/SidebarNav.tsx`
+* Status: applied
+
+### 2026-04-24 - FB-050 - platform admin 판정은 그룹이 아니라 role 기반이어야 함
+
+* Area: Auth / Frontend / GitOps
+* User signal: `/Ajou_Univ/Aolda_Admin 그룹 말고 걍 role 기반으로 만들어줘`
+* Interpreted intent: Keycloak group path를 platform admin 기준으로 쓰면 조직 구조와 제품 권한이 강하게 결합된다. AODS 전역 admin은 `aods:platform:admin` 같은 명시적 role 문자열로 판정해야 한다.
+* Action: backend/frontend platform admin authority, dev fallback groups, 배포 manifest, GitOps project adminGroups, 권한 문서와 테스트를 `aods:platform:admin` role 기준으로 정리했다.
+* References: `.envrc`, `frontend/.env.local`, `deploy/aods-system/base/backend-deployment.yaml`, `deploy/aods-system/overlays/orbstack/patch-backend-deployment.yaml`, `../AODS-manifest/platform/projects.yaml`, `docs/keycloak-group-auth-model.md`
+* Status: applied
+
+### 2026-04-24 - FB-051 - Keycloak 운영자가 따라 할 설정 가이드가 필요함
+
+* Area: Auth / Operations Documentation
+* User signal: `운영하는 사람 입장에서는 keycloak에서 어떻게 해줘야하는지에 대해서도 가이드라인 작성 가능할까?`
+* Interpreted intent: 기능 구현만으로는 운영 이관이 부족하다. Keycloak 운영자가 AODS client, client role, 사용자/group role 할당, token claim, 검증 및 장애 대응을 그대로 따라 할 수 있는 절차서가 필요하다.
+* Action: role 기반 권한 모델에 맞춘 Keycloak 운영자 가이드를 추가하고, 기존 auth 모델 문서와 baseline runbook 에서 해당 문서를 참조하도록 연결했다.
+* References: `docs/keycloak-operator-guide.md`, `docs/keycloak-group-auth-model.md`, `docs/current-baseline-runbook.md`
+* Status: applied
+
+### 2026-04-24 - FB-052 - Keycloak 사용자 배정은 group으로 관리해야 함
+
+* Area: Auth / Operations Documentation
+* User signal: `그룹으로 매핑하는게 나은거 아님? ... 그룹으로 관리하는게 좋은거같은데?`
+* Interpreted intent: AODS 권한 판정은 role 기반으로 유지하되, 운영자가 사용자별로 role을 직접 붙이는 방식은 관리 비용이 크다. Keycloak group에 AODS client role을 매핑하고 사용자는 group membership 으로 관리하는 방식이 운영 모델에 맞다.
+* Action: 후속 피드백에서 role 직접 할당 기준으로 다시 정리하기로 했으므로 폐기했다.
+* References: `docs/keycloak-operator-guide.md`, `docs/keycloak-group-auth-model.md`, `docs/current-baseline-runbook.md`
+* Status: superseded
+
+### 2026-04-24 - FB-053 - Keycloak 사용자 배정도 role 기반 직접 할당으로 정리
+
+* Area: Auth / Operations Documentation
+* User signal: `아니다 걍 룰 기반으로 ㄱ`
+* Interpreted intent: 운영 편의상 group 매핑을 기본으로 두기보다, 현재 AODS 권한 모델을 더 단순하게 유지하기 위해 Keycloak `aods` client role을 사용자에게 직접 할당하는 방식으로 가이드를 고정한다.
+* Action: Keycloak 운영 가이드와 auth 모델 문서에서 group 기반 권장 흐름을 제거하고, 사용자별 role 직접 할당 절차를 기준으로 정리했다.
+* References: `docs/keycloak-operator-guide.md`, `docs/keycloak-group-auth-model.md`, `docs/current-baseline-runbook.md`
+* Status: applied
+
+### 2026-04-24 - FB-054 - 저장소 sync 실패와 polling 주기 저장은 원인과 비용이 보여야 함
+
+* Area: Frontend / Repository Sync UX
+* User signal: `저장소 sync 실패 An unexpected integration error occurred. 래 그리고 주기에 대해서 저장하는 것도 너무 느린데 왜 그런겨?`
+* Interpreted intent: 저장소 sync 실패가 generic integration error로 보이면 운영자는 Vault, token, GitHub 중 어디가 문제인지 알 수 없다. polling 주기 저장은 GitOps write가 필요한 작업이므로 같은 값을 반복 저장해 불필요하게 느려지면 안 된다.
+* Action: 저장소 sync / polling 주기 저장 실패 알림에서 backend `details.error` 원인을 번역해 보여주고, 같은 polling 주기 저장은 버튼 비활성화와 no-op guard로 막았다. 주기 저장이 GitOps repo commit/push 이후 완료된다는 점도 화면에 명시했다.
+* References: `frontend/src/App.tsx`
 * Status: applied
 
 ## 운영 메모
