@@ -3579,6 +3579,7 @@ export default function App() {
           <Tabs
             value={applicationDrawerTab}
             onChange={(value) => setApplicationDrawerTab(value ?? 'status')}
+            keepMounted={false}
             color="lagoon.6"
             styles={{ tab: { padding: '16px 20px' } }}
           >
