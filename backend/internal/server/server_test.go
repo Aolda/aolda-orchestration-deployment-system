@@ -184,13 +184,13 @@ func TestPlatformAdminCanBootstrapCluster(t *testing.T) {
 
 func TestConfiguredPlatformAdminAuthorityWorksAcrossHandlers(t *testing.T) {
 	env := newTestEnvironmentWithConfig(t, func(cfg *core.Config) {
-		cfg.PlatformAdminAuthorities = []string{"/Ajou_Univ/Aolda_Admin"}
+		cfg.PlatformAdminAuthorities = []string{"aods:platform:admin"}
 	})
 
 	projectResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/projects", nil, map[string]string{
 		"X-AODS-User-Id":  "user-1",
 		"X-AODS-Username": "platform-admin",
-		"X-AODS-Groups":   "/Ajou_Univ/Aolda_Admin",
+		"X-AODS-Groups":   "aods:platform:admin",
 	})
 	if projectResponse.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", projectResponse.StatusCode)
@@ -213,7 +213,7 @@ func TestConfiguredPlatformAdminAuthorityWorksAcrossHandlers(t *testing.T) {
 	}, map[string]string{
 		"X-AODS-User-Id":  "user-1",
 		"X-AODS-Username": "platform-admin",
-		"X-AODS-Groups":   "/Ajou_Univ/Aolda_Admin",
+		"X-AODS-Groups":   "aods:platform:admin",
 	})
 	if clusterResponse.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201, got %d", clusterResponse.StatusCode)
@@ -222,7 +222,7 @@ func TestConfiguredPlatformAdminAuthorityWorksAcrossHandlers(t *testing.T) {
 	adminResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/admin/resource-overview", nil, map[string]string{
 		"X-AODS-User-Id":  "user-1",
 		"X-AODS-Username": "platform-admin",
-		"X-AODS-Groups":   "/Ajou_Univ/Aolda_Admin",
+		"X-AODS-Groups":   "aods:platform:admin",
 	})
 	if adminResponse.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", adminResponse.StatusCode)
@@ -566,6 +566,7 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 		"deployment.yaml",
 		"service.yaml",
 		"servicemonitor.yaml",
+		"prometheusrule.yaml",
 		"externalsecret.yaml",
 	}
 
@@ -604,6 +605,19 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 	}
 	if !strings.Contains(string(serviceMonitorManifest), `aods.io/metrics-scrape: "true"`) {
 		t.Fatal("expected ServiceMonitor manifest to target the stable service")
+	}
+	prometheusRuleManifest, err := os.ReadFile(filepath.Join(appDir, "prometheusrule.yaml"))
+	if err != nil {
+		t.Fatalf("read prometheusrule manifest: %v", err)
+	}
+	if !strings.Contains(string(prometheusRuleManifest), "kind: PrometheusRule") {
+		t.Fatal("expected PrometheusRule manifest to be generated")
+	}
+	if !strings.Contains(string(prometheusRuleManifest), "AODSApplicationHighErrorRate") {
+		t.Fatal("expected PrometheusRule manifest to include high error rate alert")
+	}
+	if !strings.Contains(string(prometheusRuleManifest), "AODSApplicationFluxDegraded") {
+		t.Fatal("expected PrometheusRule manifest to include Flux degraded alert")
 	}
 	for _, fileName := range []string{"virtualservice.yaml", "destinationrule.yaml"} {
 		if _, err := os.Stat(filepath.Join(appDir, fileName)); !os.IsNotExist(err) {
@@ -689,6 +703,76 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 	decodeBody(t, metricsResponse, &metricsBody)
 	if len(metricsBody.Metrics) != 0 {
 		t.Fatalf("expected no metric series without metrics integration, got %d", len(metricsBody.Metrics))
+	}
+
+	diagnosticsResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__my-app/metrics/diagnostics", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if diagnosticsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from metrics diagnostics, got %d", diagnosticsResponse.StatusCode)
+	}
+	var diagnosticsBody struct {
+		ApplicationID string `json:"applicationId"`
+		Status        string `json:"status"`
+		ScrapeTargets []struct {
+			Name string `json:"name"`
+			Path string `json:"path"`
+		} `json:"scrapeTargets"`
+	}
+	decodeBody(t, diagnosticsResponse, &diagnosticsBody)
+	if diagnosticsBody.ApplicationID != "project-a__my-app" {
+		t.Fatalf("expected diagnostics for project-a__my-app, got %s", diagnosticsBody.ApplicationID)
+	}
+	if diagnosticsBody.Status != "Unavailable" {
+		t.Fatalf("expected Unavailable diagnostics without metrics integration, got %s", diagnosticsBody.Status)
+	}
+	if len(diagnosticsBody.ScrapeTargets) != 1 || diagnosticsBody.ScrapeTargets[0].Path != "/metrics" {
+		t.Fatalf("expected application scrape target, got %#v", diagnosticsBody.ScrapeTargets)
+	}
+
+	healthResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/projects/project-a/health", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if healthResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from project health, got %d", healthResponse.StatusCode)
+	}
+	var healthBody struct {
+		ProjectID string `json:"projectId"`
+		Items     []struct {
+			ApplicationID string `json:"applicationId"`
+			Status        string `json:"status"`
+			Metrics       []struct {
+				Key string `json:"key"`
+			} `json:"metrics"`
+			LatestDeployment *struct {
+				ImageTag string `json:"imageTag"`
+				Status   string `json:"status"`
+			} `json:"latestDeployment"`
+			Signals []struct {
+				Key    string `json:"key"`
+				Status string `json:"status"`
+			} `json:"signals"`
+		} `json:"items"`
+	}
+	decodeBody(t, healthResponse, &healthBody)
+	if healthBody.ProjectID != "project-a" {
+		t.Fatalf("expected project-a health, got %s", healthBody.ProjectID)
+	}
+	if len(healthBody.Items) != 1 {
+		t.Fatalf("expected one health item, got %d", len(healthBody.Items))
+	}
+	if healthBody.Items[0].ApplicationID != "project-a__my-app" || healthBody.Items[0].Status != "Warning" {
+		t.Fatalf("unexpected health item: %#v", healthBody.Items[0])
+	}
+	if len(healthBody.Items[0].Metrics) != 0 {
+		t.Fatalf("expected no project health metrics without metrics integration, got %d", len(healthBody.Items[0].Metrics))
+	}
+	if healthBody.Items[0].LatestDeployment == nil || healthBody.Items[0].LatestDeployment.ImageTag != "v2" {
+		t.Fatalf("expected latest deployment summary from project health, got %#v", healthBody.Items[0].LatestDeployment)
 	}
 }
 
@@ -1043,6 +1127,7 @@ func TestCanaryApplicationCreatesRolloutArtifacts(t *testing.T) {
 		"rollout.yaml",
 		"service.yaml",
 		"servicemonitor.yaml",
+		"prometheusrule.yaml",
 		"canary-service.yaml",
 		"virtualservice.yaml",
 		"destinationrule.yaml",

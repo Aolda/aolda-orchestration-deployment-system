@@ -451,14 +451,14 @@ export function ChangesWorkspace({
                       onChange={(value) => {
                         setCreateForm((current) => ({
                           ...current,
-                          deploymentStrategy: value === 'Canary' ? 'Canary' : 'Rollout',
+                          deploymentStrategy: value === 'Rollout' ? 'Rollout' : 'Rollout',
                         }))
                       }}
                       data={[
                         { value: 'Rollout', label: 'Rollout' },
-                        { value: 'Canary', label: 'Canary' },
                       ]}
                       allowDeselect={false}
+                      disabled
                     />
                   </>
                 ) : null}
@@ -792,7 +792,7 @@ function buildCreateChangeRequest(form: CreateChangeForm): CreateChangeRequest {
   request.description = form.description.trim() || undefined
   request.image = form.image.trim()
   request.servicePort = toOptionalNumber(form.servicePort)
-  request.deploymentStrategy = form.deploymentStrategy
+  request.deploymentStrategy = 'Rollout'
   return request
 }
 

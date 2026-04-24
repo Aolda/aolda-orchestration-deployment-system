@@ -31,6 +31,45 @@
 
 ## Recent Stability Work
 
+### 2026-04-24 - 모니터링 알림/진단 API 기준선 추가
+
+이번 작업에서는 기존 `ServiceMonitor + metrics 조회 + UI polling` 구조에 운영 알림과 진단 기준선을 추가했다.
+
+무엇을 바꿨는가:
+
+* 앱 GitOps base 산출물에 `PrometheusRule` 을 추가 생성한다.
+* 기본 alert 는 높은 5xx 비율, 높은 p95 latency, pod restart, pod 비정상 상태, Flux degraded 상태를 포함한다.
+* `GET /api/v1/projects/{projectId}/health` 로 앱별 sync/metrics health signal 을 한 번에 조회한다.
+* project health snapshot 은 앱별 metric series 와 최신 deployment 요약도 포함하므로, 프론트 프로젝트 모니터링 refresh 가 앱별 `metrics/deployments` 반복 호출을 피할 수 있다.
+* `GET /api/v1/applications/{applicationId}/metrics/diagnostics` 로 expected scrape target 과 metric series 수집 상태를 진단한다.
+* frontend API client/type 에 새 endpoint 계약을 연결하고, 프로젝트 모니터링 polling 을 snapshot 기반으로 전환했다.
+
+주요 근거:
+
+* alert manifest 렌더링: [backend/internal/application/store_local.go](/Users/ichanju/Desktop/aolda/AODS/backend/internal/application/store_local.go:1081)
+* health/diagnostics 서비스: [backend/internal/application/service.go](/Users/ichanju/Desktop/aolda/AODS/backend/internal/application/service.go:689)
+* routes: [backend/internal/server/server.go](/Users/ichanju/Desktop/aolda/AODS/backend/internal/server/server.go:210)
+* API 계약: [docs/internal-platform/openapi.yaml](/Users/ichanju/Desktop/aolda/AODS/docs/internal-platform/openapi.yaml:356)
+
+검증:
+
+* `make check-observability` 통과
+  - backend route/store regression: `PrometheusRule`, project health, metrics diagnostics
+  - backend domain compile guard: `application`, `vault`
+  - manifest validation: generated `ServiceMonitor` / `PrometheusRule`
+  - frontend lint/build: health snapshot API client/type wiring
+* `go test ./internal/application ./internal/server` 통과
+* `make check` 통과
+
+검증 매트릭스:
+
+| 변경 | 검증 위치 | 확인 내용 |
+| --- | --- | --- |
+| `prometheusrule.yaml` 생성 | `backend/internal/server/server_test.go`, `backend/internal/server/server_git_test.go`, `scripts/validate-manifests.sh` | local/git mode 앱 생성 시 파일 생성, alert 이름 포함, rendered manifest schema 통과 |
+| project health snapshot | `backend/internal/server/server_test.go`, `frontend/src/App.tsx` build | `metrics`, `latestDeployment`, `signals` 응답 포함 및 프론트 프로젝트 모니터링 refresh 연결 |
+| metrics diagnostics | `backend/internal/server/server_test.go`, `frontend/src/api/client.ts` build | scrape target, status, series diagnostics 응답 및 API client 타입 연결 |
+| PrometheusRule CRD 검증 | `ci/kubeconform-schemas/prometheusrule-*.json`, `ci/crds/validation-crds.yaml` | kubeconform/server dry-run 하네스가 새 CRD를 인식 |
+
 ### 2026-04-17 - 백엔드 CORS dev-port 회귀 수정 및 실런타임 검증
 
 이번 안정화 작업에서는 `frontend-run` 이 `5173` 대신 `5174` 같은 fallback port 로 뜰 때,

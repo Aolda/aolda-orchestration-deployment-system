@@ -484,7 +484,7 @@ func TestServiceCreateAndUpdatePoliciesUseCatalogStore(t *testing.T) {
 func TestServicePlatformAdminAuthorityOverrideAppliesAcrossProjectActions(t *testing.T) {
 	t.Parallel()
 
-	const keycloakAdminGroup = "/Ajou_Univ/Aolda_Admin"
+	const keycloakAdminRole = "aods:platform:admin"
 
 	store := &catalogStoreStub{
 		items: []CatalogProject{
@@ -503,9 +503,9 @@ func TestServicePlatformAdminAuthorityOverrideAppliesAcrossProjectActions(t *tes
 	service := Service{
 		Source:                   store,
 		Clusters:                 clusterSourceStub{items: []cluster.Summary{{ID: "default"}}},
-		PlatformAdminAuthorities: []string{keycloakAdminGroup},
+		PlatformAdminAuthorities: []string{keycloakAdminRole},
 	}
-	admin := core.User{Groups: []string{keycloakAdminGroup}}
+	admin := core.User{Groups: []string{keycloakAdminRole}}
 
 	items, err := service.ListAuthorized(context.Background(), admin)
 	if err != nil {
@@ -533,7 +533,7 @@ func TestServicePlatformAdminAuthorityOverrideAppliesAcrossProjectActions(t *tes
 	if created.Role != RoleAdmin {
 		t.Fatalf("expected created project role admin, got %s", created.Role)
 	}
-	if !containsString(store.lastCreatedRequest.Access.AdminGroups, keycloakAdminGroup) {
+	if !containsString(store.lastCreatedRequest.Access.AdminGroups, keycloakAdminRole) {
 		t.Fatalf("expected normalized admin groups to contain configured platform admin, got %#v", store.lastCreatedRequest.Access.AdminGroups)
 	}
 }
@@ -635,10 +635,10 @@ func TestProjectHelpersCoverNormalizationAndRoleUtilities(t *testing.T) {
 	if got := normalizeAccess(Access{AdminGroups: []string{"project-admin"}}, "project-z"); len(got.AdminGroups) != 2 || got.AdminGroups[1] != platformAdminGroup {
 		t.Fatalf("expected platform admin to be appended, got %#v", got.AdminGroups)
 	}
-	if got := normalizeAccessWithPlatformAdmins(Access{AdminGroups: []string{"project-admin"}}, "project-z", []string{"/Ajou_Univ/Aolda_Admin"}); len(got.AdminGroups) != 2 || got.AdminGroups[1] != "/Ajou_Univ/Aolda_Admin" {
+	if got := normalizeAccessWithPlatformAdmins(Access{AdminGroups: []string{"project-admin"}}, "project-z", []string{"aods:platform:admin"}); len(got.AdminGroups) != 2 || got.AdminGroups[1] != "aods:platform:admin" {
 		t.Fatalf("expected configured platform admin to be appended, got %#v", got.AdminGroups)
 	}
-	if role, ok := resolveRoleWithPlatformAdmins(makeGroupSet([]string{"/Ajou_Univ/Aolda_Admin"}), Access{}, []string{"/Ajou_Univ/Aolda_Admin"}); !ok || role != RoleAdmin {
+	if role, ok := resolveRoleWithPlatformAdmins(makeGroupSet([]string{"aods:platform:admin"}), Access{}, []string{"aods:platform:admin"}); !ok || role != RoleAdmin {
 		t.Fatalf("expected configured platform admin override to resolve admin, got %s %v", role, ok)
 	}
 }

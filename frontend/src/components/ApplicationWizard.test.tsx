@@ -88,7 +88,8 @@ describe('ApplicationWizard', () => {
 
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
 
-    expect(screen.getByText('GitHub 저장소 URL을 입력하세요.')).toBeInTheDocument()
+    expect(screen.getAllByText('GitHub 저장소 URL을 입력하세요.').length).toBeGreaterThan(0)
+    expect(screen.getByPlaceholderText('예: https://github.com/aods/example-app.git')).toHaveFocus()
   })
 
   it('[US-APP-003] 공개 저장소는 토큰 없이도 다음 단계로 이동할 수 있다', async () => {
@@ -148,7 +149,7 @@ describe('ApplicationWizard', () => {
 
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
 
-    expect(screen.getByText('레지스트리 사용자명과 레지스트리 토큰은 함께 입력하세요.')).toBeInTheDocument()
+    expect(screen.getAllByText('레지스트리 사용자명과 레지스트리 토큰은 함께 입력하세요.').length).toBeGreaterThan(0)
   })
 
   it('[US-APP-005] 비밀값 입력칸은 브라우저 자동완성 방지 속성을 가진다', async () => {
@@ -219,5 +220,32 @@ describe('ApplicationWizard', () => {
     await user.click(screen.getAllByRole('button', { name: '이 서비스 선택' })[0])
 
     expect(screen.getByText('선택 완료')).toBeInTheDocument()
+  })
+
+  it('[US-APP-007] 빠른 생성은 설정 파일 확인 단계를 건너뛰고 배포 설정으로 이동한다', async () => {
+    const user = userEvent.setup()
+
+    render(
+      <ApplicationWizard
+        projectId="shared"
+        environments={[{ id: 'shared', name: '공용', writeMode: 'direct', default: true }]}
+        allowedStrategies={['Rollout']}
+        initialState={buildInitialState({
+          sourceMode: 'quick',
+          name: 'payment-api',
+          image: 'ghcr.io/aods/payment-api:1.0.0',
+        })}
+        onPreviewSource={vi.fn()}
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        onCancel={vi.fn()}
+        submitting={false}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
+
+    expect(screen.getByText('현재 프로젝트 정책')).toBeInTheDocument()
+    expect(screen.getByText('서비스 포트')).toBeInTheDocument()
+    expect(screen.queryByText('빠른 생성 모드에서는 저장소 설정 파일을 읽지 않으므로')).not.toBeInTheDocument()
   })
 })

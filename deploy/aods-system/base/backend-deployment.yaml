@@ -30,13 +30,13 @@ spec:
             - name: AODS_AUTH_MODE
               value: header
             - name: AODS_PLATFORM_ADMIN_AUTHORITIES
-              value: /Ajou_Univ/Aolda_Admin,aods:platform:admin
+              value: aods:platform:admin
             - name: AODS_ALLOW_DEV_FALLBACK
               value: "true"
             - name: AODS_ALLOWED_ORIGIN
               value: https://aods.jalju.com
             - name: AODS_DEV_GROUPS
-              value: aods:project-a:deploy,/Ajou_Univ/Aolda_Admin
+              value: aods:shared:deploy,aods:platform:admin
             - name: AODS_DEV_DISPLAY_NAME
               value: 테스트베드 운영자
             - name: AODS_GIT_MODE

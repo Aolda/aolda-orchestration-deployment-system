@@ -21,6 +21,7 @@ import {
   Table,
   Tabs,
   Text,
+  Textarea,
   TextInput,
   Tooltip,
   UnstyledButton,
@@ -62,6 +63,9 @@ import {
 } from './auth/oidc'
 import type {
   ApplicationResources,
+  ApplicationHealthSnapshot,
+  ApplicationSecretsResponse,
+  ApplicationSecretVersionsResponse,
   ApplicationMetricsResponse,
   ApplicationSummary,
   ChangeRecord,
@@ -75,12 +79,14 @@ import type {
   EnvironmentSummary,
   EventListResponse,
   FleetResourceOverviewResponse,
+  HealthSignal,
   MetricSeries,
   NetworkExposureResponse,
   ProjectPolicy,
   ProjectSummary,
   RepositoryPollStatus,
   RollbackPolicy,
+  SecretEntry,
   SyncStatus,
   SyncStatusResponse,
   ClusterSummary,
@@ -96,10 +102,26 @@ import { StatePanel } from './components/ui/StatePanel'
 const platformAdminAuthorities = new Set(parseAuthorityList(import.meta.env.VITE_AODS_PLATFORM_ADMIN_AUTHORITIES ?? 'aods:platform:admin'))
 const localLoginUsername = 'admin'
 const localLoginPassword = 'qwe1356@'
+const supportedDeploymentStrategies = ['Rollout'] as const
 const repositoryPollIntervalOptions = [
   { value: '60', label: '1분' },
   { value: '300', label: '5분' },
   { value: '600', label: '10분' },
+]
+const projectRefreshIntervalMs = 15000
+const applicationDetailsRefreshIntervalMs = 15000
+const showProjectComposer = false
+const showRollbackPolicyControls = false
+const showServiceMeshControls = false
+const showEmergencyActionControls = false
+const showApplicationLifecycleControls = false
+const cpuLimitPresetOptions = [
+  { value: '500m', label: '기본 상한 500m' },
+  { value: '1000m', label: '확장 상한 1000m' },
+]
+const memoryLimitPresetOptions = [
+  { value: '512Mi', label: '기본 상한 512Mi' },
+  { value: '1Gi', label: '확장 상한 1Gi' },
 ]
 
 function translateCreateApplicationError(message: string) {
@@ -146,12 +168,68 @@ function translateApplicationLogsError(error: unknown) {
     if (error.code === 'INVALID_REQUEST' && error.message.includes('selected pod or container was not found')) {
       return '선택한 pod 또는 container가 이미 교체되었습니다. 로그 대상을 다시 불러옵니다.'
     }
+    if (isStaleApplicationLogsError(error)) {
+      return 'Pod가 교체되어 기존 로그 대상이 사라졌습니다. 새 로그 대상을 다시 불러옵니다.'
+    }
     if (error.code === 'INTEGRATION_ERROR') {
-      return 'Kubernetes에서 컨테이너 로그를 가져오지 못했습니다. 잠시 후 다시 시도하세요.'
+      const cause = apiErrorDetailCause(error)
+      return cause
+        ? `Kubernetes 로그 조회 실패: ${cause}`
+        : 'Kubernetes에서 컨테이너 로그를 가져오지 못했습니다. 잠시 후 다시 시도하세요.'
     }
     return error.message || '컨테이너 로그를 불러오지 못했습니다.'
   }
   return '컨테이너 로그를 불러오지 못했습니다.'
+}
+
+function apiErrorDetailCause(error: ApiError) {
+  const cause = typeof error.details?.error === 'string' ? error.details.error.trim() : ''
+  if (!cause) {
+    return ''
+  }
+  return cause.length > 180 ? `${cause.slice(0, 177)}...` : cause
+}
+
+function translateRepositoryPollControlError(error: unknown, fallback: string) {
+  if (error instanceof ApiError) {
+    if (error.code === 'ROUTE_NOT_FOUND' || error.message === 'Route was not found.') {
+      return '백엔드를 다시 시작하세요. 현재 실행 중인 서버에는 저장소 sync API가 아직 반영되지 않았습니다.'
+    }
+
+    const cause = apiErrorDetailCause(error)
+    if (error.code === 'INTEGRATION_ERROR' && cause) {
+      const lowerCause = cause.toLowerCase()
+      if (lowerCause.includes('repository token was empty')) {
+        return '저장소 토큰이 비어 있습니다. Vault의 repository token 값을 확인하세요.'
+      }
+      if (lowerCause.includes('read repository secret') || lowerCause.includes('send vault request') || lowerCause.includes('vault')) {
+        return `저장소 토큰을 읽지 못했습니다. Vault 연결 상태를 확인하세요. (${cause})`
+      }
+      return `저장소 연동 실패: ${cause}`
+    }
+
+    return error.message || fallback
+  }
+
+  return fallback
+}
+
+function isStaleApplicationLogsError(error: unknown) {
+  if (!(error instanceof ApiError)) {
+    return false
+  }
+  if (error.code === 'INVALID_REQUEST' && error.message.includes('selected pod or container was not found')) {
+    return true
+  }
+  const text = [error.message, apiErrorDetailCause(error)].join(' ').toLowerCase()
+  return (
+    (error.code === 'INTEGRATION_ERROR' || error.code === 'STREAM_ERROR') &&
+    (
+      text.includes('not found') ||
+      text.includes('404') ||
+      text.includes('the server could not find the requested resource')
+    )
+  )
 }
 
 function translateApplicationNetworkError(error: unknown) {
@@ -169,6 +247,22 @@ function translateApplicationNetworkError(error: unknown) {
     return error.message || '트래픽 설정을 저장하지 못했습니다.'
   }
   return '트래픽 설정을 저장하지 못했습니다.'
+}
+
+function translateApplicationSecretsError(error: unknown) {
+  if (error instanceof ApiError) {
+    if (error.code === 'ROUTE_NOT_FOUND' || error.message === 'Route was not found.') {
+      return '백엔드를 다시 시작하세요. 현재 실행 중인 서버에는 환경 변수 관리 API가 아직 반영되지 않았습니다.'
+    }
+    if (error.code === 'FORBIDDEN') {
+      return 'deployer 이상 권한에서만 환경 변수를 조회하거나 수정할 수 있습니다.'
+    }
+    if (error.code === 'CHANGE_REVIEW_REQUIRED') {
+      return '이 환경은 직접 수정이 막혀 있습니다. 변경 요청 흐름에서 처리해야 합니다.'
+    }
+    return error.message || '환경 변수 정보를 처리하지 못했습니다.'
+  }
+  return '환경 변수 정보를 처리하지 못했습니다.'
 }
 
 // --- Internal Components ---
@@ -214,7 +308,25 @@ const SyncStatusBadge = ({ status }: { status: SyncStatus }) => {
   )
 }
 
-const MetricCard = ({ label, value, unit, points, color, active, onClick }: { label: string; value: string; unit: string; points?: { value: number | null }[]; color: string; active?: boolean; onClick?: () => void }) => (
+const MetricCard = ({
+  label,
+  value,
+  unit,
+  points,
+  color,
+  active,
+  onClick,
+  description,
+}: {
+  label: string
+  value: string
+  unit: string
+  points?: { value: number | null }[]
+  color: string
+  active?: boolean
+  onClick?: () => void
+  description?: string
+}) => (
   <div 
     className={`${classes.metricCard} ${active ? classes.activeMetricCard : ''}`} 
     onClick={onClick}
@@ -225,6 +337,9 @@ const MetricCard = ({ label, value, unit, points, color, active, onClick }: { la
       <Text className={classes.metricValue}>{value}</Text>
       {unit && <Text size="xs" c="dimmed" fw={700}>{unit}</Text>}
     </Group>
+    {description ? (
+      <Text size="xs" c="dimmed" mt={4}>{description}</Text>
+    ) : null}
     {points && (
       <div className={classes.sparklineWrapper}>
         <Sparkline points={points} color={color} />
@@ -276,6 +391,7 @@ type ApplicationCatalogSignal = {
   metricsState: ApplicationCatalogSignalState
   latestDeployment: DeploymentRecord | null
   deploymentState: ApplicationCatalogSignalState
+  healthSignals: HealthSignal[]
 }
 
 function formatCPUCoreValue(value?: number) {
@@ -317,8 +433,8 @@ const defaultApplicationResources: ApplicationResources = {
 function resolveApplicationResourcesDraft(resources?: ApplicationResources): ApplicationResources {
   return {
     requests: {
-      cpu: resources?.requests?.cpu || defaultApplicationResources.requests?.cpu || '',
-      memory: resources?.requests?.memory || defaultApplicationResources.requests?.memory || '',
+      cpu: defaultApplicationResources.requests?.cpu || '',
+      memory: defaultApplicationResources.requests?.memory || '',
     },
     limits: {
       cpu: resources?.limits?.cpu || defaultApplicationResources.limits?.cpu || '',
@@ -330,6 +446,11 @@ function resolveApplicationResourcesDraft(resources?: ApplicationResources): App
 type ApplicationNetworkDraft = {
   meshEnabled: boolean
   loadBalancerEnabled: boolean
+}
+
+type SecretDraftEntry = {
+  key: string
+  value: string
 }
 
 const defaultApplicationNetworkDraft: ApplicationNetworkDraft = {
@@ -641,52 +762,33 @@ const ProjectSettingsPanel = ({
               disabled={!canEditPolicies}
             />
           </div>
-          <div>
-            <HelpTooltipLabel label="자동 롤백" description="배포 이상 징후가 생기면 이전 안정 버전으로 자동 복구할지 나타냅니다." />
-            <Switch
-              checked={policyDraft.autoRollbackEnabled}
-              onChange={(event) => {
-                const checked = event.currentTarget.checked
-                setPolicyDraft((current) => (current ? { ...current, autoRollbackEnabled: checked } : current))
-              }}
-              disabled={!canEditPolicies}
-            />
-          </div>
+          {showRollbackPolicyControls ? (
+            <div>
+              <HelpTooltipLabel label="자동 롤백" description="배포 이상 징후가 생기면 이전 안정 버전으로 자동 복구할지 나타냅니다." />
+              <Switch
+                checked={policyDraft.autoRollbackEnabled}
+                onChange={(event) => {
+                  const checked = event.currentTarget.checked
+                  setPolicyDraft((current) => (current ? { ...current, autoRollbackEnabled: checked } : current))
+                }}
+                disabled={!canEditPolicies}
+              />
+            </div>
+          ) : null}
           <div>
             <HelpTooltipLabel label="허용 환경" description="이 프로젝트가 배포 대상으로 사용할 수 있는 운영 환경 목록입니다." />
-            <TextInput
-              value={policyDraft.allowedEnvironments.join(', ')}
-              placeholder="예: shared, prod"
-              onChange={(event) => {
-                const value = event.currentTarget.value
-                setPolicyDraft((current) => (current ? { ...current, allowedEnvironments: parseCommaSeparatedList(value) } : current))
-              }}
-              disabled={!canEditPolicies}
-            />
+            <Text size="sm" fw={800}>{policyDraft.allowedEnvironments.join(', ') || '-'}</Text>
+            <Text size="xs" c="dimmed">현재 플랫폼 기본값으로 고정되어 있으며 이 화면에서 수정하지 않습니다.</Text>
           </div>
           <div>
             <HelpTooltipLabel label="허용 배포 전략" description="이 프로젝트에서 선택 가능한 배포 방식 목록입니다." />
-            <TextInput
-              value={policyDraft.allowedDeploymentStrategies.join(', ')}
-              placeholder="예: Rollout, Canary"
-              onChange={(event) => {
-                const value = event.currentTarget.value
-                setPolicyDraft((current) => (current ? { ...current, allowedDeploymentStrategies: parseDeploymentStrategiesList(value) } : current))
-              }}
-              disabled={!canEditPolicies}
-            />
+            <Text size="sm" fw={800}>{supportedDeploymentStrategies.join(', ')}</Text>
+            <Text size="xs" c="dimmed">현재 프론트에서는 Rollout만 지원하도록 고정되어 있습니다.</Text>
           </div>
           <div style={{ gridColumn: '1 / -1' }}>
             <HelpTooltipLabel label="허용 클러스터 대상" description="이 프로젝트가 배포될 수 있는 클러스터 범위를 정의합니다." />
-            <TextInput
-              value={policyDraft.allowedClusterTargets.join(', ')}
-              placeholder="예: default, analytics"
-              onChange={(event) => {
-                const value = event.currentTarget.value
-                setPolicyDraft((current) => (current ? { ...current, allowedClusterTargets: parseCommaSeparatedList(value) } : current))
-              }}
-              disabled={!canEditPolicies}
-            />
+            <Text size="sm" fw={800}>{policyDraft.allowedClusterTargets.join(', ') || '-'}</Text>
+            <Text size="xs" c="dimmed">현재 플랫폼 기본값으로 고정되어 있으며 이 화면에서 수정하지 않습니다.</Text>
           </div>
           </SimpleGrid>
 
@@ -694,7 +796,7 @@ const ProjectSettingsPanel = ({
             {!canEditPolicies ? (
               <Text size="sm" c="dimmed">admin 역할만 정책 변경을 저장할 수 있습니다.</Text>
             ) : (
-              <Text size="sm" c="dimmed">콤마로 여러 값을 입력할 수 있습니다. 예: `shared, prod`</Text>
+              <Text size="sm" c="dimmed">허용 환경, 배포 전략, 클러스터 대상은 현재 플랫폼 기본값으로 고정됩니다.</Text>
             )}
             <Group>
               <Button
@@ -798,6 +900,7 @@ export default function App() {
   const [trackedChanges, setTrackedChanges] = useState<ChangeRecord[]>([])
   const [selectedChangeId, setSelectedChangeId] = useState<string | null>(null)
   const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
+  const [applicationDrawerTab, setApplicationDrawerTab] = useState('status')
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null)
   const [selectedDeploymentDetail, setSelectedDeploymentDetail] = useState<DeploymentRecord | null>(null)
   const [loading, setLoading] = useState(true)
@@ -815,6 +918,10 @@ export default function App() {
     rollbackPolicy: RollbackPolicy | null
     logTargets: ContainerLogTargetsResponse | null
   }>({ metrics: null, syncStatus: null, networkExposure: null, deployments: [], events: [], rollbackPolicy: null, logTargets: null })
+  const [applicationSecrets, setApplicationSecrets] = useState<ApplicationSecretsResponse | null>(null)
+  const [applicationSecretVersions, setApplicationSecretVersions] = useState<ApplicationSecretVersionsResponse | null>(null)
+  const [applicationSecretsLoaded, setApplicationSecretsLoaded] = useState(false)
+  const [applicationSecretsError, setApplicationSecretsError] = useState<string | null>(null)
   const [projectInsightMetrics, setProjectInsightMetrics] = useState<MetricSeries[]>([])
   const [applicationCatalogSignals, setApplicationCatalogSignals] = useState<Record<string, ApplicationCatalogSignal>>({})
 
@@ -834,6 +941,7 @@ export default function App() {
   const [savingRollbackPolicy, setSavingRollbackPolicy] = useState(false)
   const [savingApplicationNetwork, setSavingApplicationNetwork] = useState(false)
   const [savingApplicationResources, setSavingApplicationResources] = useState(false)
+  const [savingApplicationSecrets, setSavingApplicationSecrets] = useState(false)
   const [savingRepositoryPollInterval, setSavingRepositoryPollInterval] = useState(false)
   const [syncingRepositoryPoll, setSyncingRepositoryPoll] = useState(false)
   const [loadBalancerConfirmOpened, setLoadBalancerConfirmOpened] = useState(false)
@@ -847,6 +955,8 @@ export default function App() {
   const [liveLogEvents, setLiveLogEvents] = useState<ContainerLogEvent[]>([])
   const [liveLogStatus, setLiveLogStatus] = useState<'idle' | 'connecting' | 'streaming' | 'closed' | 'error'>('idle')
   const [liveLogError, setLiveLogError] = useState<string | null>(null)
+  const [refreshingApplicationLogs, setRefreshingApplicationLogs] = useState(false)
+  const [logStreamRefreshKey, setLogStreamRefreshKey] = useState(0)
   const [deployEnvironment, setDeployEnvironment] = useState('')
   const [pendingDangerAction, setPendingDangerAction] = useState<'abort' | 'rollback' | null>(null)
   const [pendingLifecycleAction, setPendingLifecycleAction] = useState<LifecycleActionKind | null>(null)
@@ -871,9 +981,17 @@ export default function App() {
   const [applicationNetworkDraft, setApplicationNetworkDraft] = useState<ApplicationNetworkDraft>(
     defaultApplicationNetworkDraft,
   )
+  const [secretValueDrafts, setSecretValueDrafts] = useState<Record<string, string>>({})
+  const [secretDeleteDrafts, setSecretDeleteDrafts] = useState<string[]>([])
+  const [newSecretRows, setNewSecretRows] = useState<SecretDraftEntry[]>([{ key: '', value: '' }])
+  const [secretBulkText, setSecretBulkText] = useState('')
+  const [secretBulkMessage, setSecretBulkMessage] = useState('')
+  const [restoringSecretVersion, setRestoringSecretVersion] = useState<number | null>(null)
   const [repositoryPollIntervalDraft, setRepositoryPollIntervalDraft] = useState('300')
   const projectRefreshSeq = useRef(0)
   const appDetailsRequestSeq = useRef(0)
+  const logTargetsRequestSeq = useRef(0)
+  const selectedAppIdRef = useRef<string | null>(null)
   const previousSelectedAppRef = useRef<string | null>(null)
   const previousDeploymentAppRef = useRef<string | null>(null)
   const previousResourceAppRef = useRef<string | null>(null)
@@ -882,12 +1000,16 @@ export default function App() {
   const previousRepositoryPollAppRef = useRef<string | null>(null)
   const previousRepositoryPollServerValueRef = useRef<string>('300')
   const isPlatformAdmin = hasPlatformAdmin(currentUser)
+  const visibleGlobalSections = useMemo<GlobalSection[]>(
+    () => (isPlatformAdmin ? ['projects', 'clusters', 'me'] : ['projects', 'me']),
+    [isPlatformAdmin],
+  )
 
   useEffect(() => {
-    if (activeSection === 'changes') {
+    if (!visibleGlobalSections.includes(activeSection)) {
       setActiveSection('projects')
     }
-  }, [activeSection])
+  }, [activeSection, visibleGlobalSections])
 
   const resetSessionState = useCallback(() => {
     setCurrentUser(null)
@@ -920,13 +1042,26 @@ export default function App() {
       rollbackPolicy: null,
       logTargets: null,
     })
+    setApplicationSecrets(null)
+    setApplicationSecretVersions(null)
+    setApplicationSecretsLoaded(false)
+    setApplicationSecretsError(null)
     setSelectedLogPodName('')
     setSelectedLogContainerName('')
     setLiveLogEvents([])
     setLiveLogStatus('idle')
     setLiveLogError(null)
+    setRefreshingApplicationLogs(false)
+    setLogStreamRefreshKey(0)
     setApplicationResourcesDraft(defaultApplicationResources)
     setApplicationNetworkDraft(defaultApplicationNetworkDraft)
+    setSecretValueDrafts({})
+    setSecretDeleteDrafts([])
+    setNewSecretRows([{ key: '', value: '' }])
+    setSecretBulkText('')
+    setSecretBulkMessage('')
+    setSavingApplicationSecrets(false)
+    setRestoringSecretVersion(null)
     setRepositoryPollIntervalDraft('300')
     setSavingRepositoryPollInterval(false)
     setSyncingRepositoryPoll(false)
@@ -989,13 +1124,14 @@ export default function App() {
     if (!isLoggedIn) return
     const fetchProjects = async () => {
       try {
-        const [meRes, projectRes, clusterRes] = await Promise.allSettled([
+        const [meRes, projectRes] = await Promise.allSettled([
           api.getCurrentUser(),
           api.getProjects(),
-          api.getClusters(),
         ])
         const warnings: string[] = []
+        let resolvedUser: CurrentUser | null = null
         if (meRes.status === 'fulfilled') {
+          resolvedUser = meRes.value
           setCurrentUser(meRes.value)
         } else {
           warnings.push('사용자 정보를 불러오지 못했습니다.')
@@ -1003,18 +1139,26 @@ export default function App() {
         if (projectRes.status !== 'fulfilled') {
           throw projectRes.reason
         }
-        if (clusterRes.status === 'fulfilled') {
-          setClusters(clusterRes.value.items)
+
+        if (hasPlatformAdmin(resolvedUser)) {
+          try {
+            const clusterRes = await api.getClusters()
+            setClusters(clusterRes.items)
+          } catch {
+            warnings.push('클러스터 카탈로그를 불러오지 못했습니다.')
+          }
         } else {
-          warnings.push('클러스터 카탈로그를 불러오지 못했습니다.')
+          setClusters([])
         }
+
+        const visibleProjects = filterVisibleProjects(projectRes.value.items)
         setBootstrapWarnings(warnings)
-        setProjects(projectRes.value.items)
+        setProjects(visibleProjects)
         setSelectedProjectId((current) => {
-          if (current && projectRes.value.items.some((project) => project.id === current)) {
+          if (current && visibleProjects.some((project) => project.id === current)) {
             return current
           }
-          return projectRes.value.items[0]?.id ?? null
+          return visibleProjects[0]?.id ?? null
         })
       } catch (error) {
         if (oidcAuthEnabled) {
@@ -1067,8 +1211,9 @@ export default function App() {
     const requestSeq = ++projectRefreshSeq.current
     try {
       const warnings: string[] = []
-      const [appRes, envRes, policyRes] = await Promise.allSettled([
+      const [appRes, healthRes, envRes, policyRes] = await Promise.allSettled([
         api.getApplications(projectId),
+        api.getProjectHealth(projectId),
         api.getProjectEnvironments(projectId),
         api.getProjectPolicies(projectId),
       ])
@@ -1077,82 +1222,84 @@ export default function App() {
       }
 
       if (appRes.status === 'fulfilled') {
-        setApplications(appRes.value.items)
+        const healthByApplication =
+          healthRes.status === 'fulfilled'
+            ? new Map(healthRes.value.items.map((item) => [item.applicationId, item]))
+            : new Map<string, ApplicationHealthSnapshot>()
+        setApplications(
+          appRes.value.items.map((application) => ({
+            ...application,
+            syncStatus: healthByApplication.get(application.id)?.syncStatus ?? application.syncStatus,
+          })),
+        )
         if (appRes.value.items.length === 0) {
           setProjectInsightMetrics([])
           setApplicationCatalogSignals({})
-        } else {
-          const signalResults = await Promise.all(
-            appRes.value.items.map(async (application) => {
-              const [metricsResult, deploymentsResult] = await Promise.allSettled([
-                api.getMetrics(application.id, '15m'),
-                api.getDeployments(application.id),
-              ])
-              return {
-                applicationId: application.id,
-                metricsResult,
-                deploymentsResult,
-              }
-            }),
-          )
-
-          if (requestSeq !== projectRefreshSeq.current) {
-            return
-          }
-
+        } else if (healthRes.status === 'fulfilled') {
           const aggregatedSeries: MetricSeries[] = []
           const nextSignals: Record<string, ApplicationCatalogSignal> = {}
-          let hasMetricsFailure = false
-          let hasDeploymentFailure = false
+          let missingHealthSnapshot = false
 
-          for (const signalResult of signalResults) {
-            const { applicationId, metricsResult, deploymentsResult } = signalResult
-
-            const metricsState: ApplicationCatalogSignalState =
-              metricsResult.status === 'fulfilled'
-                ? metricsResult.value.metrics.length > 0
-                  ? 'available'
-                  : 'empty'
-                : 'failed'
-            const deploymentState: ApplicationCatalogSignalState =
-              deploymentsResult.status === 'fulfilled'
-                ? deploymentsResult.value.items.length > 0
-                  ? 'available'
-                  : 'empty'
-                : 'failed'
-
-            if (metricsResult.status === 'fulfilled') {
-              aggregatedSeries.push(...metricsResult.value.metrics)
-            } else {
-              hasMetricsFailure = true
+          for (const application of appRes.value.items) {
+            const health = healthByApplication.get(application.id)
+            if (!health) {
+              missingHealthSnapshot = true
+              nextSignals[application.id] = {
+                metrics: [],
+                metricsState: 'failed',
+                latestDeployment: null,
+                deploymentState: 'failed',
+                healthSignals: [
+                  {
+                    key: 'health',
+                    status: 'Unavailable',
+                    message: '프로젝트 health snapshot에서 이 애플리케이션 항목을 찾지 못했습니다.',
+                  },
+                ],
+              }
+              continue
             }
 
-            const latestDeployment =
-              deploymentsResult.status === 'fulfilled'
-                ? deploymentsResult.value.items[0] ?? null
-                : null
-
-            if (deploymentsResult.status === 'rejected') {
-              hasDeploymentFailure = true
-            }
-
-            nextSignals[applicationId] = {
-              metrics: metricsResult.status === 'fulfilled' ? metricsResult.value.metrics : [],
-              metricsState,
-              latestDeployment,
-              deploymentState,
+            aggregatedSeries.push(...health.metrics)
+            nextSignals[application.id] = {
+              metrics: health.metrics,
+              metricsState: metricsStateFromHealth(health),
+              latestDeployment: health.latestDeployment ?? null,
+              deploymentState: deploymentStateFromHealth(health),
+              healthSignals: health.signals,
             }
           }
 
-          if (hasMetricsFailure) {
-            warnings.push('일부 애플리케이션 메트릭 요약을 불러오지 못했습니다.')
-          }
-          if (hasDeploymentFailure) {
-            warnings.push('일부 애플리케이션 배포 요약을 불러오지 못했습니다.')
+          if (missingHealthSnapshot) {
+            warnings.push('일부 애플리케이션 health snapshot을 찾지 못했습니다.')
           }
 
           setProjectInsightMetrics(aggregateMetricSeries(aggregatedSeries))
           setApplicationCatalogSignals(nextSignals)
+        } else {
+          setProjectInsightMetrics([])
+          setApplicationCatalogSignals(
+            Object.fromEntries(
+              appRes.value.items.map((application) => [
+                application.id,
+                {
+                  metrics: [],
+                  metricsState: 'failed' as const,
+                  latestDeployment: null,
+                  deploymentState: 'failed' as const,
+                  healthSignals: [
+                    {
+                      key: 'health',
+                      status: 'Unavailable',
+                      message: '프로젝트 health snapshot을 불러오지 못했습니다.',
+                    },
+                  ],
+                },
+              ]),
+            ),
+          )
+          warnings.push('프로젝트 health snapshot을 불러오지 못했습니다.')
+          console.error('Failed to refresh project health', healthRes.reason)
         }
       } else {
         setApplicationCatalogSignals({})
@@ -1254,7 +1401,7 @@ export default function App() {
     setProjectDataLoaded(false)
     setProjectDataWarnings([])
     refreshProjectData(selectedProjectId)
-    const ival = setInterval(() => refreshProjectData(selectedProjectId), 5000)
+    const ival = setInterval(() => refreshProjectData(selectedProjectId), projectRefreshIntervalMs)
     return () => clearInterval(ival)
   }, [refreshProjectData, selectedProjectId])
 
@@ -1276,14 +1423,13 @@ export default function App() {
     const requestSeq = ++appDetailsRequestSeq.current
     try {
       const warnings: string[] = []
-      const [metrics, syncStatus, networkExposure, deployments, events, rollback, logTargets] = await Promise.allSettled([
+      const [metrics, syncStatus, networkExposure, deployments, events, rollback] = await Promise.allSettled([
         api.getMetrics(appId, metricRange),
         api.getSyncStatus(appId),
         api.getApplicationNetworkExposure(appId),
         api.getDeployments(appId),
         api.getEvents(appId),
         api.getRollbackPolicy(appId),
-        api.getApplicationLogTargets(appId),
       ])
 
       if (requestSeq !== appDetailsRequestSeq.current) {
@@ -1297,7 +1443,7 @@ export default function App() {
         deployments: deployments.status === 'fulfilled' ? deployments.value.items : current.deployments,
         events: events.status === 'fulfilled' ? events.value.items : current.events,
         rollbackPolicy: rollback.status === 'fulfilled' ? rollback.value : current.rollbackPolicy,
-        logTargets: logTargets.status === 'fulfilled' ? logTargets.value : current.logTargets,
+        logTargets: current.logTargets,
       }))
 
       if (metrics.status === 'rejected') {
@@ -1318,9 +1464,6 @@ export default function App() {
       if (rollback.status === 'rejected') {
         warnings.push('롤백 정책을 불러오지 못했습니다.')
       }
-      if (logTargets.status === 'rejected') {
-        warnings.push(`로그 대상: ${translateApplicationLogsError(logTargets.reason)}`)
-      }
 
       if (rollback.status === 'fulfilled') {
         setRollbackPolicyDraft({
@@ -1339,12 +1482,90 @@ export default function App() {
     }
   }, [metricRange])
 
+  const refreshApplicationLogTargets = useCallback(async (
+    appId: string,
+    options: { restartStream?: boolean; quiet?: boolean } = {},
+  ) => {
+    const requestSeq = ++logTargetsRequestSeq.current
+    setRefreshingApplicationLogs(true)
+    if (options.restartStream) {
+      setLiveLogEvents([])
+      setLiveLogStatus('connecting')
+      setLiveLogError(null)
+    }
+
+    try {
+      const response = await api.getApplicationLogTargets(appId)
+      if (requestSeq !== logTargetsRequestSeq.current || selectedAppIdRef.current !== appId) {
+        return
+      }
+      setAppDetails((current) => ({
+        ...current,
+        logTargets: response,
+      }))
+      setAppDetailWarnings((current) => current.filter((warning) => !warning.startsWith('로그 대상: ')))
+      if (options.restartStream) {
+        setLogStreamRefreshKey((current) => current + 1)
+      }
+      if (!options.quiet) {
+        notifications.show({
+          title: '로그 대상 업데이트 완료',
+          message: '현재 pod/container 목록을 다시 불러왔습니다.',
+          color: 'green',
+        })
+      }
+    } catch (error) {
+      if (requestSeq !== logTargetsRequestSeq.current || selectedAppIdRef.current !== appId) {
+        return
+      }
+      const message = translateApplicationLogsError(error)
+      setLiveLogStatus('error')
+      setLiveLogError(message)
+      setAppDetailWarnings((current) => [
+        ...current.filter((warning) => !warning.startsWith('로그 대상: ')),
+        `로그 대상: ${message}`,
+      ])
+      if (!options.quiet) {
+        notifications.show({
+          title: '로그 업데이트 실패',
+          message,
+          color: 'red',
+        })
+      }
+    } finally {
+      if (requestSeq === logTargetsRequestSeq.current && selectedAppIdRef.current === appId) {
+        setRefreshingApplicationLogs(false)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
+    selectedAppIdRef.current = selectedAppId
+    logTargetsRequestSeq.current += 1
+    setAppDetails((current) => ({ ...current, logTargets: null }))
+    setRefreshingApplicationLogs(false)
+    setLogStreamRefreshKey(0)
+  }, [selectedAppId])
+
+  useEffect(() => {
+    if (selectedAppId) {
+      setApplicationDrawerTab('status')
+    }
+  }, [selectedAppId])
+
+  useEffect(() => {
+    if (!selectedAppId || applicationDrawerTab !== 'observability') {
+      return
+    }
+    void refreshApplicationLogTargets(selectedAppId, { quiet: true })
+  }, [applicationDrawerTab, refreshApplicationLogTargets, selectedAppId])
+
   useEffect(() => {
     if (!selectedAppId) return
     setAppDetailsLoaded(false)
     setAppDetailWarnings([])
     fetchAppDetails(selectedAppId)
-    const ival = setInterval(() => fetchAppDetails(selectedAppId), 5000)
+    const ival = setInterval(() => fetchAppDetails(selectedAppId), applicationDetailsRefreshIntervalMs)
     return () => clearInterval(ival)
   }, [selectedAppId, metricRange, fetchAppDetails])
 
@@ -1454,6 +1675,14 @@ export default function App() {
 
   const selectedProject = useMemo(() => projects.find((p) => p.id === selectedProjectId), [projects, selectedProjectId])
   const selectedApp = useMemo(() => applications.find((a) => a.id === selectedAppId), [applications, selectedAppId])
+  const cpuLimitOptions = useMemo(
+    () => buildResourceLimitOptions(applicationResourcesDraft.limits?.cpu, cpuLimitPresetOptions),
+    [applicationResourcesDraft.limits?.cpu],
+  )
+  const memoryLimitOptions = useMemo(
+    () => buildResourceLimitOptions(applicationResourcesDraft.limits?.memory, memoryLimitPresetOptions),
+    [applicationResourcesDraft.limits?.memory],
+  )
   const selectedLogTarget = useMemo(
     () => appDetails.logTargets?.items.find((target) => target.podName === selectedLogPodName) ?? null,
     [appDetails.logTargets, selectedLogPodName],
@@ -1467,6 +1696,62 @@ export default function App() {
   const canDeployInProject = canRoleDeploy(selectedProjectRole)
   const canAdminProject = canRoleAdmin(selectedProjectRole)
   const canDeleteProject = isPlatformAdmin && !isProtectedProject
+  const resetSecretEditor = useCallback((response?: ApplicationSecretsResponse | null) => {
+    setSecretValueDrafts({})
+    setSecretDeleteDrafts([])
+    setNewSecretRows([{ key: '', value: '' }])
+    setSecretBulkText('')
+    setSecretBulkMessage('')
+    if (response) {
+      setApplicationSecrets(response)
+    }
+  }, [])
+  const refreshApplicationSecrets = useCallback(async (appId: string) => {
+    setApplicationSecretsLoaded(false)
+    setApplicationSecretsError(null)
+    try {
+      const [secretsResult, versionsResult] = await Promise.allSettled([
+        api.getApplicationSecrets(appId),
+        api.getApplicationSecretVersions(appId),
+      ])
+      if (secretsResult.status === 'rejected') {
+        throw secretsResult.reason
+      }
+      resetSecretEditor(secretsResult.value)
+      if (versionsResult.status === 'fulfilled') {
+        setApplicationSecretVersions(versionsResult.value)
+      } else {
+        setApplicationSecretVersions(null)
+      }
+    } catch (error) {
+      setApplicationSecretsError(translateApplicationSecretsError(error))
+      setApplicationSecrets(null)
+      setApplicationSecretVersions(null)
+    } finally {
+      setApplicationSecretsLoaded(true)
+    }
+  }, [resetSecretEditor])
+
+  useEffect(() => {
+    if (!selectedAppId) {
+      setApplicationSecrets(null)
+      setApplicationSecretVersions(null)
+      setApplicationSecretsLoaded(false)
+      setApplicationSecretsError(null)
+      resetSecretEditor(null)
+      return
+    }
+    if (!canDeployInProject) {
+      setApplicationSecrets(null)
+      setApplicationSecretVersions(null)
+      setApplicationSecretsLoaded(true)
+      setApplicationSecretsError(null)
+      resetSecretEditor(null)
+      return
+    }
+    void refreshApplicationSecrets(selectedAppId)
+  }, [canDeployInProject, refreshApplicationSecrets, resetSecretEditor, selectedAppId])
+
   const persistedLoadBalancerEnabled = selectedApp?.loadBalancerEnabled ?? false
   const networkSyncStatus = appDetails.syncStatus?.status ?? selectedApp?.syncStatus
   const loadBalancerExposureWorkflow = useMemo(
@@ -1580,25 +1865,10 @@ export default function App() {
         return
       }
 
-      if (error instanceof ApiError && error.code === 'INVALID_REQUEST' && error.message.includes('selected pod or container was not found')) {
+      if (isStaleApplicationLogsError(error)) {
         setLiveLogStatus('connecting')
         setLiveLogError('선택한 pod/container가 교체되어 로그 대상을 다시 찾는 중입니다.')
-        void api.getApplicationLogTargets(selectedAppId).then((response) => {
-          if (controller.signal.aborted) {
-            return
-          }
-          setAppDetails((current) => ({
-            ...current,
-            logTargets: response,
-          }))
-          setLiveLogError(null)
-        }).catch((refreshError) => {
-          if (controller.signal.aborted) {
-            return
-          }
-          setLiveLogStatus('error')
-          setLiveLogError(translateApplicationLogsError(refreshError))
-        })
+        void refreshApplicationLogTargets(selectedAppId, { restartStream: true, quiet: true })
         return
       }
 
@@ -1607,7 +1877,7 @@ export default function App() {
     })
 
     return () => controller.abort()
-  }, [selectedAppId, selectedLogContainerName, selectedLogPodName])
+  }, [logStreamRefreshKey, refreshApplicationLogTargets, selectedAppId, selectedLogContainerName, selectedLogPodName])
 
   useEffect(() => {
     if (selectedProjectId === previousSelectedProjectRef.current) {
@@ -1622,7 +1892,7 @@ export default function App() {
     <StatePanel
       kind="forbidden"
       title="조회 전용 프로젝트입니다"
-      description="현재 역할은 viewer라서 새 애플리케이션 생성, 배포, change draft 생성, 긴급 조치를 직접 실행할 수 없습니다."
+      description="현재 역할은 viewer라서 새 애플리케이션 생성, 배포, change draft 생성을 직접 실행할 수 없습니다."
     />
   ) : environments.some((environment) => environment.writeMode === 'pull_request') ? (
     <StatePanel
@@ -1650,7 +1920,7 @@ export default function App() {
         description: form.description.trim() || undefined,
         image: form.sourceMode === 'quick' ? form.image.trim() : undefined,
         servicePort: form.sourceMode === 'quick' ? form.servicePort : undefined,
-        deploymentStrategy: form.sourceMode === 'quick' ? form.deploymentStrategy : undefined,
+        deploymentStrategy: form.sourceMode === 'quick' ? 'Rollout' : undefined,
         environment: form.environment || defaultCreateEnvironment?.id || 'shared',
         secrets: form.secrets
           .filter((secret) => secret.key.trim() && secret.value.trim())
@@ -1767,7 +2037,7 @@ export default function App() {
         description: projectDraft.description?.trim() || undefined,
       })
       const projectRes = await api.getProjects()
-      setProjects(projectRes.items)
+      setProjects(filterVisibleProjects(projectRes.items))
       setSelectedProjectId(created.id)
       setProjectDraft({ id: '', name: '', description: '' })
       setProjectComposerOpen(false)
@@ -1792,7 +2062,12 @@ export default function App() {
 
     setSavingProjectPolicy(true)
     try {
-      const saved = await api.updateProjectPolicies(selectedProjectId, policy)
+      const saved = await api.updateProjectPolicies(selectedProjectId, {
+        ...policy,
+        allowedEnvironments: projectPolicy?.allowedEnvironments ?? policy.allowedEnvironments,
+        allowedDeploymentStrategies: [...supportedDeploymentStrategies],
+        allowedClusterTargets: projectPolicy?.allowedClusterTargets ?? policy.allowedClusterTargets,
+      })
       setProjectPolicy(saved)
       notifications.show({
         title: '정책 저장 완료',
@@ -1834,9 +2109,10 @@ export default function App() {
     try {
       const deleted = await api.deleteProject(selectedProjectId)
       const projectRes = await api.getProjects()
-      const nextSelectedProjectId = projectRes.items[0]?.id ?? null
+      const visibleProjects = filterVisibleProjects(projectRes.items)
+      const nextSelectedProjectId = visibleProjects[0]?.id ?? null
 
-      setProjects(projectRes.items)
+      setProjects(visibleProjects)
       setApplications([])
       setEnvironments([])
       setProjectPolicy(null)
@@ -2107,12 +2383,12 @@ export default function App() {
       const saved = await api.patchApplication(selectedAppId, {
         resources: {
           requests: {
-            cpu: applicationResourcesDraft.requests?.cpu?.trim() || '',
-            memory: applicationResourcesDraft.requests?.memory?.trim() || '',
+            cpu: defaultApplicationResources.requests?.cpu || '',
+            memory: defaultApplicationResources.requests?.memory || '',
           },
           limits: {
-            cpu: applicationResourcesDraft.limits?.cpu?.trim() || '',
-            memory: applicationResourcesDraft.limits?.memory?.trim() || '',
+            cpu: applicationResourcesDraft.limits?.cpu?.trim() || defaultApplicationResources.limits?.cpu || '',
+            memory: applicationResourcesDraft.limits?.memory?.trim() || defaultApplicationResources.limits?.memory || '',
           },
         },
       })
@@ -2135,7 +2411,7 @@ export default function App() {
       setApplicationResourcesDraft(resolveApplicationResourcesDraft(saved.resources))
       notifications.show({
         title: '리소스 할당 저장 완료',
-        message: '애플리케이션 request/limit을 갱신했습니다.',
+        message: '애플리케이션 기본 요청값과 상한선을 갱신했습니다.',
         color: 'green',
       })
       if (selectedProjectId) {
@@ -2164,14 +2440,6 @@ export default function App() {
       })
       return
     }
-    if (selectedApp?.deploymentStrategy === 'Canary' && !applicationNetworkDraft.meshEnabled) {
-      notifications.show({
-        title: '설정 확인 필요',
-        message: '카나리아 배포는 Istio mesh가 반드시 켜져 있어야 합니다.',
-        color: 'yellow',
-      })
-      return
-    }
     if (selectedApp?.deploymentStrategy === 'Canary' && applicationNetworkDraft.loadBalancerEnabled) {
       notifications.show({
         title: '설정 확인 필요',
@@ -2184,7 +2452,7 @@ export default function App() {
     setSavingApplicationNetwork(true)
     try {
       const saved = await api.patchApplication(selectedAppId, {
-        meshEnabled: applicationNetworkDraft.meshEnabled,
+        meshEnabled: selectedApp?.meshEnabled ?? applicationNetworkDraft.meshEnabled,
         loadBalancerEnabled: applicationNetworkDraft.loadBalancerEnabled,
       })
 
@@ -2206,7 +2474,7 @@ export default function App() {
       setApplicationNetworkDraft(resolveApplicationNetworkDraft(saved))
       notifications.show({
         title: '트래픽 설정 저장 완료',
-        message: 'Istio mesh와 LoadBalancer 노출 정책을 갱신했습니다.',
+        message: 'LoadBalancer 노출 정책을 갱신했습니다.',
         color: 'green',
       })
       if (selectedProjectId) {
@@ -2222,6 +2490,137 @@ export default function App() {
       })
     } finally {
       setSavingApplicationNetwork(false)
+    }
+  }
+
+  const handleApplySecretBulkText = () => {
+    const parsed = parseEnvEntries(secretBulkText)
+    if (parsed.length === 0) {
+      setSecretBulkMessage('.env 형식에서 읽을 수 있는 항목이 없습니다.')
+      return
+    }
+
+    const existingKeys = new Set((applicationSecrets?.items ?? []).map((item) => item.key))
+    setSecretValueDrafts((current) => {
+      const next = { ...current }
+      for (const entry of parsed) {
+        if (existingKeys.has(entry.key)) {
+          next[entry.key] = entry.value
+        }
+      }
+      return next
+    })
+    setNewSecretRows((current) => {
+      const byKey = new Map<string, string>()
+      for (const row of current) {
+        const key = row.key.trim()
+        if (key && !existingKeys.has(key)) {
+          byKey.set(key, row.value)
+        }
+      }
+      for (const entry of parsed) {
+        if (!existingKeys.has(entry.key)) {
+          byKey.set(entry.key, entry.value)
+        }
+      }
+      const rows = Array.from(byKey.entries()).map(([key, value]) => ({ key, value }))
+      return [...rows, { key: '', value: '' }]
+    })
+    setSecretBulkMessage(`${parsed.length}개 항목을 편집 내용에 반영했습니다.`)
+  }
+
+  const handleSaveApplicationSecrets = async () => {
+    if (!selectedAppId) return
+    if (!canDeployInProject) {
+      notifications.show({
+        title: '권한 없음',
+        message: 'viewer 역할은 환경 변수를 수정할 수 없습니다.',
+        color: 'yellow',
+      })
+      return
+    }
+
+    const deleteSet = new Set(secretDeleteDrafts)
+    const setByKey = new Map<string, string>()
+    for (const [key, value] of Object.entries(secretValueDrafts)) {
+      const normalizedKey = key.trim()
+      if (normalizedKey && value !== '' && !deleteSet.has(normalizedKey)) {
+        setByKey.set(normalizedKey, value)
+      }
+    }
+    for (const row of newSecretRows) {
+      const normalizedKey = row.key.trim()
+      if (normalizedKey && row.value !== '' && !deleteSet.has(normalizedKey)) {
+        setByKey.set(normalizedKey, row.value)
+      }
+    }
+
+    const setEntries: SecretEntry[] = Array.from(setByKey.entries()).map(([key, value]) => ({ key, value }))
+    const deleteEntries = Array.from(deleteSet)
+    if (setEntries.length === 0 && deleteEntries.length === 0) {
+      notifications.show({
+        title: '변경 없음',
+        message: '교체하거나 삭제할 환경 변수를 먼저 지정하세요.',
+        color: 'gray',
+      })
+      return
+    }
+
+    setSavingApplicationSecrets(true)
+    try {
+      const response = await api.updateApplicationSecrets(selectedAppId, {
+        set: setEntries,
+        delete: deleteEntries,
+      })
+      resetSecretEditor(response)
+      await refreshApplicationSecrets(selectedAppId)
+      notifications.show({
+        title: '환경 변수 저장 완료',
+        message: 'Vault 값과 GitOps Secret 연결 상태를 갱신했습니다. 실행 중인 Pod에는 다음 rollout부터 반영됩니다.',
+        color: 'green',
+      })
+      await fetchAppDetails(selectedAppId)
+    } catch (error) {
+      notifications.show({
+        title: '환경 변수 저장 실패',
+        message: translateApplicationSecretsError(error),
+        color: 'red',
+      })
+    } finally {
+      setSavingApplicationSecrets(false)
+    }
+  }
+
+  const handleRestoreApplicationSecretVersion = async (version: number) => {
+    if (!selectedAppId) return
+    if (!canDeployInProject) {
+      notifications.show({
+        title: '권한 없음',
+        message: 'viewer 역할은 환경 변수 버전을 복원할 수 없습니다.',
+        color: 'yellow',
+      })
+      return
+    }
+
+    setRestoringSecretVersion(version)
+    try {
+      const response = await api.restoreApplicationSecretVersion(selectedAppId, version)
+      resetSecretEditor(response)
+      await refreshApplicationSecrets(selectedAppId)
+      notifications.show({
+        title: '환경 변수 버전 복원 완료',
+        message: `Vault version ${version} 값으로 새 버전을 만들었습니다. 실행 중인 Pod에는 다음 rollout부터 반영됩니다.`,
+        color: 'green',
+      })
+      await fetchAppDetails(selectedAppId)
+    } catch (error) {
+      notifications.show({
+        title: '환경 변수 버전 복원 실패',
+        message: translateApplicationSecretsError(error),
+        color: 'red',
+      })
+    } finally {
+      setRestoringSecretVersion(null)
     }
   }
 
@@ -2253,6 +2652,14 @@ export default function App() {
       })
       return
     }
+    if (repositoryPoll.intervalSeconds === nextIntervalSeconds) {
+      notifications.show({
+        title: '변경 없음',
+        message: `저장소 확인 주기가 이미 ${formatRepositoryPollInterval(nextIntervalSeconds)}입니다.`,
+        color: 'gray',
+      })
+      return
+    }
 
     setSavingRepositoryPollInterval(true)
     try {
@@ -2266,10 +2673,9 @@ export default function App() {
       })
       await fetchAppDetails(selectedAppId)
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : 'polling 주기를 저장하지 못했습니다.'
       notifications.show({
         title: 'Polling 주기 저장 실패',
-        message,
+        message: translateRepositoryPollControlError(error, 'polling 주기를 저장하지 못했습니다.'),
         color: 'red',
       })
     } finally {
@@ -2309,10 +2715,9 @@ export default function App() {
       }
       await fetchAppDetails(selectedAppId)
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : '저장소 sync를 실행하지 못했습니다.'
       notifications.show({
         title: '저장소 sync 실패',
-        message,
+        message: translateRepositoryPollControlError(error, '저장소 sync를 실행하지 못했습니다.'),
         color: 'red',
       })
     } finally {
@@ -2529,6 +2934,7 @@ export default function App() {
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="lg">
               {applications.map((app) => {
                 const signal = applicationCatalogSignals[app.id]
+                const syncIssue = applicationSyncIssue(app, signal)
 
                 return (
                   <div key={app.id} className={classes.surfaceCard}>
@@ -2540,6 +2946,13 @@ export default function App() {
                         </div>
                         <SyncStatusBadge status={app.syncStatus} />
                       </Group>
+
+                      {syncIssue ? (
+                        <Alert color={applicationSyncIssueColor(app.syncStatus)} variant="light" icon={<IconAlertTriangle size={16} />}>
+                          <Text size="sm" fw={800}>{app.syncStatus === 'Unknown' ? 'Sync 확인 불가 사유' : 'Sync 상태 사유'}</Text>
+                          <Text size="sm" style={{ wordBreak: 'break-word' }}>{syncIssue}</Text>
+                        </Alert>
+                      ) : null}
 
                       {hasApplicationMetrics(signal) ? (
                         <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm">
@@ -2663,6 +3076,7 @@ export default function App() {
         <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="lg">
           {applications.map((app) => {
             const signal = applicationCatalogSignals[app.id]
+            const syncIssue = applicationSyncIssue(app, signal)
             return (
             <UnstyledButton
               key={app.id}
@@ -2688,12 +3102,16 @@ export default function App() {
                     {buildApplicationCatalogSummary(app, selectedProject?.namespace || 'default', signal)}
                   </Text>
 
+                  {syncIssue ? (
+                    <Alert color={applicationSyncIssueColor(app.syncStatus)} variant="light" icon={<IconAlertTriangle size={16} />}>
+                      <Text size="sm" fw={800}>{app.syncStatus === 'Unknown' ? 'Sync 확인 불가 사유' : 'Sync 상태 사유'}</Text>
+                      <Text size="sm" style={{ wordBreak: 'break-word' }}>{syncIssue}</Text>
+                    </Alert>
+                  ) : null}
+
                   <Group gap="xs">
                     <Badge color={app.loadBalancerEnabled ? 'blue' : 'gray'} variant="light" radius="sm">
                       {formatLoadBalancerBadgeLabel(app.loadBalancerEnabled)}
-                    </Badge>
-                    <Badge color={app.meshEnabled ? 'teal' : 'gray'} variant="light" radius="sm">
-                      {app.meshEnabled ? 'Istio mesh' : '일반 서비스'}
                     </Badge>
                   </Group>
 
@@ -2771,7 +3189,7 @@ export default function App() {
           description={
             projectDataWarnings.length > 0
               ? projectDataWarnings.join(' ')
-              : '운영 환경, 허용 전략, 자동 롤백 등 정책 정보를 수집하고 있습니다.'
+              : '운영 환경, 허용 전략, 클러스터 대상 정책 정보를 수집하고 있습니다.'
           }
         />
       ) : null}
@@ -2915,6 +3333,15 @@ export default function App() {
       case 'changes':
         return changesSectionContent
       case 'clusters':
+        if (!isPlatformAdmin) {
+          return (
+            <StatePanel
+              kind="forbidden"
+              title="platform admin 전용 화면입니다"
+              description="클러스터 카탈로그와 전체 리소스 효율 화면은 platform admin 권한에서만 접근할 수 있습니다."
+            />
+          )
+        }
         return (
           <ClustersPage
             clusters={clusters}
@@ -2969,6 +3396,9 @@ export default function App() {
   const previousDeployment = appDetails.deployments[1]
   const latestEvent = appDetails.events[0]
   const repositoryPoll = appDetails.syncStatus?.repositoryPoll ?? null
+  const repositoryPollIntervalChanged = repositoryPoll?.enabled
+    ? String(repositoryPoll.intervalSeconds) !== repositoryPollIntervalDraft
+    : false
   const latestFailedDeployment = appDetails.deployments.find(
     (deployment) => deployment.status === 'Aborted' || deployment.status === 'Failed',
   )
@@ -3070,6 +3500,7 @@ export default function App() {
       <PortalShell
         activeSection={activeSection}
         onSectionChange={setActiveSection}
+        visibleSections={visibleGlobalSections}
         breadcrumbs={sectionMeta.breadcrumbs}
         title={sectionMeta.title}
         description={sectionMeta.description}
@@ -3117,7 +3548,7 @@ export default function App() {
           setProjectTab(defaultProjectTab())
           setActiveSection('projects')
         }}
-        canCreateProject={isPlatformAdmin}
+        canCreateProject={showProjectComposer && isPlatformAdmin}
         onCreateProject={() => {
           setActiveSection('projects')
           setProjectTab(defaultProjectTab())
@@ -3132,6 +3563,7 @@ export default function App() {
         opened={!!selectedAppId}
         onClose={() => {
           setSelectedAppId(null)
+          setApplicationDrawerTab('status')
         }}
         position="right"
         size="75%"
@@ -3144,10 +3576,17 @@ export default function App() {
         styles={{ title: { fontSize: '1.2rem' }, body: { padding: 0 } }}
       >
         <ScrollArea h="calc(100vh - 80px)">
-          <Tabs defaultValue="status" color="lagoon.6" styles={{ tab: { padding: '16px 20px' } }}>
+          <Tabs
+            value={applicationDrawerTab}
+            onChange={(value) => setApplicationDrawerTab(value ?? 'status')}
+            keepMounted={false}
+            color="lagoon.6"
+            styles={{ tab: { padding: '16px 20px' } }}
+          >
             <Tabs.List>
               <Tabs.Tab value="status" leftSection={<IconActivity size={16} />}>상태</Tabs.Tab>
               <Tabs.Tab value="deploy" leftSection={<IconRocket size={16} />}>배포</Tabs.Tab>
+              <Tabs.Tab value="secrets" leftSection={<IconLock size={16} />}>환경 변수</Tabs.Tab>
               <Tabs.Tab value="observability" leftSection={<IconDatabase size={16} />}>관측</Tabs.Tab>
               <Tabs.Tab value="history" leftSection={<IconHistory size={16} />}>배포 이력</Tabs.Tab>
               <Tabs.Tab value="rules" leftSection={<IconShieldCheck size={16} />}>운영 규칙</Tabs.Tab>
@@ -3173,25 +3612,25 @@ export default function App() {
                   <>
                     <SimpleGrid cols={{ base: 1, sm: 2, xl: 4 }} spacing="md">
                       <div className={classes.statBadge}>
-                        <Text className={classes.statLabel}>Sync Status</Text>
+                        <Text className={classes.statLabel}>GitOps 동기화</Text>
                         <Text className={classes.statValueSmall}>
-                          {appDetails.syncStatus?.status ?? selectedApp?.syncStatus ?? 'Unknown'}
+                          {formatSyncStatusLabel(appDetails.syncStatus?.status ?? selectedApp?.syncStatus)}
                         </Text>
                       </div>
                       <div className={classes.statBadge}>
-                        <Text className={classes.statLabel}>Latest Deploy</Text>
+                        <Text className={classes.statLabel}>최근 배포 태그</Text>
                         <Text className={classes.statValueSmall}>
                           {latestDeployment?.imageTag ?? '없음'}
                         </Text>
                       </div>
                       <div className={classes.statBadge}>
-                        <Text className={classes.statLabel}>Target Environment</Text>
+                        <Text className={classes.statLabel}>대상 환경</Text>
                         <Text className={classes.statValueSmall}>
                           {selectedDeployEnvironment?.name ?? '-'}
                         </Text>
                       </div>
                       <div className={classes.statBadge}>
-                        <Text className={classes.statLabel}>Action Scope</Text>
+                        <Text className={classes.statLabel}>권한 범위</Text>
                         <Text className={classes.statValueSmall}>
                           {canDeployInProject ? (canAdminProject ? '관리자 운영' : '배포 운영') : '조회 전용'}
                         </Text>
@@ -3206,7 +3645,7 @@ export default function App() {
                       ) : null}
                       {repositoryPoll?.enabled ? (
                         <div className={classes.statBadge}>
-                          <Text className={classes.statLabel}>Polling 주기</Text>
+                          <Text className={classes.statLabel}>저장소 확인 주기</Text>
                           <Text className={classes.statValueSmall}>
                             {formatRepositoryPollInterval(repositoryPoll.intervalSeconds)}
                           </Text>
@@ -3233,12 +3672,19 @@ export default function App() {
                       }
                       description={
                         !canDeployInProject
-                          ? 'viewer 역할에서는 배포, 긴급 조치, 정책 저장이 막혀 있습니다.'
+                          ? 'viewer 역할에서는 배포와 정책 저장이 막혀 있습니다.'
                           : isProtectedDeployTarget
                             ? `${selectedDeployEnvironment?.name ?? '선택한'} 환경은 change request 승인 후 Git 반영과 Flux 동기화 순서로 배포됩니다.`
                             : `${selectedDeployEnvironment?.name ?? '선택한'} 환경은 레포에서 image tag 또는 descriptor를 바꾸면 Flux가 반영합니다. 이 화면에서는 실행이 아니라 상태만 확인합니다.`
                       }
                     />
+                    <Alert
+                      color={runtimeReadinessColor(appDetails.syncStatus?.status ?? selectedApp?.syncStatus, latestDeployment)}
+                      radius="md"
+                      icon={<IconCloudCheck size={16} />}
+                    >
+                      {describeRuntimeReadiness(appDetails.syncStatus?.status ?? selectedApp?.syncStatus, latestDeployment)}
+                    </Alert>
                     {repositoryPoll?.enabled ? (
                       <Alert
                         color={repositoryPoll.lastResult === 'Error' ? 'red' : 'gray'}
@@ -3254,7 +3700,7 @@ export default function App() {
                           <div>
                             <Text className={classes.sectionEyebrow}>저장소 Sync 제어</Text>
                             <Text size="sm" c="dimmed">
-                              Argo CD의 수동 sync처럼 지금 바로 저장소를 재확인하거나, 자동 polling 주기를 1분·5분·10분으로 제한해 운영할 수 있습니다.
+                              Argo CD의 수동 sync처럼 지금 바로 저장소를 재확인하거나, 자동 polling 주기를 1분·5분·10분으로 제한해 운영할 수 있습니다. 주기 저장은 GitOps repo commit/push 이후 완료됩니다.
                             </Text>
                           </div>
                           <Group gap="sm" align="end" wrap="wrap">
@@ -3270,7 +3716,7 @@ export default function App() {
                             <Button
                               variant="default"
                               loading={savingRepositoryPollInterval}
-                              disabled={!canDeployInProject}
+                              disabled={!canDeployInProject || !repositoryPollIntervalChanged}
                               onClick={handleSaveRepositoryPollInterval}
                             >
                               주기 저장
@@ -3299,7 +3745,7 @@ export default function App() {
                         <div className={`${classes.progressItem} ${deploymentStageClass(latestDeployment ? 'complete' : 'pending', classes)}`}>
                           <div className={classes.progressMarker}><IconGitBranch size={16} /></div>
                           <div>
-                            <Text className={classes.progressTitle}>Git Change Recorded</Text>
+                            <Text className={classes.progressTitle}>Git 변경 기록됨</Text>
                             <Text className={classes.progressDetail}>
                               {latestDeployment
                                 ? `${latestDeployment.imageTag} 버전 요청이 기록되었습니다.`
@@ -3310,7 +3756,7 @@ export default function App() {
                         <div className={`${classes.progressItem} ${deploymentStageClass(syncStageState(appDetails.syncStatus?.status), classes)}`}>
                           <div className={classes.progressMarker}><IconRefresh size={16} /></div>
                           <div>
-                            <Text className={classes.progressTitle}>Flux Syncing</Text>
+                            <Text className={classes.progressTitle}>Flux 동기화</Text>
                             <Text className={classes.progressDetail}>
                               {appDetails.syncStatus?.message || '동기화 상태를 아직 수집하지 못했습니다.'}
                             </Text>
@@ -3319,7 +3765,7 @@ export default function App() {
                         <div className={`${classes.progressItem} ${deploymentStageClass(rolloutStageState(latestDeployment), classes)}`}>
                           <div className={classes.progressMarker}><IconBox size={16} /></div>
                           <div>
-                            <Text className={classes.progressTitle}>Rollout / Canary</Text>
+                            <Text className={classes.progressTitle}>런타임 반영</Text>
                             <Text className={classes.progressDetail}>
                               {rolloutStageMessage(latestDeployment)}
                             </Text>
@@ -3329,7 +3775,7 @@ export default function App() {
                     </div>
 
                     <div className={classes.surfaceCard}>
-                      <Text className={classes.sectionEyebrow} mb="md">Current Signals</Text>
+                      <Text className={classes.sectionEyebrow} mb="md">현재 신호</Text>
                       {latestEvent || latestFailedDeployment || appDetails.syncStatus?.message ? (
                         <Stack gap="sm">
                           {latestFailedDeployment ? (
@@ -3412,7 +3858,7 @@ export default function App() {
                         </div>
                         <div className={classes.statBadge}>
                           <Text className={classes.statLabel}>Flux 상태</Text>
-                          <Text className={classes.statValueSmall}>{appDetails.syncStatus?.status ?? selectedApp?.syncStatus ?? 'Unknown'}</Text>
+                          <Text className={classes.statValueSmall}>{formatSyncStatusLabel(appDetails.syncStatus?.status ?? selectedApp?.syncStatus)}</Text>
                         </div>
                       </SimpleGrid>
                       <Alert color="gray" radius="md" icon={<IconDatabase size={16} />}>
@@ -3429,7 +3875,7 @@ export default function App() {
                     <div className={`${classes.progressItem} ${deploymentStageClass(appDetails.deployments.length > 0 ? 'complete' : 'pending', classes)}`}>
                       <div className={classes.progressMarker}><IconGitBranch size={16} /></div>
                       <div>
-                        <Text className={classes.progressTitle}>Git Commit Pushed</Text>
+                        <Text className={classes.progressTitle}>Git 커밋 반영</Text>
                         <Text className={classes.progressDetail}>
                           {latestDeployment
                             ? `${latestDeployment.imageTag} 버전 요청이 저장되었습니다.`
@@ -3440,7 +3886,7 @@ export default function App() {
                     <div className={`${classes.progressItem} ${deploymentStageClass(syncStageState(appDetails.syncStatus?.status), classes)}`}>
                       <div className={classes.progressMarker}><IconRefresh size={16} /></div>
                       <div>
-                        <Text className={classes.progressTitle}>Flux Syncing</Text>
+                        <Text className={classes.progressTitle}>Flux 동기화</Text>
                         <Text className={classes.progressDetail}>
                           {appDetails.syncStatus?.message || '동기화 상태를 아직 수집하지 못했습니다.'}
                         </Text>
@@ -3449,7 +3895,7 @@ export default function App() {
                     <div className={`${classes.progressItem} ${deploymentStageClass(rolloutStageState(latestDeployment), classes)}`}>
                       <div className={classes.progressMarker}><IconBox size={16} /></div>
                       <div>
-                        <Text className={classes.progressTitle}>Canary Monitoring</Text>
+                        <Text className={classes.progressTitle}>런타임 반영</Text>
                         <Text className={classes.progressDetail}>
                           {rolloutStageMessage(latestDeployment)}
                         </Text>
@@ -3465,6 +3911,278 @@ export default function App() {
                     description={latestFailedDeployment.message || `${latestFailedDeployment.imageTag} 배포가 정상 종료되지 않았습니다.`}
                   />
                 ) : null}
+              </Stack>
+            </Tabs.Panel>
+
+            <Tabs.Panel value="secrets" p="xl">
+              <Stack gap="lg">
+                {!canDeployInProject ? (
+                  <StatePanel
+                    kind="forbidden"
+                    title="deployer 이상 권한에서만 환경 변수를 수정할 수 있습니다"
+                    description="Vault 환경 변수 키 목록과 값 교체는 배포 권한이 있는 사용자에게만 열립니다."
+                  />
+                ) : !applicationSecretsLoaded ? (
+                  <StatePanel
+                    kind="loading"
+                    title="환경 변수 정보를 불러오는 중"
+                    description="Vault Secret 경로와 등록된 키 목록을 확인하고 있습니다."
+                  />
+                ) : applicationSecretsError ? (
+                  <StatePanel
+                    kind="partial"
+                    title="환경 변수 정보를 불러오지 못했습니다"
+                    description={applicationSecretsError}
+                  />
+                ) : (
+                  <>
+                    <SimpleGrid cols={{ base: 1, md: 5 }} spacing="md">
+                      <div className={classes.statBadge}>
+                        <Text className={classes.statLabel}>Vault 경로</Text>
+                        <Text className={classes.statValueSmall} style={{ wordBreak: 'break-all' }}>
+                          {applicationSecrets?.secretPath || '-'}
+                        </Text>
+                      </div>
+                      <div className={classes.statBadge}>
+                        <Text className={classes.statLabel}>연결 상태</Text>
+                        <Text className={classes.statValueSmall}>
+                          {applicationSecrets?.configured ? 'ExternalSecret 연결됨' : '아직 연결 없음'}
+                        </Text>
+                      </div>
+                      <div className={classes.statBadge}>
+                        <Text className={classes.statLabel}>등록된 키</Text>
+                        <Text className={classes.statValueSmall}>{applicationSecrets?.items.length ?? 0}</Text>
+                      </div>
+                      <div className={classes.statBadge}>
+                        <Text className={classes.statLabel}>현재 버전</Text>
+                        <Text className={classes.statValueSmall}>
+                          {applicationSecrets?.currentVersion ? `v${applicationSecrets.currentVersion}` : '-'}
+                        </Text>
+                      </div>
+                      <div className={classes.statBadge}>
+                        <Text className={classes.statLabel}>최근 변경</Text>
+                        <Text className={classes.statValueSmall}>
+                          {formatDateTimeValue(applicationSecrets?.updatedAt)}
+                        </Text>
+                      </div>
+                    </SimpleGrid>
+
+                    <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={16} />}>
+                      Vault 값은 버전으로 남지만, Kubernetes envFrom 값은 실행 중인 Pod에 즉시 주입되지 않습니다. 저장하거나 복원한 값은 다음 rollout 또는 Pod 재시작부터 적용됩니다.
+                    </Alert>
+
+                    <Alert color="blue" variant="light" icon={<IconLock size={16} />}>
+                      새 환경 변수는 아래 새 환경 변수 영역에서 키와 값을 입력한 뒤 <b>Vault 환경 변수 저장</b>을 누르면 반영됩니다. 값은 저장 후 다시 표시하지 않습니다.
+                    </Alert>
+
+                    <div className={classes.surfaceCard}>
+                      <Group justify="space-between" align="flex-start" mb="md">
+                        <Stack gap={2}>
+                          <Text fw={800}>Vault 버전 히스토리</Text>
+                          <Text size="sm" c="dimmed">KV v2 metadata 기준으로 버전만 표시하고 값은 노출하지 않습니다.</Text>
+                        </Stack>
+                        <Badge color={applicationSecrets?.versioningEnabled ? 'teal' : 'gray'} variant="light">
+                          {applicationSecrets?.versioningEnabled ? 'KV v2 버전 관리' : '버전 기록 없음'}
+                        </Badge>
+                      </Group>
+                      <Table verticalSpacing="sm">
+                        <Table.Thead>
+                          <Table.Tr>
+                            <Table.Th>버전</Table.Th>
+                            <Table.Th>생성 시각</Table.Th>
+                            <Table.Th>변경자</Table.Th>
+                            <Table.Th>키</Table.Th>
+                            <Table.Th>상태</Table.Th>
+                            <Table.Th />
+                          </Table.Tr>
+                        </Table.Thead>
+                        <Table.Tbody>
+                          {(applicationSecretVersions?.items ?? []).length > 0 ? (
+                            (applicationSecretVersions?.items ?? []).map((item) => {
+                              const disabled = item.current || item.deleted || item.destroyed || restoringSecretVersion !== null
+                              const status = item.destroyed ? 'destroyed' : item.deleted ? 'deleted' : item.current ? 'current' : 'available'
+                              return (
+                                <Table.Tr key={item.version}>
+                                  <Table.Td><Text fw={800}>v{item.version}</Text></Table.Td>
+                                  <Table.Td><Text size="sm">{formatDateTimeValue(item.createdAt)}</Text></Table.Td>
+                                  <Table.Td><Text size="sm">{item.updatedBy || '-'}</Text></Table.Td>
+                                  <Table.Td><Text size="sm">{item.keyCount ?? '-'}</Text></Table.Td>
+                                  <Table.Td>
+                                    <Badge color={item.current ? 'teal' : item.deleted || item.destroyed ? 'red' : 'gray'} variant="light">
+                                      {formatSecretVersionStatus(status)}
+                                    </Badge>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Button
+                                      size="xs"
+                                      variant="light"
+                                      leftSection={<IconHistory size={14} />}
+                                      disabled={disabled}
+                                      loading={restoringSecretVersion === item.version}
+                                      onClick={() => void handleRestoreApplicationSecretVersion(item.version)}
+                                    >
+                                      복원
+                                    </Button>
+                                  </Table.Td>
+                                </Table.Tr>
+                              )
+                            })
+                          ) : (
+                            <Table.Tr>
+                              <Table.Td colSpan={6}>
+                                <Text size="sm" c="dimmed">아직 표시할 Vault 버전 히스토리가 없습니다.</Text>
+                              </Table.Td>
+                            </Table.Tr>
+                          )}
+                        </Table.Tbody>
+                      </Table>
+                    </div>
+
+                    <div className={classes.surfaceCard}>
+                      <Group justify="space-between" align="flex-start" mb="md">
+                        <Stack gap={2}>
+                          <Text fw={800}>기존 환경 변수</Text>
+                          <Text size="sm" c="dimmed">값은 표시하지 않고, 새 값을 입력한 키만 교체합니다.</Text>
+                        </Stack>
+                        <Badge color="gray" variant="light">값 숨김</Badge>
+                      </Group>
+                      <Table verticalSpacing="sm">
+                        <Table.Thead>
+                          <Table.Tr>
+                            <Table.Th>키</Table.Th>
+                            <Table.Th>새 값</Table.Th>
+                            <Table.Th>삭제</Table.Th>
+                          </Table.Tr>
+                        </Table.Thead>
+                        <Table.Tbody>
+                          {(applicationSecrets?.items ?? []).length > 0 ? (
+                            (applicationSecrets?.items ?? []).map((item) => {
+                              const deleting = secretDeleteDrafts.includes(item.key)
+                              return (
+                                <Table.Tr key={item.key}>
+                                  <Table.Td>
+                                    <Text fw={800}>{item.key}</Text>
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <PasswordInput
+                                      placeholder="새 값을 입력하면 교체"
+                                      value={secretValueDrafts[item.key] ?? ''}
+                                      disabled={deleting}
+                                      onChange={(event) =>
+                                        setSecretValueDrafts((current) => ({
+                                          ...current,
+                                          [item.key]: event.currentTarget.value,
+                                        }))
+                                      }
+                                    />
+                                  </Table.Td>
+                                  <Table.Td>
+                                    <Checkbox
+                                      checked={deleting}
+                                      onChange={(event) => {
+                                        const checked = event.currentTarget.checked
+                                        setSecretDeleteDrafts((current) =>
+                                          checked
+                                            ? Array.from(new Set([...current, item.key]))
+                                            : current.filter((key) => key !== item.key),
+                                        )
+                                      }}
+                                    />
+                                  </Table.Td>
+                                </Table.Tr>
+                              )
+                            })
+                          ) : (
+                            <Table.Tr>
+                              <Table.Td colSpan={3}>
+                                <Text size="sm" c="dimmed">아직 등록된 환경 변수 키가 없습니다.</Text>
+                              </Table.Td>
+                            </Table.Tr>
+                          )}
+                        </Table.Tbody>
+                      </Table>
+                    </div>
+
+                    <div className={classes.surfaceCard}>
+                      <Stack gap="md">
+                        <Group justify="space-between" align="center">
+                          <Stack gap={2}>
+                            <Text fw={800}>새 환경 변수</Text>
+                            <Text size="sm" c="dimmed">새 키를 추가하거나 `.env` 내용을 편집 내용에 반영합니다.</Text>
+                          </Stack>
+                          <Button
+                            variant="default"
+                            leftSection={<IconPlus size={16} />}
+                            onClick={() => setNewSecretRows((current) => [...current, { key: '', value: '' }])}
+                          >
+                            키 추가
+                          </Button>
+                        </Group>
+                        <Stack gap="sm">
+                          {newSecretRows.map((row, index) => (
+                            <Group key={index} grow align="flex-end">
+                              <TextInput
+                                label={index === 0 ? '키' : undefined}
+                                placeholder="DATABASE_URL"
+                                value={row.key}
+                                onChange={(event) =>
+                                  setNewSecretRows((current) =>
+                                    current.map((item, itemIndex) =>
+                                      itemIndex === index ? { ...item, key: event.currentTarget.value } : item,
+                                    ),
+                                  )
+                                }
+                              />
+                              <PasswordInput
+                                label={index === 0 ? '값' : undefined}
+                                placeholder="값 입력"
+                                value={row.value}
+                                onChange={(event) =>
+                                  setNewSecretRows((current) =>
+                                    current.map((item, itemIndex) =>
+                                      itemIndex === index ? { ...item, value: event.currentTarget.value } : item,
+                                    ),
+                                  )
+                                }
+                              />
+                              <Button
+                                variant="subtle"
+                                color="red"
+                                disabled={newSecretRows.length === 1}
+                                onClick={() => setNewSecretRows((current) => current.filter((_, itemIndex) => itemIndex !== index))}
+                              >
+                                제거
+                              </Button>
+                            </Group>
+                          ))}
+                        </Stack>
+                        <Textarea
+                          label=".env 일괄 입력"
+                          autosize
+                          minRows={4}
+                          placeholder={'DB_HOST=db.internal\nDB_PASSWORD=secret-value'}
+                          value={secretBulkText}
+                          onChange={(event) => setSecretBulkText(event.currentTarget.value)}
+                        />
+                        <Group justify="space-between" align="center">
+                          <Text size="sm" c="dimmed">{secretBulkMessage || '기존 키와 이름이 같으면 새 값 입력란에 반영됩니다.'}</Text>
+                          <Button variant="light" onClick={handleApplySecretBulkText}>
+                            .env 반영
+                          </Button>
+                        </Group>
+                        <Button
+                          fullWidth
+                          color="lagoon.6"
+                          leftSection={<IconLock size={16} />}
+                          loading={savingApplicationSecrets}
+                          onClick={handleSaveApplicationSecrets}
+                        >
+                          Vault 환경 변수 저장
+                        </Button>
+                      </Stack>
+                    </div>
+                  </>
+                )}
               </Stack>
             </Tabs.Panel>
 
@@ -3496,32 +4214,36 @@ export default function App() {
                     {appDetails.metrics?.metrics?.length ? (
                       <SimpleGrid cols={{ base: 1, sm: 2, xl: 4 }} spacing="xl">
                         <MetricCard
-                          label="CPU USAGE"
+                          label="CPU 사용량"
                           value={formatLatestMetric(appDetails.metrics, 'cpu_usage')}
                           unit={latestMetricUnit(appDetails.metrics, 'cpu_usage')}
                           points={appDetails.metrics?.metrics?.find((metric) => metric.key === 'cpu_usage')?.points}
                           color="#1d66d6"
+                          description={`${metricRange} 범위의 마지막 수집값`}
                         />
                         <MetricCard
-                          label="MEMORY"
+                          label="메모리 사용량"
                           value={formatLatestMetric(appDetails.metrics, 'memory_usage')}
                           unit="MiB"
                           points={appDetails.metrics?.metrics?.find((metric) => metric.key === 'memory_usage')?.points}
                           color="#0b3d7f"
+                          description={`${metricRange} 범위의 마지막 수집값`}
                         />
                         <MetricCard
-                          label="TRAFFIC"
+                          label="요청량"
                           value={formatLatestMetric(appDetails.metrics, 'request_rate')}
                           unit="rpm"
                           points={appDetails.metrics?.metrics?.find((metric) => metric.key === 'request_rate')?.points}
                           color="#10b981"
+                          description="분당 요청 수 기준"
                         />
                         <MetricCard
-                          label="LATENCY P95"
+                          label="지연시간 P95"
                           value={formatLatestMetric(appDetails.metrics, 'latency_p95')}
                           unit="ms"
                           points={appDetails.metrics?.metrics?.find((metric) => metric.key === 'latency_p95')?.points}
                           color="#f59e0b"
+                          description="95번째 백분위 응답 시간"
                         />
                       </SimpleGrid>
                     ) : (
@@ -3544,28 +4266,45 @@ export default function App() {
                             선택한 pod/container 기준 최근 120줄과 이후 신규 로그를 실시간으로 보여줍니다.
                           </Text>
                         </div>
-                        <Badge
-                          variant="light"
-                          color={
-                            liveLogStatus === 'streaming'
-                              ? 'green'
+                        <Group gap="xs">
+                          <Button
+                            size="xs"
+                            variant="light"
+                            color="lagoon.6"
+                            leftSection={<IconRefresh size={14} />}
+                            loading={refreshingApplicationLogs}
+                            disabled={!selectedAppId}
+                            onClick={() => {
+                              if (selectedAppId) {
+                                void refreshApplicationLogTargets(selectedAppId, { restartStream: true })
+                              }
+                            }}
+                          >
+                            로그 업데이트
+                          </Button>
+                          <Badge
+                            variant="light"
+                            color={
+                              liveLogStatus === 'streaming'
+                                ? 'green'
+                                : liveLogStatus === 'connecting'
+                                  ? 'yellow'
+                                  : liveLogStatus === 'error'
+                                    ? 'red'
+                                    : 'gray'
+                            }
+                          >
+                            {liveLogStatus === 'streaming'
+                              ? '실시간 수신 중'
                               : liveLogStatus === 'connecting'
-                                ? 'yellow'
+                                ? '연결 중'
                                 : liveLogStatus === 'error'
-                                  ? 'red'
-                                  : 'gray'
-                          }
-                        >
-                          {liveLogStatus === 'streaming'
-                            ? '실시간 수신 중'
-                            : liveLogStatus === 'connecting'
-                              ? '연결 중'
-                              : liveLogStatus === 'error'
-                                ? '스트림 오류'
-                                : liveLogStatus === 'closed'
-                                  ? '스트림 종료'
-                                  : '대기 중'}
-                        </Badge>
+                                  ? '스트림 오류'
+                                  : liveLogStatus === 'closed'
+                                    ? '스트림 종료'
+                                    : '대기 중'}
+                          </Badge>
+                        </Group>
                       </Group>
 
                       {(appDetails.logTargets?.items.length ?? 0) > 0 ? (
@@ -3596,7 +4335,7 @@ export default function App() {
                               {selectedLogTarget?.phase || '상태 미상'}
                             </Badge>
                             <Badge color={selectedLogContainer?.ready ? 'green' : 'yellow'} variant="light">
-                              {selectedLogContainer?.ready ? 'Ready' : '준비 중'}
+                              {selectedLogContainer?.ready ? '준비 완료' : '준비 중'}
                             </Badge>
                             <Badge color={(selectedLogContainer?.restartCount ?? 0) > 0 ? 'orange' : 'gray'} variant="outline">
                               재시작 {selectedLogContainer?.restartCount ?? 0}회
@@ -3772,6 +4511,9 @@ export default function App() {
 
                 {appDetails.deployments.length > 0 ? (
                   <>
+                    <Alert color="gray" radius="md" icon={<IconHistory size={16} />}>
+                      배포 이력의 상태는 AODS가 기록한 배포 레코드 기준입니다. 실제 런타임 준비 여부는 상태 탭의 준비 상태와 관측 탭의 로그를 함께 확인하세요.
+                    </Alert>
                     <Table striped highlightOnHover>
                       <Table.Thead>
                         <Table.Tr>
@@ -3798,7 +4540,7 @@ export default function App() {
                             <Table.Td>{deployment.environment}</Table.Td>
                             <Table.Td><Badge variant="outline" size="sm">{deployment.imageTag}</Badge></Table.Td>
                             <Table.Td>
-                              <Badge color={deploymentStatusColor(deployment.status)}>{deployment.status}</Badge>
+                              <Badge color={deploymentStatusColor(deployment.status)}>{formatDeploymentStatusLabel(deployment.status)}</Badge>
                             </Table.Td>
                             <Table.Td>
                               <Text size="xs" c="dimmed">
@@ -3833,7 +4575,7 @@ export default function App() {
                             </Text>
                           </div>
                           <Badge color={deploymentStatusColor(selectedDeploymentDetail.status)}>
-                            {selectedDeploymentDetail.status}
+                            {formatDeploymentStatusLabel(selectedDeploymentDetail.status)}
                           </Badge>
                         </Group>
                         <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
@@ -3950,81 +4692,83 @@ export default function App() {
 
             <Tabs.Panel value="rules" p="xl">
               <Stack gap="lg">
-                {!canDeployInProject ? (
+                {!canAdminProject ? (
                   <StatePanel
                     kind="forbidden"
-                    title="viewer 역할은 규칙 변경과 긴급 조치를 실행할 수 없습니다"
-                    description="현재 탭에서는 규칙을 조회할 수만 있고 저장이나 긴급 조치는 막혀 있습니다."
+                    title="project admin만 규칙을 수정할 수 있습니다"
+                    description="현재 탭에서는 외부 노출과 리소스 상한선을 조회할 수만 있고 저장은 admin 역할에서만 허용됩니다."
                   />
                 ) : null}
 
-                <div className={classes.surfaceCard}>
-                  <Group justify="space-between" mb="md">
-                    <Stack gap={0}>
-                      <Text fw={800}>자동 롤백 정책</Text>
-                      <Text size="sm" c="dimmed">장애 발생 시 자동으로 이전 안정 버전으로 되돌립니다.</Text>
-                    </Stack>
-                    <Switch
-                      size="lg"
+                {showRollbackPolicyControls ? (
+                  <div className={classes.surfaceCard}>
+                    <Group justify="space-between" mb="md">
+                      <Stack gap={0}>
+                        <Text fw={800}>자동 롤백 정책</Text>
+                        <Text size="sm" c="dimmed">장애 발생 시 자동으로 이전 안정 버전으로 되돌립니다.</Text>
+                      </Stack>
+                      <Switch
+                        size="lg"
+                        color="lagoon.6"
+                        checked={rollbackPolicyDraft.enabled}
+                        disabled={!canDeployInProject}
+                        onChange={(event) => {
+                          const checked = event.currentTarget.checked
+                          setRollbackPolicyDraft((current) => ({
+                            ...current,
+                            enabled: checked,
+                          }))
+                        }}
+                      />
+                    </Group>
+                    <SimpleGrid cols={2} spacing="md">
+                      <NumberInput
+                        label="최대 에러율 (%)"
+                        value={rollbackPolicyDraft.maxErrorRate ?? undefined}
+                        disabled={!canDeployInProject}
+                        onChange={(value) =>
+                          setRollbackPolicyDraft((current) => ({
+                            ...current,
+                            maxErrorRate: toOptionalNumber(value),
+                          }))
+                        }
+                      />
+                      <NumberInput
+                        label="최대 지연시간 P95 (ms)"
+                        value={rollbackPolicyDraft.maxLatencyP95Ms ?? undefined}
+                        disabled={!canDeployInProject}
+                        onChange={(value) =>
+                          setRollbackPolicyDraft((current) => ({
+                            ...current,
+                            maxLatencyP95Ms: toOptionalNumber(value),
+                          }))
+                        }
+                      />
+                    </SimpleGrid>
+                    <Button
+                      fullWidth
+                      variant="light"
                       color="lagoon.6"
-                      checked={rollbackPolicyDraft.enabled}
+                      mt="xl"
+                      leftSection={<IconSettings size={16} />}
+                      loading={savingRollbackPolicy}
                       disabled={!canDeployInProject}
-                      onChange={(event) => {
-                        const checked = event.currentTarget.checked
-                        setRollbackPolicyDraft((current) => ({
-                          ...current,
-                          enabled: checked,
-                        }))
-                      }}
-                    />
-                  </Group>
-                  <SimpleGrid cols={2} spacing="md">
-                    <NumberInput
-                      label="최대 에러율 (%)"
-                      value={rollbackPolicyDraft.maxErrorRate ?? undefined}
-                      disabled={!canDeployInProject}
-                      onChange={(value) =>
-                        setRollbackPolicyDraft((current) => ({
-                          ...current,
-                          maxErrorRate: toOptionalNumber(value),
-                        }))
-                      }
-                    />
-                    <NumberInput
-                      label="최대 지연시간 P95 (ms)"
-                      value={rollbackPolicyDraft.maxLatencyP95Ms ?? undefined}
-                      disabled={!canDeployInProject}
-                      onChange={(value) =>
-                        setRollbackPolicyDraft((current) => ({
-                          ...current,
-                          maxLatencyP95Ms: toOptionalNumber(value),
-                        }))
-                      }
-                    />
-                  </SimpleGrid>
-                  <Button
-                    fullWidth
-                    variant="light"
-                    color="lagoon.6"
-                    mt="xl"
-                    leftSection={<IconSettings size={16} />}
-                    loading={savingRollbackPolicy}
-                    disabled={!canDeployInProject}
-                    onClick={handleSaveRollbackPolicy}
-                  >
-                    사용자 정의 규칙 저장
-                  </Button>
-                </div>
+                      onClick={handleSaveRollbackPolicy}
+                    >
+                      사용자 정의 규칙 저장
+                    </Button>
+                  </div>
+                ) : null}
 
                 <div className={classes.surfaceCard}>
                   <Stack gap="xs" mb="md">
-                    <Text fw={800}>트래픽 경로 / 외부 노출</Text>
+                    <Text fw={800}>외부 노출</Text>
                     <Text size="sm" c="dimmed">
-                      서비스별로 Istio mesh 사용 여부와 Kubernetes LoadBalancer 요청 여부를 정합니다. 기본은 내부 서비스 중심 운영이며, 외부 공개는 별도 네트워크 절차까지 확인해야 합니다.
+                      기본은 내부 서비스 운영이며, 필요할 때만 Kubernetes LoadBalancer 요청을 저장합니다. 외부 공개는 이후 네트워크 절차까지 확인해야 합니다.
                     </Text>
                     {selectedApp?.deploymentStrategy === 'Canary' ? (
                       <Alert color="blue" radius="md" icon={<IconGitBranch size={16} />}>
-                        카나리아 배포는 Istio mesh가 반드시 필요하며, LoadBalancer 직접 노출은 함께 사용할 수 없습니다.
+                        카나리아 배포는 이 화면에서 LoadBalancer 직접 노출을 변경할 수 없습니다.
                       </Alert>
                     ) : null}
                     {!canAdminProject ? (
@@ -4033,33 +4777,35 @@ export default function App() {
                       </Alert>
                     ) : null}
                   </Stack>
-                  <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-                    <div className={classes.statBadge}>
-                      <Group justify="space-between" align="center" mb="xs">
-                        <div>
-                          <Text className={classes.statLabel}>Istio mesh 사용</Text>
-                          <Text size="sm" c="dimmed">
-                            사이드카, VirtualService, DestinationRule 기반으로 서비스 메시를 사용합니다.
-                          </Text>
-                        </div>
-                        <Switch
-                          size="lg"
-                          color="lagoon.6"
-                          checked={applicationNetworkDraft.meshEnabled}
-                          disabled={!canAdminProject || selectedApp?.deploymentStrategy === 'Canary'}
-                          onChange={(event) => {
-                            const checked = event.currentTarget.checked
-                            setApplicationNetworkDraft((current) => ({
-                              ...current,
-                              meshEnabled: checked,
-                            }))
-                          }}
-                        />
-                      </Group>
-                      <Text size="sm" c="lagoon.8" fw={700}>
-                        {applicationNetworkDraft.meshEnabled ? 'Istio 리소스를 함께 생성합니다.' : '기본 Kubernetes Service 경로만 사용합니다.'}
-                      </Text>
-                    </div>
+                  <SimpleGrid cols={{ base: 1, md: showServiceMeshControls ? 2 : 1 }} spacing="md">
+                    {showServiceMeshControls ? (
+                      <div className={classes.statBadge}>
+                        <Group justify="space-between" align="center" mb="xs">
+                          <div>
+                            <Text className={classes.statLabel}>Istio mesh 사용</Text>
+                            <Text size="sm" c="dimmed">
+                              사이드카, VirtualService, DestinationRule 기반으로 서비스 메시를 사용합니다.
+                            </Text>
+                          </div>
+                          <Switch
+                            size="lg"
+                            color="lagoon.6"
+                            checked={applicationNetworkDraft.meshEnabled}
+                            disabled={!canAdminProject || selectedApp?.deploymentStrategy === 'Canary'}
+                            onChange={(event) => {
+                              const checked = event.currentTarget.checked
+                              setApplicationNetworkDraft((current) => ({
+                                ...current,
+                                meshEnabled: checked,
+                              }))
+                            }}
+                          />
+                        </Group>
+                        <Text size="sm" c="lagoon.8" fw={700}>
+                          {applicationNetworkDraft.meshEnabled ? 'Istio 리소스를 함께 생성합니다.' : '기본 Kubernetes Service 경로만 사용합니다.'}
+                        </Text>
+                      </div>
+                    ) : null}
                     <div className={classes.statBadge}>
                       <Group justify="space-between" align="center" mb="xs">
                         <div>
@@ -4172,7 +4918,7 @@ export default function App() {
                     disabled={!canAdminProject}
                     onClick={handleSaveApplicationNetwork}
                   >
-                    트래픽 설정 저장
+                    외부 노출 설정 저장
                   </Button>
                 </div>
 
@@ -4180,76 +4926,60 @@ export default function App() {
                   <Stack gap="xs" mb="md">
                     <Text fw={800}>리소스 할당</Text>
                     <Text size="sm" c="dimmed">
-                      새 애플리케이션은 기본 request/limit으로 시작합니다. 이후 CPU, 메모리 할당은 프로젝트 admin만 조정할 수 있습니다.
+                      새 애플리케이션은 기본 요청값으로 시작합니다. 이 화면에서는 프로젝트 admin이 CPU와 메모리 상한선만 프리셋으로 선택할 수 있습니다.
                     </Text>
                     {!selectedApp?.resources ? (
                       <Alert color="gray" radius="md" icon={<IconCpu size={16} />}>
-                        아직 이 앱에 명시적으로 저장된 리소스 설정이 없습니다. 저장하면 기본값 또는 입력한 값으로 desired state에 반영됩니다.
+                        아직 이 앱에 명시적으로 저장된 리소스 설정이 없습니다. 저장하면 기본 요청값과 선택한 상한선이 desired state에 반영됩니다.
                       </Alert>
                     ) : null}
                     {!canAdminProject ? (
                       <Alert color="yellow" radius="md" icon={<IconLock size={16} />}>
-                        현재 역할에서는 리소스 할당을 수정할 수 없습니다. project admin만 request/limit을 변경할 수 있습니다.
+                        현재 역할에서는 리소스 할당을 수정할 수 없습니다. project admin만 리소스 상한선을 변경할 수 있습니다.
                       </Alert>
                     ) : null}
                   </Stack>
                   <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-                    <TextInput
-                      label="CPU 요청"
-                      placeholder="250m"
-                      value={applicationResourcesDraft.requests?.cpu ?? ''}
+                    <div className={classes.statBadge}>
+                      <Text className={classes.statLabel}>기본 CPU 요청</Text>
+                      <Text className={classes.statValueSmall}>{defaultApplicationResources.requests?.cpu ?? '250m'}</Text>
+                      <Text size="sm" c="dimmed">모든 앱이 기본적으로 확보하는 CPU 요청값입니다.</Text>
+                    </div>
+                    <div className={classes.statBadge}>
+                      <Text className={classes.statLabel}>기본 메모리 요청</Text>
+                      <Text className={classes.statValueSmall}>{defaultApplicationResources.requests?.memory ?? '256Mi'}</Text>
+                      <Text size="sm" c="dimmed">모든 앱이 기본적으로 확보하는 메모리 요청값입니다.</Text>
+                    </div>
+                    <Select
+                      label="CPU 상한선"
+                      description="기본 요청 250m 위에서 사용할 최대 CPU를 선택합니다."
+                      data={cpuLimitOptions}
+                      value={applicationResourcesDraft.limits?.cpu ?? defaultApplicationResources.limits?.cpu ?? null}
+                      allowDeselect={false}
                       disabled={!canAdminProject}
-                      onChange={(event) =>
-                        setApplicationResourcesDraft((current) => ({
-                          ...current,
-                          requests: {
-                            ...current.requests,
-                            cpu: event.currentTarget.value,
-                          },
-                        }))
-                      }
-                    />
-                    <TextInput
-                      label="CPU 제한"
-                      placeholder="500m"
-                      value={applicationResourcesDraft.limits?.cpu ?? ''}
-                      disabled={!canAdminProject}
-                      onChange={(event) =>
+                      onChange={(value) =>
                         setApplicationResourcesDraft((current) => ({
                           ...current,
                           limits: {
                             ...current.limits,
-                            cpu: event.currentTarget.value,
+                            cpu: value ?? defaultApplicationResources.limits?.cpu ?? '',
                           },
                         }))
                       }
                     />
-                    <TextInput
-                      label="메모리 요청"
-                      placeholder="256Mi"
-                      value={applicationResourcesDraft.requests?.memory ?? ''}
+                    <Select
+                      label="메모리 상한선"
+                      description="기본 요청 256Mi 위에서 사용할 최대 메모리를 선택합니다."
+                      data={memoryLimitOptions}
+                      value={applicationResourcesDraft.limits?.memory ?? defaultApplicationResources.limits?.memory ?? null}
+                      allowDeselect={false}
                       disabled={!canAdminProject}
-                      onChange={(event) =>
-                        setApplicationResourcesDraft((current) => ({
-                          ...current,
-                          requests: {
-                            ...current.requests,
-                            memory: event.currentTarget.value,
-                          },
-                        }))
-                      }
-                    />
-                    <TextInput
-                      label="메모리 제한"
-                      placeholder="512Mi"
-                      value={applicationResourcesDraft.limits?.memory ?? ''}
-                      disabled={!canAdminProject}
-                      onChange={(event) =>
+                      onChange={(value) =>
                         setApplicationResourcesDraft((current) => ({
                           ...current,
                           limits: {
                             ...current.limits,
-                            memory: event.currentTarget.value,
+                            memory: value ?? defaultApplicationResources.limits?.memory ?? '',
                           },
                         }))
                       }
@@ -4269,7 +4999,7 @@ export default function App() {
                   </Button>
                 </div>
 
-                {pendingDangerAction ? (
+                {showEmergencyActionControls && pendingDangerAction ? (
                   <StatePanel
                     kind="error"
                     title={pendingDangerAction === 'abort' ? '배포 강제 중단을 확인하세요' : '직전 버전 롤백을 확인하세요'}
@@ -4302,37 +5032,39 @@ export default function App() {
                   />
                 ) : null}
 
-                <div className={classes.surfaceCard} style={{ background: '#fef2f2', borderColor: '#fee2e2' }}>
-                  <Group gap="sm" mb="sm">
-                    <IconShieldCheck size={20} color="#dc2626" />
-                    <Text fw={800} c="#b91c1c">긴급 조치</Text>
-                  </Group>
-                  <Text size="xs" c="#991b1b" mb="md">현재 활성 배포를 중단하거나 즉시 롤백이 필요할 때 사용하세요.</Text>
-                  <Group grow>
-                    <Button
-                      variant="white"
-                      color="red"
-                      size="xs"
-                      loading={emergencyActionLoading === 'abort'}
-                      disabled={!latestDeployment || !canDeployInProject}
-                      onClick={() => setPendingDangerAction('abort')}
-                    >
-                      배포 강제 중단
-                    </Button>
-                    <Button
-                      variant="filled"
-                      color="red"
-                      size="xs"
-                      loading={emergencyActionLoading === 'rollback'}
-                      disabled={!previousDeployment || !canDeployInProject}
-                      onClick={() => setPendingDangerAction('rollback')}
-                    >
-                      직전 버전 롤백
-                    </Button>
-                  </Group>
-                </div>
+                {showEmergencyActionControls ? (
+                  <div className={classes.surfaceCard} style={{ background: '#fef2f2', borderColor: '#fee2e2' }}>
+                    <Group gap="sm" mb="sm">
+                      <IconShieldCheck size={20} color="#dc2626" />
+                      <Text fw={800} c="#b91c1c">긴급 조치</Text>
+                    </Group>
+                    <Text size="xs" c="#991b1b" mb="md">현재 활성 배포를 중단하거나 즉시 롤백이 필요할 때 사용하세요.</Text>
+                    <Group grow>
+                      <Button
+                        variant="white"
+                        color="red"
+                        size="xs"
+                        loading={emergencyActionLoading === 'abort'}
+                        disabled={!latestDeployment || !canDeployInProject}
+                        onClick={() => setPendingDangerAction('abort')}
+                      >
+                        배포 강제 중단
+                      </Button>
+                      <Button
+                        variant="filled"
+                        color="red"
+                        size="xs"
+                        loading={emergencyActionLoading === 'rollback'}
+                        disabled={!previousDeployment || !canDeployInProject}
+                        onClick={() => setPendingDangerAction('rollback')}
+                      >
+                        직전 버전 롤백
+                      </Button>
+                    </Group>
+                  </div>
+                ) : null}
 
-                {pendingLifecycleAction ? (
+                {showApplicationLifecycleControls && pendingLifecycleAction ? (
                   <StatePanel
                     kind="error"
                     title={pendingLifecycleAction === 'archive' ? '애플리케이션 보관을 확인하세요' : '애플리케이션 삭제를 확인하세요'}
@@ -4365,43 +5097,45 @@ export default function App() {
                   />
                 ) : null}
 
-                <div className={classes.surfaceCard}>
-                  <Group justify="space-between" mb="sm" align="start">
-                    <div>
-                      <Text fw={800}>애플리케이션 lifecycle</Text>
-                      <Text size="sm" c="dimmed" mt={4}>
-                        보관과 삭제는 프로젝트 관리자만 실행할 수 있습니다.
+                {showApplicationLifecycleControls ? (
+                  <div className={classes.surfaceCard}>
+                    <Group justify="space-between" mb="sm" align="start">
+                      <div>
+                        <Text fw={800}>애플리케이션 lifecycle</Text>
+                        <Text size="sm" c="dimmed" mt={4}>
+                          보관과 삭제는 프로젝트 관리자만 실행할 수 있습니다.
+                        </Text>
+                      </div>
+                      <Badge color={canAdminProject ? 'lagoon.6' : 'gray'} variant="light">
+                        {canAdminProject ? 'Admin only' : '권한 부족'}
+                      </Badge>
+                    </Group>
+                    <Group grow>
+                      <Button
+                        variant="light"
+                        color="yellow"
+                        disabled={!canAdminProject}
+                        loading={lifecycleActionLoading === 'archive'}
+                        onClick={() => setPendingLifecycleAction('archive')}
+                      >
+                        애플리케이션 보관
+                      </Button>
+                      <Button
+                        color="red"
+                        disabled={!canAdminProject}
+                        loading={lifecycleActionLoading === 'delete'}
+                        onClick={() => setPendingLifecycleAction('delete')}
+                      >
+                        애플리케이션 삭제
+                      </Button>
+                    </Group>
+                    {!canAdminProject ? (
+                      <Text size="sm" c="dimmed" mt="md">
+                        deployer는 배포 운영까지만 가능하고, archive/delete는 admin 역할에서만 허용됩니다.
                       </Text>
-                    </div>
-                    <Badge color={canAdminProject ? 'lagoon.6' : 'gray'} variant="light">
-                      {canAdminProject ? 'Admin only' : '권한 부족'}
-                    </Badge>
-                  </Group>
-                  <Group grow>
-                    <Button
-                      variant="light"
-                      color="yellow"
-                      disabled={!canAdminProject}
-                      loading={lifecycleActionLoading === 'archive'}
-                      onClick={() => setPendingLifecycleAction('archive')}
-                    >
-                      애플리케이션 보관
-                    </Button>
-                    <Button
-                      color="red"
-                      disabled={!canAdminProject}
-                      loading={lifecycleActionLoading === 'delete'}
-                      onClick={() => setPendingLifecycleAction('delete')}
-                    >
-                      애플리케이션 삭제
-                    </Button>
-                  </Group>
-                  {!canAdminProject ? (
-                    <Text size="sm" c="dimmed" mt="md">
-                      deployer는 배포 운영까지만 가능하고, archive/delete는 admin 역할에서만 허용됩니다.
-                    </Text>
-                  ) : null}
-                </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </Stack>
             </Tabs.Panel>
           </Tabs>
@@ -4409,7 +5143,7 @@ export default function App() {
       </Drawer>
 
       <Drawer
-        opened={projectComposerOpen}
+        opened={showProjectComposer && projectComposerOpen}
         onClose={() => setProjectComposerOpen(false)}
         position="right"
         size="min(720px, calc(100vw - 24px))"
@@ -4483,7 +5217,7 @@ export default function App() {
           projectId={selectedProjectId || undefined}
           projectName={selectedProject?.name}
           environments={environments}
-          allowedStrategies={projectPolicy?.allowedDeploymentStrategies || ['Rollout', 'Canary']}
+          allowedStrategies={supportedDeploymentStrategies}
           initialState={wizardInitialState}
           onPreviewSource={handlePreviewAppSource}
           onSubmit={handleCreateApp}
@@ -4590,6 +5324,49 @@ function hasMetricValues(series: MetricSeries) {
   return series.points.some((point) => point.value !== null)
 }
 
+function findHealthSignal(health: ApplicationHealthSnapshot, key: string): HealthSignal | undefined {
+  return health.signals.find((signal) => signal.key === key)
+}
+
+function findCatalogHealthSignal(signal: ApplicationCatalogSignal | undefined, key: string): HealthSignal | undefined {
+  return signal?.healthSignals.find((item) => item.key === key)
+}
+
+function applicationSyncIssue(app: ApplicationSummary, signal?: ApplicationCatalogSignal) {
+  const syncSignal = findCatalogHealthSignal(signal, 'sync')
+  const fallbackSignal = findCatalogHealthSignal(signal, 'health')
+
+  if (app.syncStatus === 'Unknown') {
+    return syncSignal?.message || fallbackSignal?.message || 'Flux sync 상태를 확인할 수 없습니다.'
+  }
+  if (app.syncStatus === 'Degraded') {
+    return syncSignal?.message || 'Flux sync 상태가 degraded 입니다.'
+  }
+  if (syncSignal?.status === 'Unavailable' || syncSignal?.status === 'Critical') {
+    return syncSignal.message
+  }
+  return ''
+}
+
+function applicationSyncIssueColor(status: SyncStatus) {
+  if (status === 'Degraded') return 'red'
+  if (status === 'Unknown') return 'gray'
+  return 'yellow'
+}
+
+function metricsStateFromHealth(health: ApplicationHealthSnapshot): ApplicationCatalogSignalState {
+  const signal = findHealthSignal(health, 'metrics')
+  if (signal?.status === 'Unavailable') return 'failed'
+  if (health.metrics.some((series) => hasMetricValues(series))) return 'available'
+  return 'empty'
+}
+
+function deploymentStateFromHealth(health: ApplicationHealthSnapshot): ApplicationCatalogSignalState {
+  const signal = findHealthSignal(health, 'deployment')
+  if (signal?.status === 'Unavailable') return 'failed'
+  return health.latestDeployment ? 'available' : 'empty'
+}
+
 function hasApplicationMetrics(signal?: ApplicationCatalogSignal) {
   if (!signal || signal.metricsState !== 'available') return false
   return signal.metrics.some((series) => hasMetricValues(series))
@@ -4682,7 +5459,6 @@ function buildApplicationCatalogSummary(
   const parts = [
     `${namespace} 네임스페이스에서 ${app.deploymentStrategy === 'Canary' ? '카나리아' : '롤아웃'} 전략으로 운영 중입니다.`,
     describeLoadBalancerExposure(app.loadBalancerEnabled, app.syncStatus),
-    app.meshEnabled ? 'Istio mesh가 켜져 있습니다.' : 'Istio mesh 없이 기본 서비스 경로를 사용합니다.',
   ]
 
   if (!signal) {
@@ -4703,6 +5479,24 @@ function buildApplicationCatalogSummary(
 
 function formatLoadBalancerBadgeLabel(enabled: boolean) {
   return enabled ? 'LB 요청' : '내부 전용'
+}
+
+function buildResourceLimitOptions(
+  selectedValue: string | undefined,
+  presetOptions: Array<{ value: string; label: string }>,
+) {
+  const normalized = selectedValue?.trim()
+  if (!normalized) {
+    return presetOptions
+  }
+  if (presetOptions.some((option) => option.value === normalized)) {
+    return presetOptions
+  }
+  return [{ value: normalized, label: `현재 저장값 ${normalized}` }, ...presetOptions]
+}
+
+function filterVisibleProjects(projects: ProjectSummary[]) {
+  return projects.filter((project) => isSharedProject(project))
 }
 
 function describeLoadBalancerExposure(enabled: boolean, syncStatus?: SyncStatus) {
@@ -4955,46 +5749,12 @@ function parseAuthorityList(raw: string) {
     })
 }
 
-function parseCommaSeparatedList(raw: string) {
-  const seen = new Set<string>()
-  return raw
-    .split(',')
-    .map((value) => value.trim())
-    .filter((value) => {
-      if (!value || seen.has(value)) {
-        return false
-      }
-      seen.add(value)
-      return true
-    })
-}
-
-function parseDeploymentStrategiesList(raw: string): Array<'Rollout' | 'Canary'> {
-  const seen = new Set<'Rollout' | 'Canary'>()
-  return raw
-    .split(',')
-    .map((value) => value.trim())
-    .map((value) => {
-      if (value === 'Rollout' || value === 'Standard') return 'Rollout' as const
-      if (value === 'Canary') return 'Canary' as const
-      return null
-    })
-    .filter((value): value is 'Rollout' | 'Canary' => value !== null)
-    .filter((value) => {
-      if (seen.has(value)) {
-        return false
-      }
-      seen.add(value)
-      return true
-    })
-}
-
 function cloneProjectPolicy(policy: ProjectPolicy | null) {
   if (!policy) return null
   return {
     ...policy,
     allowedEnvironments: [...policy.allowedEnvironments],
-    allowedDeploymentStrategies: [...policy.allowedDeploymentStrategies],
+    allowedDeploymentStrategies: [...supportedDeploymentStrategies],
     allowedClusterTargets: [...policy.allowedClusterTargets],
   }
 }
@@ -5078,6 +5838,81 @@ function deploymentStatusColor(status: string) {
   }
 }
 
+function formatDeploymentStatusLabel(status?: string) {
+  switch (status) {
+    case 'Completed':
+      return '완료'
+    case 'Promoted':
+      return '승격 완료'
+    case 'Aborted':
+      return '중단됨'
+    case 'Failed':
+      return '실패'
+    case 'Created':
+      return '기록됨'
+    case 'Running':
+      return '진행 중'
+    default:
+      return status || '없음'
+  }
+}
+
+function formatSyncStatusLabel(status?: SyncStatus) {
+  switch (status) {
+    case 'Synced':
+      return '동기화 완료'
+    case 'Syncing':
+      return '동기화 중'
+    case 'Degraded':
+      return '문제 발생'
+    case 'Unknown':
+      return '확인 불가'
+    default:
+      return '확인 불가'
+  }
+}
+
+function runtimeReadinessColor(syncStatus?: SyncStatus, deployment?: DeploymentRecord) {
+  if (syncStatus === 'Degraded' || deployment?.status === 'Failed' || deployment?.status === 'Aborted') return 'red'
+  if (syncStatus === 'Synced' && (deployment?.status === 'Completed' || deployment?.status === 'Promoted')) return 'green'
+  if (syncStatus === 'Syncing' || deployment?.status === 'Created' || deployment?.status === 'Running') return 'yellow'
+  return 'gray'
+}
+
+function describeRuntimeReadiness(syncStatus?: SyncStatus, deployment?: DeploymentRecord) {
+  if (!deployment) {
+    return '배포 이력이 아직 없어 runtime 준비 상태를 판단할 수 없습니다.'
+  }
+  if (syncStatus === 'Degraded' || deployment.status === 'Failed' || deployment.status === 'Aborted') {
+    return deployment.message || 'GitOps 동기화 또는 최근 배포에 문제가 있습니다. 관측 탭의 이벤트와 로그를 확인하세요.'
+  }
+  if (syncStatus === 'Synced' && (deployment.status === 'Completed' || deployment.status === 'Promoted')) {
+    return 'GitOps 동기화와 최근 배포 완료 기록이 모두 정상입니다. 실제 트래픽과 로그는 관측 탭에서 이어서 확인하세요.'
+  }
+  if (syncStatus === 'Synced') {
+    return 'GitOps 동기화는 완료됐지만 최근 배포가 아직 완료 상태로 기록되지 않았습니다.'
+  }
+  if (syncStatus === 'Syncing') {
+    return 'Flux가 desired state를 반영하는 중입니다. 완료 후 배포 이력과 관측 신호를 다시 확인하세요.'
+  }
+  return '동기화 상태를 아직 확인하지 못했습니다. 백엔드와 Flux 연동 상태를 확인하세요.'
+}
+
+function formatSecretVersionStatus(status: string) {
+  switch (status) {
+    case 'destroyed':
+      return '파기됨'
+    case 'deleted':
+      return '삭제됨'
+    case 'current':
+      return '현재'
+    case 'available':
+      return '복원 가능'
+    default:
+      return status
+  }
+}
+
 function formatProjectRole(role: ProjectSummary['role']) {
   switch (role) {
     case 'admin':
@@ -5137,6 +5972,47 @@ function deploymentStageClass(
     default:
       return styleClasses.progressPending
   }
+}
+
+function parseEnvEntries(text: string): SecretDraftEntry[] {
+  const byKey = new Map<string, string>()
+
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim()
+    if (!line || line.startsWith('#')) {
+      continue
+    }
+
+    const normalized = line.startsWith('export ') ? line.slice(7).trim() : line
+    const separatorIndex = normalized.indexOf('=')
+    if (separatorIndex <= 0) {
+      continue
+    }
+
+    const key = normalized.slice(0, separatorIndex).trim()
+    if (!key) {
+      continue
+    }
+
+    let value = normalized.slice(separatorIndex + 1).trim()
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1)
+    }
+
+    value = value
+      .replace(/\\n/g, '\n')
+      .replace(/\\r/g, '\r')
+      .replace(/\\t/g, '\t')
+      .replace(/\\"/g, '"')
+      .replace(/\\'/g, "'")
+
+    byKey.set(key, value)
+  }
+
+  return Array.from(byKey.entries()).map(([key, value]) => ({ key, value }))
 }
 
 function toOptionalNumber(value: string | number) {

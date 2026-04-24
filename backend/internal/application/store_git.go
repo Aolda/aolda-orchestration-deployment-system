@@ -176,6 +176,26 @@ func (s GitManifestStore) PatchApplication(ctx context.Context, project ProjectC
 	return record, nil
 }
 
+func (s GitManifestStore) SaveApplicationSecretPath(ctx context.Context, project ProjectContext, applicationID string, secretPath string) (Record, error) {
+	if s.Repository == nil {
+		return Record{}, fmt.Errorf("git manifest repository is not configured")
+	}
+
+	var record Record
+	err := s.Repository.WithWrite(ctx, fmt.Sprintf("feat: update application secrets for %s", applicationID), func(repoDir string) error {
+		item, err := s.localStore(repoDir).SaveApplicationSecretPath(ctx, project, applicationID, secretPath)
+		if err != nil {
+			return err
+		}
+		record = item
+		return nil
+	})
+	if err != nil {
+		return Record{}, err
+	}
+	return record, nil
+}
+
 func (s GitManifestStore) ListDeployments(ctx context.Context, applicationID string) ([]DeploymentRecord, error) {
 	if s.Repository == nil {
 		return nil, fmt.Errorf("git manifest repository is not configured")

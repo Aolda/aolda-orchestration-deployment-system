@@ -19,6 +19,35 @@ export type ProjectListResponse = {
   items: ProjectSummary[]
 }
 
+export type HealthStatus = 'Healthy' | 'Warning' | 'Critical' | 'Unknown'
+export type HealthSignalStatus = 'OK' | 'Warning' | 'Critical' | 'Unknown' | 'Unavailable'
+
+export type HealthSignal = {
+  key: string
+  status: HealthSignalStatus
+  message: string
+  observedAt?: string
+  details?: Record<string, unknown>
+}
+
+export type ApplicationHealthSnapshot = {
+  applicationId: string
+  name: string
+  namespace: string
+  status: HealthStatus
+  syncStatus: SyncStatus
+  deploymentStrategy: string
+  metrics: MetricSeries[]
+  latestDeployment?: DeploymentRecord | null
+  signals: HealthSignal[]
+}
+
+export type ProjectHealthResponse = {
+  projectId: string
+  observedAt: string
+  items: ApplicationHealthSnapshot[]
+}
+
 export type ProjectAccess = {
   viewerGroups?: string[]
   deployerGroups?: string[]
@@ -65,6 +94,42 @@ export type ProjectLifecycleResponse = {
 export type SecretEntry = {
   key: string
   value: string
+}
+
+export type ApplicationSecretSummary = {
+  key: string
+}
+
+export type ApplicationSecretVersionSummary = {
+  version: number
+  createdAt?: string
+  updatedBy?: string
+  current: boolean
+  deleted?: boolean
+  destroyed?: boolean
+  keyCount?: number
+}
+
+export type ApplicationSecretsResponse = {
+  applicationId: string
+  secretPath: string
+  configured: boolean
+  versioningEnabled: boolean
+  currentVersion?: number
+  updatedAt?: string
+  items: ApplicationSecretSummary[]
+}
+
+export type ApplicationSecretVersionsResponse = {
+  applicationId: string
+  secretPath: string
+  currentVersion?: number
+  items: ApplicationSecretVersionSummary[]
+}
+
+export type UpdateApplicationSecretsRequest = {
+  set?: SecretEntry[]
+  delete?: string[]
 }
 
 export type CreateApplicationRequest = {
@@ -545,6 +610,34 @@ export type MetricSeries = {
 export type ApplicationMetricsResponse = {
   applicationId: string
   metrics: MetricSeries[]
+}
+
+export type MetricSeriesDiagnostic = {
+  key: string
+  label: string
+  unit: string
+  status: HealthSignalStatus
+  message: string
+  pointCount: number
+  valueCount: number
+  latestValue?: number | null
+}
+
+export type MetricsScrapeTarget = {
+  name: string
+  port: string
+  path: string
+  required: boolean
+}
+
+export type MetricsDiagnosticsResponse = {
+  applicationId: string
+  checkedAt: string
+  status: HealthSignalStatus
+  message: string
+  meshEnabled: boolean
+  scrapeTargets: MetricsScrapeTarget[]
+  series: MetricSeriesDiagnostic[]
 }
 
 export type ErrorResponse = {

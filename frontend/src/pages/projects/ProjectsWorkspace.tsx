@@ -39,6 +39,7 @@ export function ProjectsWorkspace(props: ProjectsWorkspaceProps) {
                     props.onProjectTabChange(value as ProjectTab)
                   }
                 }}
+                keepMounted={false}
                 color="lagoon.6"
                 variant="outline"
                 radius="md"

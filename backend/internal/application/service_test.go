@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -47,6 +48,16 @@ func (s stubStore) UpdateApplicationImage(ctx context.Context, project ProjectCo
 }
 
 func (s stubStore) PatchApplication(ctx context.Context, project ProjectContext, applicationID string, input UpdateApplicationRequest) (Record, error) {
+	return Record{}, nil
+}
+
+func (s stubStore) SaveApplicationSecretPath(ctx context.Context, project ProjectContext, applicationID string, secretPath string) (Record, error) {
+	for _, record := range s.records {
+		if record.ID == applicationID {
+			record.SecretPath = secretPath
+			return record, nil
+		}
+	}
 	return Record{}, nil
 }
 
@@ -157,6 +168,11 @@ type secretsSpy struct {
 	staged        StagedSecret
 	stagedPaths   []string
 	finalizedPath []string
+	data          map[string]string
+	finalizedData map[string]string
+	deletedPaths  []string
+	versions      ApplicationSecretVersionsResponse
+	versionData   map[int]map[string]string
 }
 
 func (s *secretsSpy) Stage(ctx context.Context, requestID string, projectID string, appName string, createdBy string, data map[string]string) (StagedSecret, error) {
@@ -184,15 +200,40 @@ func (s *secretsSpy) StageAt(ctx context.Context, requestID string, finalPath st
 func (s *secretsSpy) Finalize(ctx context.Context, staged StagedSecret, data map[string]string) error {
 	s.finalizeCalls++
 	s.finalizedPath = append(s.finalizedPath, staged.FinalPath)
+	s.finalizedData = cloneSecretData(data)
 	return nil
 }
 
 func (s *secretsSpy) Get(ctx context.Context, logicalPath string) (map[string]string, error) {
-	return nil, nil
+	return cloneSecretData(s.data), nil
 }
 
 func (s *secretsSpy) Delete(ctx context.Context, logicalPath string) error {
+	s.deletedPaths = append(s.deletedPaths, logicalPath)
 	return nil
+}
+
+func (s *secretsSpy) ListVersions(ctx context.Context, logicalPath string) (ApplicationSecretVersionsResponse, error) {
+	response := s.versions
+	response.SecretPath = logicalPath
+	if response.Items == nil {
+		response.Items = []SecretVersionSummary{}
+	}
+	return response, nil
+}
+
+func (s *secretsSpy) GetVersion(ctx context.Context, logicalPath string, version int) (map[string]string, SecretVersionSummary, error) {
+	if s.versionData == nil {
+		return nil, SecretVersionSummary{}, fmt.Errorf("version %d not found", version)
+	}
+	values, ok := s.versionData[version]
+	if !ok {
+		return nil, SecretVersionSummary{}, fmt.Errorf("version %d not found", version)
+	}
+	return cloneSecretData(values), SecretVersionSummary{
+		Version:  version,
+		KeyCount: len(values),
+	}, nil
 }
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -380,6 +421,182 @@ func TestCreateApplicationDoesNotFinalizeSecretsWhenStoreWriteFails(t *testing.T
 	}
 	if len(store.secretPaths) != 1 || store.secretPaths[0] != "secret/aods/apps/project-a/secret-app/prod" {
 		t.Fatalf("expected final vault path to be passed to manifest store, got %#v", store.secretPaths)
+	}
+}
+
+func TestUpdateApplicationSecretsMergesExistingSecretWithoutReturningValues(t *testing.T) {
+	t.Parallel()
+
+	secrets := &secretsSpy{
+		data: map[string]string{
+			"DATABASE_URL": "postgres://old",
+			"OLD_KEY":      "legacy",
+		},
+	}
+	service := Service{
+		Projects: &project.Service{
+			Source: staticCatalogSource{
+				items: []project.CatalogProject{
+					{
+						ID:        "shared",
+						Name:      "shared",
+						Namespace: "shared",
+						Access: project.Access{
+							DeployerGroups: []string{"aods:shared:deploy"},
+						},
+						Environments: []project.Environment{
+							{
+								ID:        "shared",
+								Name:      "Shared",
+								ClusterID: "default",
+								WriteMode: project.WriteModeDirect,
+								Default:   true,
+							},
+						},
+						Policies: project.PolicySet{
+							AllowedEnvironments:         []string{"shared"},
+							AllowedDeploymentStrategies: []string{"Rollout"},
+							AllowedClusterTargets:       []string{"default"},
+						},
+					},
+				},
+			},
+		},
+		Store: stubStore{
+			records: []Record{
+				{
+					ID:                 "shared__ops",
+					ProjectID:          "shared",
+					Namespace:          "shared",
+					Name:               "ops",
+					DefaultEnvironment: "shared",
+					SecretPath:         "secret/aods/apps/shared/ops/prod",
+				},
+			},
+		},
+		Secrets:      secrets,
+		StatusReader: &batchStatusReaderStub{},
+	}
+
+	response, err := service.UpdateApplicationSecrets(context.Background(), core.User{
+		Username: "deployer",
+		Groups:   []string{"aods:shared:deploy"},
+	}, "shared__ops", UpdateSecretsRequest{
+		Set: []SecretEntry{
+			{Key: "DATABASE_URL", Value: "postgres://new"},
+			{Key: "API_KEY", Value: "abc123"},
+		},
+		Delete: []string{"OLD_KEY"},
+	}, "req_1")
+	if err != nil {
+		t.Fatalf("update application secrets: %v", err)
+	}
+
+	if response.ApplicationID != "shared__ops" || !response.Configured {
+		t.Fatalf("unexpected response identity/configuration: %#v", response)
+	}
+	if response.SecretPath != "secret/aods/apps/shared/ops/prod" {
+		t.Fatalf("expected existing secret path, got %q", response.SecretPath)
+	}
+	if len(response.Items) != 2 || response.Items[0].Key != "API_KEY" || response.Items[1].Key != "DATABASE_URL" {
+		t.Fatalf("expected sorted key-only response, got %#v", response.Items)
+	}
+	if secrets.stageAtCalls != 1 || secrets.finalizeCalls != 1 {
+		t.Fatalf("expected one staged final write, stageAt=%d finalize=%d", secrets.stageAtCalls, secrets.finalizeCalls)
+	}
+	if secrets.finalizedData["DATABASE_URL"] != "postgres://new" || secrets.finalizedData["API_KEY"] != "abc123" {
+		t.Fatalf("expected merged final secret data, got %#v", secrets.finalizedData)
+	}
+	if _, exists := secrets.finalizedData["OLD_KEY"]; exists {
+		t.Fatalf("expected deleted key to be absent, got %#v", secrets.finalizedData)
+	}
+}
+
+func TestRestoreApplicationSecretVersionWritesSelectedVaultVersionWithoutReturningValues(t *testing.T) {
+	t.Parallel()
+
+	secrets := &secretsSpy{
+		versionData: map[int]map[string]string{
+			2: {
+				"DATABASE_URL": "postgres://previous",
+				"API_KEY":      "old-key",
+			},
+		},
+		versions: ApplicationSecretVersionsResponse{
+			CurrentVersion: 3,
+			Items: []SecretVersionSummary{
+				{Version: 3, Current: true, KeyCount: 1},
+				{Version: 2, Current: false, KeyCount: 2},
+			},
+		},
+	}
+	service := Service{
+		Projects: &project.Service{
+			Source: staticCatalogSource{
+				items: []project.CatalogProject{
+					{
+						ID:        "shared",
+						Name:      "shared",
+						Namespace: "shared",
+						Access: project.Access{
+							DeployerGroups: []string{"aods:shared:deploy"},
+						},
+						Environments: []project.Environment{
+							{
+								ID:        "shared",
+								Name:      "Shared",
+								ClusterID: "default",
+								WriteMode: project.WriteModeDirect,
+								Default:   true,
+							},
+						},
+						Policies: project.PolicySet{
+							AllowedEnvironments:         []string{"shared"},
+							AllowedDeploymentStrategies: []string{"Rollout"},
+							AllowedClusterTargets:       []string{"default"},
+						},
+					},
+				},
+			},
+		},
+		Store: stubStore{
+			records: []Record{
+				{
+					ID:                 "shared__ops",
+					ProjectID:          "shared",
+					Namespace:          "shared",
+					Name:               "ops",
+					DefaultEnvironment: "shared",
+					SecretPath:         "secret/aods/apps/shared/ops/prod",
+				},
+			},
+		},
+		Secrets:      secrets,
+		StatusReader: &batchStatusReaderStub{},
+	}
+
+	response, err := service.RestoreApplicationSecretVersion(context.Background(), core.User{
+		Username: "deployer",
+		Groups:   []string{"aods:shared:deploy"},
+	}, "shared__ops", 2, "req_restore")
+	if err != nil {
+		t.Fatalf("restore application secret version: %v", err)
+	}
+
+	if response.ApplicationID != "shared__ops" || !response.Configured {
+		t.Fatalf("unexpected response identity/configuration: %#v", response)
+	}
+	if response.CurrentVersion != 3 {
+		t.Fatalf("expected current version metadata from version list, got %d", response.CurrentVersion)
+	}
+	if len(response.Items) != 2 || response.Items[0].Key != "API_KEY" || response.Items[1].Key != "DATABASE_URL" {
+		t.Fatalf("expected sorted key-only response, got %#v", response.Items)
+	}
+	if secrets.stageAtCalls != 1 || secrets.finalizeCalls != 1 {
+		t.Fatalf("expected one staged final write, stageAt=%d finalize=%d", secrets.stageAtCalls, secrets.finalizeCalls)
+	}
+	if secrets.finalizedData["DATABASE_URL"] != "postgres://previous" || secrets.finalizedData["API_KEY"] != "old-key" {
+		t.Fatalf("expected restored final secret data, got %#v", secrets.finalizedData)
 	}
 }
 

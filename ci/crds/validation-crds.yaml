@@ -61,6 +61,26 @@ spec:
 apiVersion: apiextensions.k8s.io/v1
 kind: CustomResourceDefinition
 metadata:
+  name: prometheusrules.monitoring.coreos.com
+spec:
+  group: monitoring.coreos.com
+  scope: Namespaced
+  names:
+    plural: prometheusrules
+    singular: prometheusrule
+    kind: PrometheusRule
+  versions:
+    - name: v1
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
   name: rollouts.argoproj.io
 spec:
   group: argoproj.io
@@ -90,9 +110,16 @@ spec:
     singular: virtualservice
     kind: VirtualService
   versions:
-    - name: v1beta1
+    - name: v1
       served: true
       storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+    - name: v1beta1
+      served: true
+      storage: false
       schema:
         openAPIV3Schema:
           type: object
@@ -110,9 +137,16 @@ spec:
     singular: destinationrule
     kind: DestinationRule
   versions:
-    - name: v1beta1
+    - name: v1
       served: true
       storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+    - name: v1beta1
+      served: true
+      storage: false
       schema:
         openAPIV3Schema:
           type: object

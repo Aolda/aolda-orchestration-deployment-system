@@ -12,19 +12,13 @@ function buildProps(overrides: Partial<SidebarNavProps> = {}): SidebarNavProps {
     onSectionChange: vi.fn(),
     projects: [
       {
-        id: 'project-a',
+        id: 'shared',
         name: '공용 프로젝트',
         namespace: 'shared',
         role: 'admin',
       },
-      {
-        id: 'project-b',
-        name: 'Project B',
-        namespace: 'project-b',
-        role: 'deployer',
-      },
     ],
-    selectedProjectId: 'project-a',
+    selectedProjectId: 'shared',
     onProjectSelect: vi.fn(),
     canCreateProject: false,
     ...overrides,
@@ -48,45 +42,25 @@ describe('SidebarNav', () => {
 
     expect(screen.getByText('접근 가능한 프로젝트')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /공용 프로젝트/i })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /Project B/i })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '새 프로젝트' })).not.toBeInTheDocument()
 
-    await user.click(screen.getByRole('button', { name: /Project B/i }))
+    await user.click(screen.getByRole('button', { name: /공용 프로젝트/i }))
 
-    expect(onProjectSelect).toHaveBeenCalledWith('project-b')
+    expect(onProjectSelect).toHaveBeenCalledWith('shared')
     expect(onSectionChange).not.toHaveBeenCalled()
   })
 
-  it('[US-NAV-002] 플랫폼 관리자는 프로젝트 사이드바에서 새 프로젝트 액션을 연다', async () => {
-    const user = userEvent.setup()
-    const onCreateProject = vi.fn()
+  it('프로젝트 생성 액션이 비활성화되면 새 프로젝트 버튼을 숨긴다', () => {
+    render(<SidebarNav {...buildProps({ canCreateProject: false })} />)
 
-    render(
-      <SidebarNav
-        {...buildProps({
-          canCreateProject: true,
-          onCreateProject,
-        })}
-      />,
-    )
-
-    await user.click(screen.getByRole('button', { name: '새 프로젝트' }))
-
-    expect(onCreateProject).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('button', { name: '새 프로젝트' })).not.toBeInTheDocument()
   })
 
-  it('[US-NAV-003] 새 프로젝트 액션은 프로젝트 목록보다 먼저 노출된다', () => {
-    render(
-      <SidebarNav
-        {...buildProps({
-          canCreateProject: true,
-          onCreateProject: vi.fn(),
-        })}
-      />,
-    )
+  it('허용된 글로벌 섹션만 사이드바에 노출한다', () => {
+    render(<SidebarNav {...buildProps({ visibleSections: ['projects', 'me'] })} />)
 
-    const createButton = screen.getByRole('button', { name: '새 프로젝트' })
-    const firstProjectButton = screen.getByRole('button', { name: /공용 프로젝트/i })
-
-    expect(createButton.compareDocumentPosition(firstProjectButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByText('프로젝트')).toBeInTheDocument()
+    expect(screen.getByText('내 정보')).toBeInTheDocument()
+    expect(screen.queryByText('클러스터')).not.toBeInTheDocument()
   })
 })

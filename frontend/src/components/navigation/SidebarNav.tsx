@@ -13,6 +13,7 @@ type SidebarProject = {
 type SidebarNavProps = {
   activeSection: GlobalSection
   onSectionChange: (section: GlobalSection) => void
+  visibleSections?: GlobalSection[]
   projects?: SidebarProject[]
   selectedProjectId?: string | null
   onProjectSelect?: (projectId: string) => void
@@ -23,15 +24,19 @@ type SidebarNavProps = {
 export function SidebarNav({
   activeSection,
   onSectionChange,
+  visibleSections,
   projects = [],
   selectedProjectId,
   onProjectSelect,
   canCreateProject = false,
   onCreateProject,
 }: SidebarNavProps) {
+  const sectionSet = visibleSections ? new Set(visibleSections) : null
+  const sections = sectionSet ? globalSections.filter((section) => sectionSet.has(section.value)) : globalSections
+
   return (
     <Stack gap="xs">
-      {globalSections.map((section) => (
+      {sections.map((section) => (
         <div key={section.value}>
           <NavLink
             active={section.value === activeSection}

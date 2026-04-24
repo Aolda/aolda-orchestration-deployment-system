@@ -84,6 +84,9 @@ export function ApplicationWizard({
   const [envBulkMessage, setEnvBulkMessage] = useState('')
   const [validationMessage, setValidationMessage] = useState('')
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const repositoryUrlInputRef = useRef<HTMLInputElement | null>(null)
+  const appNameInputRef = useRef<HTMLInputElement | null>(null)
+  const imageInputRef = useRef<HTMLInputElement | null>(null)
 
   const selectedEnvironment = useMemo(
     () => environments.find((environment) => environment.id === form.environment) ?? null,
@@ -107,11 +110,14 @@ export function ApplicationWizard({
 
   const filledSecretCount = form.secrets.filter((secret) => secret.key.trim() && secret.value.trim()).length
   const effectiveAppName = form.name || form.repositoryServiceId
-  const manifestPathPreview = buildManifestPath(projectId, effectiveAppName)
-  const applicationIdPreview = buildApplicationID(projectId, effectiveAppName)
-  const vaultPathPreview = buildVaultPath(projectId, effectiveAppName)
-  const repositoryTokenPathPreview = buildRepositoryTokenPath(projectId, effectiveAppName)
-  const registrySecretPathPreview = buildRegistrySecretPath(projectId, effectiveAppName)
+  const normalizedEffectiveAppName = effectiveAppName.trim()
+  const effectiveAppNameIsValid = !normalizedEffectiveAppName || appNamePattern.test(normalizedEffectiveAppName)
+  const previewAppName = effectiveAppNameIsValid ? normalizedEffectiveAppName : ''
+  const manifestPathPreview = buildManifestPath(projectId, previewAppName)
+  const applicationIdPreview = buildApplicationID(projectId, previewAppName)
+  const vaultPathPreview = buildVaultPath(projectId, previewAppName)
+  const repositoryTokenPathPreview = buildRepositoryTokenPath(projectId, previewAppName)
+  const registrySecretPathPreview = buildRegistrySecretPath(projectId, previewAppName)
   const repositoryTarget = useMemo(
     () => parseGitHubRepositoryInput(form.repositoryUrl),
     [form.repositoryUrl],
@@ -182,21 +188,37 @@ export function ApplicationWizard({
     const message = validateStep(active, form, environments, preview, previewError)
     if (message) {
       setValidationMessage(message)
+      focusFirstInvalidField(active, form, {
+        repositoryUrlInput: repositoryUrlInputRef.current,
+        appNameInput: appNameInputRef.current,
+        imageInput: imageInputRef.current,
+      })
       return
     }
     setValidationMessage('')
-    setActive((current) => (current < 4 ? current + 1 : current))
+    setActive((current) => {
+      if (current === 0 && form.sourceMode === 'quick') return 2
+      return current < 4 ? current + 1 : current
+    })
   }
 
   const prevStep = () => {
     setValidationMessage('')
-    setActive((current) => (current > 0 ? current - 1 : current))
+    setActive((current) => {
+      if (current === 2 && form.sourceMode === 'quick') return 0
+      return current > 0 ? current - 1 : current
+    })
   }
 
   const handleFinish = () => {
     const message = validateAllSteps(form, environments, preview, previewError)
     if (message) {
       setValidationMessage(message)
+      focusFirstInvalidField(active, form, {
+        repositoryUrlInput: repositoryUrlInputRef.current,
+        appNameInput: appNameInputRef.current,
+        imageInput: imageInputRef.current,
+      })
       return
     }
     setValidationMessage('')
@@ -244,15 +266,13 @@ export function ApplicationWizard({
     if (form.sourceMode !== 'github' || !form.repositoryUrl.trim()) return
 
     const nextPreviewKey = JSON.stringify({
-      name: form.name.trim(),
       repositoryUrl: form.repositoryUrl.trim(),
       repositoryBranch: form.repositoryBranch.trim(),
       repositoryToken: form.repositoryToken.trim(),
-      repositoryServiceId: form.repositoryServiceId.trim(),
       configPath: form.configPath.trim(),
     })
 
-    if (!force && nextPreviewKey === previewKey && preview) {
+    if (!force && nextPreviewKey === previewKey) {
       return
     }
 
@@ -267,22 +287,36 @@ export function ApplicationWizard({
       }
     } catch (error) {
       setPreview(null)
+      setPreviewKey(nextPreviewKey)
       if (error instanceof Error) {
-        setPreviewError(error.message)
+        setPreviewError(translatePreviewError(error.message, form.configPath))
       } else {
         setPreviewError('설정 파일을 확인하지 못했습니다.')
       }
     } finally {
       setPreviewLoading(false)
     }
-  }, [form, onPreviewSource, previewKey, preview, applyPreviewSelection])
+  }, [form, onPreviewSource, previewKey, applyPreviewSelection])
 
   useEffect(() => {
     if (active !== 1 || form.sourceMode !== 'github' || !form.repositoryUrl.trim()) {
       return
     }
     void loadPreview(false)
-  }, [active, form.sourceMode, form.repositoryUrl, form.repositoryBranch, form.repositoryToken, form.repositoryServiceId, form.configPath, loadPreview])
+  }, [active, form.sourceMode, form.repositoryUrl, form.repositoryBranch, form.repositoryToken, form.configPath, loadPreview])
+
+  const repositoryUrlError =
+    validationMessage === 'GitHub 저장소 URL을 입력하세요.' ? validationMessage : undefined
+  const appNameError =
+    validationMessage === '애플리케이션 이름을 입력하세요.' ||
+    validationMessage === '애플리케이션 이름은 영문 소문자, 숫자, 하이픈만 사용할 수 있습니다.'
+      ? validationMessage
+      : undefined
+  const imageError = validationMessage === '컨테이너 이미지 주소를 입력하세요.' ? validationMessage : undefined
+  const registryCredentialError = validationMessage.includes('레지스트리') ? validationMessage : undefined
+  const nextStepDisabled =
+    submitting ||
+    (active === 1 && form.sourceMode === 'github' && (previewLoading || Boolean(previewError) || !preview))
 
   return (
     <Card shadow="sm" p="lg" radius="md" withBorder className="glass-panel">
@@ -307,12 +341,17 @@ export function ApplicationWizard({
 
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
               <Card
+                component="button"
+                type="button"
+                aria-pressed={form.sourceMode === 'quick'}
                 withBorder
                 radius="md"
                 padding="lg"
                 bg={form.sourceMode === 'quick' ? 'lagoon.0' : undefined}
                 style={{
                   cursor: 'pointer',
+                  textAlign: 'left',
+                  width: '100%',
                   borderColor:
                     form.sourceMode === 'quick' ? 'var(--mantine-color-lagoon-6)' : undefined,
                 }}
@@ -330,12 +369,17 @@ export function ApplicationWizard({
               </Card>
 
               <Card
+                component="button"
+                type="button"
+                aria-pressed={form.sourceMode === 'github'}
                 withBorder
                 radius="md"
                 padding="lg"
                 bg={form.sourceMode === 'github' ? 'lagoon.0' : undefined}
                 style={{
                   cursor: 'pointer',
+                  textAlign: 'left',
+                  width: '100%',
                   borderColor:
                     form.sourceMode === 'github' ? 'var(--mantine-color-lagoon-6)' : undefined,
                 }}
@@ -479,6 +523,7 @@ export function ApplicationWizard({
                     label="GitHub 저장소 URL"
                     placeholder="예: https://github.com/aods/example-app.git"
                     required
+                    ref={repositoryUrlInputRef}
                     name="aods-github-repository-url"
                     autoComplete="off"
                     autoCapitalize="none"
@@ -487,6 +532,7 @@ export function ApplicationWizard({
                     data-lpignore="true"
                     data-1p-ignore="true"
                     value={form.repositoryUrl}
+                    error={repositoryUrlError}
                     onChange={(event) => updateForm({ repositoryUrl: event.target.value })}
                   />
                   <PasswordInput
@@ -558,7 +604,9 @@ export function ApplicationWizard({
                   label="애플리케이션 이름"
                   placeholder="예: payment-api"
                   required
+                  ref={appNameInputRef}
                   value={form.name}
+                  error={appNameError}
                   onChange={(event) => updateForm({ name: event.target.value })}
                 />
               ) : (
@@ -572,7 +620,9 @@ export function ApplicationWizard({
                   label="컨테이너 이미지"
                   placeholder="예: ghcr.io/aolda/payment-api:1.0.0"
                   required
+                  ref={imageInputRef}
                   value={form.image}
+                  error={imageError}
                   onChange={(event) => updateForm({ image: event.target.value })}
                 />
               ) : (
@@ -621,6 +671,7 @@ export function ApplicationWizard({
                     data-lpignore="true"
                     data-1p-ignore="true"
                     value={form.registryUsername}
+                    error={registryCredentialError}
                     onChange={(event) => updateForm({ registryUsername: event.target.value })}
                   />
                   <PasswordInput
@@ -631,6 +682,7 @@ export function ApplicationWizard({
                     data-lpignore="true"
                     data-1p-ignore="true"
                     value={form.registryToken}
+                    error={registryCredentialError}
                     onChange={(event) => updateForm({ registryToken: event.target.value })}
                   />
                 </SimpleGrid>
@@ -653,6 +705,7 @@ export function ApplicationWizard({
 
                 <Text size="xs" c="dimmed">
                   레지스트리 토큰은 앱 환경변수 및 GitHub 저장소 토큰과 분리해서 <Code>{registrySecretPathPreview}</Code> 경로에 저장합니다.
+                  {!effectiveAppNameIsValid ? ' 올바른 앱 이름을 입력하면 실제 경로가 확정됩니다.' : ''}
                 </Text>
                 <Text size="xs" c="dimmed">
                   GHCR private 이미지를 쓰면
@@ -672,6 +725,7 @@ export function ApplicationWizard({
 
             <Text size="xs" c="dimmed">
               앱 이름은 GitOps 경로와 애플리케이션 ID를 결정합니다. 비워두면 저장소 서비스 ID를 기준으로 생성됩니다. 예: <Code>{applicationIdPreview}</Code>
+              {!effectiveAppNameIsValid ? ' 현재 입력값은 경로 preview에 반영하지 않았습니다.' : ''}
             </Text>
           </Stack>
         </Stepper.Step>
@@ -817,6 +871,8 @@ export function ApplicationWizard({
                   data={allowedStrategies}
                   value={form.deploymentStrategy}
                   onChange={(value) => updateForm({ deploymentStrategy: nextStrategy(value) })}
+                  allowDeselect={false}
+                  disabled
                 />
               </SimpleGrid>
             ) : (
@@ -1053,7 +1109,7 @@ export function ApplicationWizard({
           </Button>
         ) : null}
         {active < 4 ? (
-          <Button onClick={nextStep} color="lagoon.6" disabled={submitting}>
+          <Button onClick={nextStep} color="lagoon.6" disabled={nextStepDisabled}>
             다음 단계
           </Button>
         ) : (
@@ -1101,6 +1157,32 @@ function validateAllSteps(
   )
 }
 
+function focusFirstInvalidField(
+  step: number,
+  form: CreateFormState,
+  refs: {
+    repositoryUrlInput: HTMLInputElement | null
+    appNameInput: HTMLInputElement | null
+    imageInput: HTMLInputElement | null
+  },
+) {
+  if (step !== 0) return
+  if (form.sourceMode === 'github' && !form.repositoryUrl.trim()) {
+    refs.repositoryUrlInput?.focus()
+    return
+  }
+  if (form.sourceMode === 'quick') {
+    const normalizedName = form.name.trim()
+    if (!normalizedName || !appNamePattern.test(normalizedName)) {
+      refs.appNameInput?.focus()
+      return
+    }
+    if (!form.image.trim()) {
+      refs.imageInput?.focus()
+    }
+  }
+}
+
 function validateIdentityStep(form: CreateFormState) {
   const normalizedName = form.name.trim()
   if (form.sourceMode === 'github') {
@@ -1146,6 +1228,27 @@ function validateDeploymentStep(form: CreateFormState, environments: WizardEnvir
     return '선택한 환경은 직접 생성 대상이 아닙니다. 변경 요청 흐름을 사용하세요.'
   }
   return ''
+}
+
+function translatePreviewError(message: string, configPath: string) {
+  const path = configPath.trim() || 'aolda_deploy.json'
+  const normalized = message.toLowerCase()
+  if (normalized.includes('could not be read') || normalized.includes('not found') || normalized.includes('404')) {
+    return `저장소에서 ${path} 파일을 읽지 못했습니다. 저장소 URL, 브랜치, 설정 파일 경로를 확인하세요.`
+  }
+  if (normalized.includes('bad credentials') || normalized.includes('unauthorized') || normalized.includes('authentication') || normalized.includes('401') || normalized.includes('403')) {
+    return 'GitHub 저장소를 읽을 권한이 없습니다. private 저장소라면 읽기 권한이 있는 토큰을 입력하세요.'
+  }
+  if (normalized.includes('rate limit')) {
+    return 'GitHub API 호출 한도에 걸렸습니다. 잠시 후 다시 시도하거나 저장소 읽기 토큰을 입력하세요.'
+  }
+  if (normalized.includes('invalid') && normalized.includes('json')) {
+    return `${path} 파일의 JSON 형식이 올바르지 않습니다. 설정 파일 문법을 확인하세요.`
+  }
+  if (!message.trim()) {
+    return '설정 파일을 확인하지 못했습니다.'
+  }
+  return message
 }
 
 function validatePreviewStep(

@@ -358,6 +358,29 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /api/v1/projects/{projectId}/health:
+    get:
+      tags: [Applications]
+      operationId: getProjectHealth
+      summary: Get project-level application health snapshots
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      responses:
+        '200':
+          description: Project health snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectHealthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   /api/v1/projects/{projectId}/applications/source-preview:
     post:
       tags: [Applications]
@@ -485,6 +508,115 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Application'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/secrets:
+    get:
+      tags: [Applications]
+      operationId: getApplicationSecrets
+      summary: List Vault-backed application environment variable keys
+      description: Returns key names and Vault path metadata only. Secret values are never returned.
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Application secret key list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationSecretsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      tags: [Applications]
+      operationId: updateApplicationSecrets
+      summary: Update Vault-backed application environment variables
+      description: Applies a set/delete patch to the final Vault KV v2 path. The response returns key names only.
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateSecretsRequest'
+      responses:
+        '200':
+          description: Application secrets updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationSecretsResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/secrets/versions:
+    get:
+      tags: [Applications]
+      operationId: listApplicationSecretVersions
+      summary: List Vault KV v2 versions for application environment variables
+      description: Returns Vault KV v2 version metadata only. Secret values are never returned.
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+      responses:
+        '200':
+          description: Application secret version history
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationSecretVersionsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/secrets/versions/{version}/restore:
+    post:
+      tags: [Applications]
+      operationId: restoreApplicationSecretVersion
+      summary: Restore application environment variables from a Vault KV v2 version
+      description: Reads the selected Vault KV v2 version and writes it as a new final version. Secret values are never returned.
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - $ref: '#/components/parameters/SecretVersion'
+      responses:
+        '200':
+          description: Application secret version restored
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationSecretsResponse'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -694,6 +826,43 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApplicationMetricsResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
+  /api/v1/applications/{applicationId}/metrics/diagnostics:
+    get:
+      tags: [Applications]
+      operationId: getApplicationMetricsDiagnostics
+      summary: Explain whether application metrics are being collected
+      parameters:
+        - $ref: '#/components/parameters/ApplicationId'
+        - name: range
+          in: query
+          required: false
+          description: Duration window for diagnostic metric checks.
+          schema:
+            type: string
+          example: 15m
+        - name: step
+          in: query
+          required: false
+          description: Sampling interval for diagnostic metric checks.
+          schema:
+            type: string
+          example: 1m
+      responses:
+        '200':
+          description: Metrics collection diagnostics
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MetricsDiagnosticsResponse'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -993,9 +1162,17 @@ components:
       name: applicationId
       in: path
       required: true
-      description: Deterministic application ID derived from GitHub path, e.g. project-a__my-app.
+      description: Deterministic application ID derived from GitHub path, e.g. shared__my-app.
       schema:
         type: string
+    SecretVersion:
+      name: version
+      in: path
+      required: true
+      description: Positive Vault KV v2 version number.
+      schema:
+        type: integer
+        minimum: 1
     DeploymentId:
       name: deploymentId
       in: path
@@ -1032,7 +1209,7 @@ components:
         username: local.developer
         displayName: 로컬 운영자
         groups:
-          - aods:project-a:deploy
+          - aods:shared:deploy
 
     ProjectRole:
       type: string
@@ -1061,10 +1238,10 @@ components:
         role:
           $ref: '#/components/schemas/ProjectRole'
       example:
-        id: project-a
-        name: Project A
+        id: shared
+        name: Shared
         description: Internal APIs
-        namespace: project-a
+        namespace: shared
         role: deployer
 
     ProjectLifecycleResponse:
@@ -1090,9 +1267,9 @@ components:
           type: string
           format: date-time
       example:
-        projectId: project-a
-        name: Project A
-        namespace: project-a
+        projectId: shared
+        name: Shared
+        namespace: shared
         status: deleted
         deletedAt: '2026-04-13T12:00:00Z'
 
@@ -1107,10 +1284,10 @@ components:
             $ref: '#/components/schemas/ProjectSummary'
       example:
         items:
-          - id: project-a
-            name: Project A
+          - id: shared
+            name: Shared
             description: Internal APIs
-            namespace: project-a
+            namespace: shared
             role: deployer
 
     ProjectAccess:
@@ -1237,6 +1414,109 @@ components:
           type: string
         value:
           type: string
+
+    ApplicationSecretSummary:
+      type: object
+      required:
+        - key
+      properties:
+        key:
+          type: string
+
+    ApplicationSecretVersionSummary:
+      type: object
+      required:
+        - version
+        - current
+      properties:
+        version:
+          type: integer
+          minimum: 1
+        createdAt:
+          type: string
+          format: date-time
+          description: Vault-reported creation timestamp for this version.
+        updatedBy:
+          type: string
+          description: User recorded in Vault custom metadata, when available.
+        current:
+          type: boolean
+        deleted:
+          type: boolean
+          description: Whether the Vault version is soft-deleted.
+        destroyed:
+          type: boolean
+          description: Whether the Vault version has been permanently destroyed.
+        keyCount:
+          type: integer
+          minimum: 0
+          description: Number of environment variable keys in the version, when known.
+
+    ApplicationSecretsResponse:
+      type: object
+      required:
+        - applicationId
+        - secretPath
+        - configured
+        - versioningEnabled
+        - items
+      properties:
+        applicationId:
+          type: string
+        secretPath:
+          type: string
+          description: Vault logical path for the application environment secret.
+        configured:
+          type: boolean
+          description: Whether GitOps desired state currently references this Vault path through ExternalSecret.
+        versioningEnabled:
+          type: boolean
+          description: Whether Vault KV v2 version metadata is available for this secret.
+        currentVersion:
+          type: integer
+          minimum: 1
+        updatedAt:
+          type: string
+          format: date-time
+          description: Creation timestamp of the current Vault KV v2 version, when available.
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApplicationSecretSummary'
+
+    ApplicationSecretVersionsResponse:
+      type: object
+      required:
+        - applicationId
+        - secretPath
+        - items
+      properties:
+        applicationId:
+          type: string
+        secretPath:
+          type: string
+          description: Vault logical path for the application environment secret.
+        currentVersion:
+          type: integer
+          minimum: 1
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApplicationSecretVersionSummary'
+
+    UpdateSecretsRequest:
+      type: object
+      properties:
+        set:
+          type: array
+          description: Keys to create or replace. Values are accepted in requests but never returned.
+          items:
+            $ref: '#/components/schemas/SecretEntry'
+        delete:
+          type: array
+          description: Keys to remove from the final application environment secret.
+          items:
+            type: string
 
     CreateApplicationRequest:
       type: object
@@ -1427,7 +1707,7 @@ components:
       properties:
         id:
           type: string
-          description: Deterministic ID derived from GitHub path, e.g. project-a__my-app.
+          description: Deterministic ID derived from GitHub path, e.g. shared__my-app.
         projectId:
           type: string
         name:
@@ -1476,8 +1756,8 @@ components:
         loadBalancerEnabled:
           type: boolean
       example:
-        id: project-a__payment-api
-        projectId: project-a
+        id: shared__payment-api
+        projectId: shared
         name: payment-api
         description: 결제 API
         image: ghcr.io/aolda/payment-api:1.2.3
@@ -1532,7 +1812,7 @@ components:
         loadBalancerEnabled:
           type: boolean
       example:
-        id: project-a__payment-api
+        id: shared__payment-api
         name: payment-api
         image: ghcr.io/aolda/payment-api:1.2.3
         deploymentStrategy: Rollout
@@ -1558,7 +1838,7 @@ components:
             $ref: '#/components/schemas/ApplicationSummary'
       example:
         items:
-          - id: project-a__payment-api
+          - id: shared__payment-api
             name: payment-api
             image: ghcr.io/aolda/payment-api:1.2.3
             deploymentStrategy: Rollout
@@ -1686,8 +1966,8 @@ components:
           type: string
           format: date-time
       example:
-        applicationId: project-a__payment-api
-        projectId: project-a
+        applicationId: shared__payment-api
+        projectId: shared
         name: payment-api
         status: archived
         archivedAt: '2026-04-12T10:20:00Z'
@@ -1717,7 +1997,7 @@ components:
             - Aborted
       example:
         deploymentId: dep_01HXYZ
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         imageTag: v1.2.4
         environment: prod
         status: Pending
@@ -1782,8 +2062,8 @@ components:
           format: date-time
       example:
         deploymentId: dep_01HXYZ
-        applicationId: project-a__payment-api
-        projectId: project-a
+        applicationId: shared__payment-api
+        projectId: shared
         applicationName: payment-api
         environment: prod
         image: ghcr.io/aolda/payment-api:v1.2.4
@@ -1814,11 +2094,11 @@ components:
           items:
             $ref: '#/components/schemas/DeploymentRecord'
       example:
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         items:
           - deploymentId: dep_01HXYZ
-            applicationId: project-a__payment-api
-            projectId: project-a
+            applicationId: shared__payment-api
+            projectId: shared
             applicationName: payment-api
             environment: prod
             image: ghcr.io/aolda/payment-api:v1.2.4
@@ -1855,7 +2135,7 @@ components:
         repositoryPoll:
           $ref: '#/components/schemas/RepositoryPollStatus'
       example:
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         status: Synced
         message: ReconciliationSucceeded
         observedAt: '2026-04-12T10:12:30Z'
@@ -1891,7 +2171,7 @@ components:
         repositoryPoll:
           $ref: '#/components/schemas/RepositoryPollStatus'
       example:
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         checkedAt: '2026-04-18T03:00:00Z'
         message: aolda_deploy.json 기준 변경을 감지해 v1.2.4 배포를 시작했습니다.
         source: aolda_deploy.json
@@ -2012,7 +2292,7 @@ components:
           type: string
           format: date-time
       example:
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         enabled: true
         status: Ready
         message: 클러스터 LoadBalancer 주소가 준비되었습니다.
@@ -2077,7 +2357,7 @@ components:
           items:
             $ref: '#/components/schemas/MetricSeries'
       example:
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         metrics:
           - key: request_rate
             label: Request Rate
@@ -2095,6 +2375,165 @@ components:
                 value: 0.2
               - timestamp: '2026-04-12T10:05:00Z'
                 value: 0.1
+
+    HealthStatus:
+      type: string
+      enum: [Healthy, Warning, Critical, Unknown]
+
+    HealthSignalStatus:
+      type: string
+      enum: [OK, Warning, Critical, Unknown, Unavailable]
+
+    HealthSignal:
+      type: object
+      required:
+        - key
+        - status
+        - message
+      properties:
+        key:
+          type: string
+        status:
+          $ref: '#/components/schemas/HealthSignalStatus'
+        message:
+          type: string
+        observedAt:
+          type: string
+          format: date-time
+        details:
+          type: object
+          additionalProperties: true
+
+    ApplicationHealthSnapshot:
+      type: object
+      required:
+        - applicationId
+        - name
+        - namespace
+        - status
+        - syncStatus
+        - deploymentStrategy
+        - metrics
+        - signals
+      properties:
+        applicationId:
+          type: string
+        name:
+          type: string
+        namespace:
+          type: string
+        status:
+          $ref: '#/components/schemas/HealthStatus'
+        syncStatus:
+          $ref: '#/components/schemas/SyncStatus'
+        deploymentStrategy:
+          type: string
+        metrics:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricSeries'
+        latestDeployment:
+          allOf:
+            - $ref: '#/components/schemas/DeploymentRecord'
+          nullable: true
+        signals:
+          type: array
+          items:
+            $ref: '#/components/schemas/HealthSignal'
+
+    ProjectHealthResponse:
+      type: object
+      required:
+        - projectId
+        - observedAt
+        - items
+      properties:
+        projectId:
+          type: string
+        observedAt:
+          type: string
+          format: date-time
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ApplicationHealthSnapshot'
+
+    MetricSeriesDiagnostic:
+      type: object
+      required:
+        - key
+        - label
+        - unit
+        - status
+        - message
+        - pointCount
+        - valueCount
+      properties:
+        key:
+          type: string
+        label:
+          type: string
+        unit:
+          type: string
+        status:
+          $ref: '#/components/schemas/HealthSignalStatus'
+        message:
+          type: string
+        pointCount:
+          type: integer
+        valueCount:
+          type: integer
+        latestValue:
+          type: number
+          nullable: true
+
+    MetricsScrapeTarget:
+      type: object
+      required:
+        - name
+        - port
+        - path
+        - required
+      properties:
+        name:
+          type: string
+        port:
+          type: string
+        path:
+          type: string
+        required:
+          type: boolean
+
+    MetricsDiagnosticsResponse:
+      type: object
+      required:
+        - applicationId
+        - checkedAt
+        - status
+        - message
+        - meshEnabled
+        - scrapeTargets
+        - series
+      properties:
+        applicationId:
+          type: string
+        checkedAt:
+          type: string
+          format: date-time
+        status:
+          $ref: '#/components/schemas/HealthSignalStatus'
+        message:
+          type: string
+        meshEnabled:
+          type: boolean
+        scrapeTargets:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricsScrapeTarget'
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/MetricSeriesDiagnostic'
 
     ContainerLogStream:
       type: object
@@ -2138,7 +2577,7 @@ components:
           items:
             $ref: '#/components/schemas/ContainerLogStream'
       example:
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         collectedAt: '2026-04-12T10:12:30Z'
         tailLines: 120
         items:
@@ -2247,7 +2686,7 @@ components:
           items:
             $ref: '#/components/schemas/ContainerLogTarget'
       example:
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         collectedAt: '2026-04-17T02:10:30Z'
         items:
           - podName: payment-api-7d9f8d7-abcde
@@ -2724,7 +3163,7 @@ components:
           items:
             $ref: '#/components/schemas/ApplicationEvent'
       example:
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         items:
           - id: evt_01HABC
             type: AutoRollbackTriggered
@@ -2792,7 +3231,7 @@ components:
           type: string
       example:
         operation: Redeploy
-        applicationId: project-a__payment-api
+        applicationId: shared__payment-api
         environment: prod
         imageTag: v1.2.4
         summary: 프로덕션 이미지 태그를 v1.2.4로 올립니다.
@@ -2861,8 +3300,8 @@ components:
           format: date-time
       example:
         id: chg_01HXYZ
-        projectId: project-a
-        applicationId: project-a__payment-api
+        projectId: shared
+        applicationId: shared__payment-api
         operation: Redeploy
         environment: prod
         writeMode: pull_request

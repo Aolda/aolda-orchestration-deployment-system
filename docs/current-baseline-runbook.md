@@ -232,8 +232,18 @@ export AODS_PROMETHEUS_PORT_FORWARD_REMOTE_PORT="9090"
 
 * `scripts/backend-run.sh` 는 `AODS_K8S_KUBECONFIG` 가 설정돼 있고 `AODS_PROMETHEUS_URL` 이 localhost 라면 Prometheus port-forward 를 자동으로 연다.
 * 앱 생성 시 base manifest 아래에 `ServiceMonitor` 가 자동 생성되어 Flux 경로를 통해 cluster Prometheus scrape 대상에 붙는다.
+* 앱 생성 시 base manifest 아래에 `PrometheusRule` 도 자동 생성되어 5xx 비율, p95 latency, pod restart, pod 비정상 상태, Flux degraded alert 를 Prometheus Operator 기준으로 관리한다.
 * CPU/메모리 값은 Prometheus container series 가 비어 있어도 Kubernetes `metrics.k8s.io` 값을 마지막 point 에 채워서 대시보드가 완전히 비지 않게 한다.
 * 요청 수/에러율/지연시간은 앱 또는 mesh 가 Prometheus-compatible metrics 를 실제로 노출해야 채워진다. 단순 nginx 처럼 `/metrics` 가 없으면 해당 series 는 `null` 로 유지될 수 있다.
+* `GET /api/v1/projects/{projectId}/health` 는 앱별 sync/metrics signals, metric series, 최신 deployment 요약을 한 번에 돌려주며, `GET /api/v1/applications/{applicationId}/metrics/diagnostics` 는 scrape target 과 series 값 유무를 진단한다.
+
+모니터링 변경만 빠르게 검증할 때는 아래 명령을 쓴다.
+
+```bash
+make check-observability
+```
+
+이 명령은 PrometheusRule 생성, project health snapshot, metrics diagnostics, generated manifest schema, frontend API 타입 연결을 순서대로 확인한다.
 
 실제 Vault adapter 를 붙일 때는 아래 env 를 추가한다.
 
@@ -278,6 +288,7 @@ export AODS_VAULT_PORT_FORWARD_REMOTE_PORT="8200"
 5. Keycloak real auth 연결
 
 Keycloak real auth 를 붙일 때는 아래 env 를 추가한다.
+운영자가 Keycloak Admin Console 에서 직접 설정해야 하는 Client, Role, Claim, 검증 절차는 `docs/keycloak-operator-guide.md` 를 기준으로 한다.
 
 ```bash
 export AODS_AUTH_MODE=oidc
@@ -288,7 +299,7 @@ export AODS_OIDC_USER_ID_CLAIM="sub"
 export AODS_OIDC_USERNAME_CLAIM="preferred_username"
 export AODS_OIDC_DISPLAY_NAME_CLAIM="name"
 export AODS_OIDC_GROUPS_CLAIM="groups"
-export AODS_PLATFORM_ADMIN_AUTHORITIES="/Ajou_Univ/Aolda_Admin,aods:platform:admin"
+export AODS_PLATFORM_ADMIN_AUTHORITIES="aods:platform:admin"
 export AODS_OIDC_REQUEST_TIMEOUT="5s"
 export AODS_ALLOW_DEV_FALLBACK=false
 ```
@@ -301,10 +312,12 @@ export AODS_ALLOW_DEV_FALLBACK=false
 * 현재 Keycloak 브라우저 로그인 기준 권장값은 `Client authentication=Off`, `Standard flow=On`, `Implicit flow=Off` 이다.
 * 이미 realm 내부 role 구조가 정해져 있으면 audience mapper 를 새로 강제하지 않아도 된다. 이 경우 `AODS_OIDC_AUDIENCE` 는 비워 둔다.
 * 백엔드는 `groups` 뿐 아니라 `realm_access.roles`, `resource_access.*.roles` 도 함께 읽어 권한 문자열로 해석한다.
-* 현재 이 저장소의 권장 모델은 **새 client role 체계를 만드는 것보다 기존 Keycloak group hierarchy 를 그대로 재사용하는 방식**이다.
-* `AODS_PLATFORM_ADMIN_AUTHORITIES` 는 프로젝트 목록과 클러스터 생성에서 전역 admin override 로 동작한다. 예시는 `/Ajou_Univ/Aolda_Admin` 이다.
-* 프로젝트별 접근은 여전히 `platform/projects.yaml` 의 `viewerGroups`, `deployerGroups`, `adminGroups` 와 **정확히 문자열 매칭**한다.
-* 따라서 `Group Membership` mapper 로 full path 가 들어온다면 `platform/projects.yaml` 에 `/Ajou_Univ/Aolda_Member/<project>/ops` 같은 경로를 직접 써도 된다.
+* 현재 이 저장소의 권장 모델은 **전역 admin은 AODS role 기반으로 판별하고, 프로젝트 권한은 `platform/projects.yaml` 의 문자열과 exact match 하는 방식**이다.
+* 운영자/사용자 배정은 Keycloak `aods` client role을 사용자에게 직접 할당하는 방식을 기준으로 한다.
+* `AODS_PLATFORM_ADMIN_AUTHORITIES` 는 프로젝트 목록과 클러스터 생성에서 전역 admin override 로 동작한다. 기준 role 은 `aods:platform:admin` 이다.
+* 프로젝트별 접근도 Keycloak `aods` client role 을 기준으로 `aods:<projectId>:view`, `aods:<projectId>:deploy`, `aods:<projectId>:admin` 형식을 권장한다.
+* 프로젝트별 접근은 `platform/projects.yaml` 의 `viewerGroups`, `deployerGroups`, `adminGroups` 와 **정확히 문자열 매칭**한다.
+* `/Ajou_Univ/Aolda_Admin` 같은 조직 group full path 는 platform admin 판정 기준으로 쓰지 않는다.
 * `AODS_OIDC_ROLE_MAPPINGS` 는 기존 canonical `aods:*` 문자열을 계속 쓰고 싶을 때만 bridge 로 둔다. 형식은 `외부권한=내부권한1|내부권한2` 이고, 여러 항목은 `,` 로 구분한다.
 
 프론트에서 Keycloak MVP 로그인을 직접 붙일 때는 아래 env 를 추가한다.
@@ -315,7 +328,7 @@ export VITE_AODS_OIDC_ISSUER_URL="https://sso.aoldacloud.com/realms/<realm>"
 export VITE_AODS_OIDC_CLIENT_ID="aods"
 export VITE_AODS_OIDC_REDIRECT_URI="http://localhost:5173"
 export VITE_AODS_OIDC_SCOPE="openid profile email"
-export VITE_AODS_PLATFORM_ADMIN_AUTHORITIES="/Ajou_Univ/Aolda_Admin,aods:platform:admin"
+export VITE_AODS_PLATFORM_ADMIN_AUTHORITIES="aods:platform:admin"
 ```
 
 주의:

@@ -466,6 +466,32 @@ func (s LocalManifestStore) PatchApplication(ctx context.Context, project Projec
 	return record, nil
 }
 
+func (s LocalManifestStore) SaveApplicationSecretPath(ctx context.Context, project ProjectContext, applicationID string, secretPath string) (Record, error) {
+	if err := ctx.Err(); err != nil {
+		return Record{}, err
+	}
+
+	record, err := s.GetApplication(ctx, applicationID)
+	if err != nil {
+		return Record{}, err
+	}
+	previousEnvironment := record.DefaultEnvironment
+	record.SecretPath = strings.TrimSpace(secretPath)
+	record.UpdatedAt = time.Now().UTC()
+
+	environments := recordEnvironments(s.RepoRoot, record)
+	if err := s.writeApplicationFiles(record, environments); err != nil {
+		return Record{}, err
+	}
+	if err := s.syncFluxWiring(record, project, previousEnvironment); err != nil {
+		return Record{}, err
+	}
+	if err := writeMetadata(s.RepoRoot, record, environments); err != nil {
+		return Record{}, err
+	}
+	return record, nil
+}
+
 func (s LocalManifestStore) loadLifecycleMetadata(projectID string, appName string) (appMetadata, error) {
 	metadata, err := readMetadata(s.RepoRoot, projectID, appName)
 	if err == nil {
@@ -700,6 +726,7 @@ func renderBaseKustomization(record Record) string {
 		workloadFileName(record),
 		"service.yaml",
 		"servicemonitor.yaml",
+		"prometheusrule.yaml",
 	}
 	if record.MeshEnabled {
 		resources = append(resources, "virtualservice.yaml", "destinationrule.yaml")
@@ -1121,6 +1148,131 @@ spec:
 	)
 }
 
+func renderPrometheusRule(record Record, fluxNamespace string) string {
+	if strings.TrimSpace(fluxNamespace) == "" {
+		fluxNamespace = defaultFluxKustomizationNamespace
+	}
+	podRegex := record.Name + `-[a-z0-9]+(?:-[a-z0-9]+)?`
+	return fmt.Sprintf(`apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: %s
+  namespace: %s
+  labels:
+    app.kubernetes.io/name: %s
+    app.kubernetes.io/part-of: %s
+    release: kube-prometheus-stack
+spec:
+  groups:
+    - name: %s-runtime
+      rules:
+        - alert: AODSApplicationHighErrorRate
+          expr: |
+            (
+              100 * (sum(rate(istio_requests_total{reporter="destination",destination_workload_namespace="%s",destination_app="%s",response_code=~"5.."}[5m])) / clamp_min(sum(rate(istio_requests_total{reporter="destination",destination_workload_namespace="%s",destination_app="%s"}[5m])), 0.001))
+              or
+              100 * (sum(rate(http_server_requests_seconds_count{namespace="%s",application="%s",status=~"5.."}[5m])) / clamp_min(sum(rate(http_server_requests_seconds_count{namespace="%s",application="%s"}[5m])), 0.001))
+              or vector(0)
+            ) > 5
+          for: 5m
+          labels:
+            severity: warning
+            projectId: %s
+            applicationId: %s
+          annotations:
+            summary: %s 5xx 비율이 높습니다.
+            description: 최근 5분 동안 5xx 비율이 5%%를 초과했습니다.
+        - alert: AODSApplicationHighLatency
+          expr: |
+            (
+              histogram_quantile(0.95, sum(rate(istio_request_duration_milliseconds_bucket{reporter="destination",destination_workload_namespace="%s",destination_app="%s"}[5m])) by (le))
+              or
+              histogram_quantile(0.95, sum(rate(istio_request_duration_seconds_bucket{namespace="%s",application="%s"}[5m])) by (le)) * 1000
+              or vector(0)
+            ) > 1000
+          for: 5m
+          labels:
+            severity: warning
+            projectId: %s
+            applicationId: %s
+          annotations:
+            summary: %s p95 지연시간이 높습니다.
+            description: 최근 5분 동안 p95 지연시간이 1000ms를 초과했습니다.
+        - alert: AODSApplicationPodRestarting
+          expr: |
+            sum(increase(kube_pod_container_status_restarts_total{namespace="%s",pod=~"%s",container!=""}[10m])) > 0
+          for: 1m
+          labels:
+            severity: warning
+            projectId: %s
+            applicationId: %s
+          annotations:
+            summary: %s pod 재시작이 감지되었습니다.
+            description: 최근 10분 동안 애플리케이션 pod container restart count가 증가했습니다.
+        - alert: AODSApplicationPodsNotRunning
+          expr: |
+            sum(kube_pod_status_phase{namespace="%s",pod=~"%s",phase=~"Failed|Pending|Unknown"}) > 0
+          for: 5m
+          labels:
+            severity: critical
+            projectId: %s
+            applicationId: %s
+          annotations:
+            summary: %s pod가 정상 실행 상태가 아닙니다.
+            description: 애플리케이션 pod 중 Failed, Pending, Unknown 상태가 5분 이상 유지되고 있습니다.
+        - alert: AODSApplicationFluxDegraded
+          expr: |
+            gotk_reconcile_condition{namespace="%s",name="%s",type="Ready",status="False"} > 0
+          for: 5m
+          labels:
+            severity: critical
+            projectId: %s
+            applicationId: %s
+          annotations:
+            summary: %s Flux 동기화가 실패했습니다.
+            description: Flux Kustomization Ready=False 상태가 5분 이상 유지되고 있습니다.
+`,
+		record.Name,
+		record.Namespace,
+		record.Name,
+		record.ProjectID,
+		record.Name,
+		record.Namespace,
+		record.Name,
+		record.Namespace,
+		record.Name,
+		record.Namespace,
+		record.Name,
+		record.Namespace,
+		record.Name,
+		record.ProjectID,
+		record.ID,
+		record.Name,
+		record.Namespace,
+		record.Name,
+		record.Namespace,
+		record.Name,
+		record.ProjectID,
+		record.ID,
+		record.Name,
+		record.Namespace,
+		podRegex,
+		record.ProjectID,
+		record.ID,
+		record.Name,
+		record.Namespace,
+		podRegex,
+		record.ProjectID,
+		record.ID,
+		record.Name,
+		fluxNamespace,
+		fluxChildName(record),
+		record.ProjectID,
+		record.ID,
+		record.Name,
+	)
+}
+
 func renderVirtualService(record Record) string {
 	host := fmt.Sprintf("%s.%s.svc.cluster.local", record.Name, record.Namespace)
 	if IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
@@ -1435,6 +1587,7 @@ func (s LocalManifestStore) writeApplicationFiles(record Record, environments []
 		filepath.Join(applicationDir, "base", workloadFileName(record)): renderWorkload(record),
 		filepath.Join(applicationDir, "base", "service.yaml"):           renderService(record),
 		filepath.Join(applicationDir, "base", "servicemonitor.yaml"):    renderServiceMonitor(record),
+		filepath.Join(applicationDir, "base", "prometheusrule.yaml"):    renderPrometheusRule(record, s.fluxKustomizationNamespace()),
 	}
 	if record.MeshEnabled {
 		files[filepath.Join(applicationDir, "base", "virtualservice.yaml")] = renderVirtualService(record)

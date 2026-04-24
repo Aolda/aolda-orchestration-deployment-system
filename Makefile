@@ -1,4 +1,4 @@
-.PHONY: backend-run frontend-run check check-backend check-frontend check-manifests setup doctor install-self-hosted-kubeconfig deploy-testbed
+.PHONY: backend-run frontend-run check check-backend check-frontend check-manifests check-images check-observability setup doctor install-self-hosted-kubeconfig deploy-testbed
 
 setup:
 	@echo "Setting up basic directories..."
@@ -17,6 +17,7 @@ check:
 	@$(MAKE) check-backend
 	@$(MAKE) check-manifests
 	@$(MAKE) check-frontend
+	@$(MAKE) check-images
 
 check-backend:
 	@echo "Checking backend..."
@@ -29,6 +30,15 @@ check-frontend:
 check-manifests:
 	@echo "Checking generated Kubernetes manifests..."
 	@bash scripts/validate-manifests.sh
+
+check-images:
+	@echo "Checking backend and frontend container image builds..."
+	@docker build -t aods-backend:validation ./backend
+	@docker build -t aods-frontend:validation ./frontend
+
+check-observability:
+	@echo "Checking observability-specific changes..."
+	@bash scripts/check-observability.sh
 
 doctor:
 	@bash scripts/doctor.sh

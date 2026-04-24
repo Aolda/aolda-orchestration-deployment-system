@@ -38,6 +38,28 @@ func TestRealStoreStageAndFinalizeUsesKVv2Endpoints(t *testing.T) {
 			Body:   body,
 		})
 
+		if r.Method == http.MethodGet && r.URL.Path == "/v1/secret/metadata/aods/staging/req_123" {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"current_version": 1,
+					"custom_metadata": map[string]string{
+						"status":    "pending_commit",
+						"projectId": "project-a",
+						"appName":   "my-app",
+						"updatedBy": "deployer",
+					},
+					"versions": map[string]any{
+						"1": map[string]any{
+							"version":      1,
+							"created_time": time.Now().UTC().Format(time.RFC3339Nano),
+						},
+					},
+				},
+			})
+			return
+		}
+
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
@@ -71,8 +93,8 @@ func TestRealStoreStageAndFinalizeUsesKVv2Endpoints(t *testing.T) {
 		t.Fatalf("finalize secret: %v", err)
 	}
 
-	if len(requests) != 4 {
-		t.Fatalf("expected 4 vault requests, got %d", len(requests))
+	if len(requests) != 6 {
+		t.Fatalf("expected 6 vault requests, got %d", len(requests))
 	}
 
 	if requests[0].Method != http.MethodPost || requests[0].Path != "/v1/secret/data/aods/staging/req_123" {
@@ -93,11 +115,24 @@ func TestRealStoreStageAndFinalizeUsesKVv2Endpoints(t *testing.T) {
 		t.Fatalf("expected pending_commit metadata, got %#v", customMetadata["status"])
 	}
 
-	if requests[2].Method != http.MethodPost || requests[2].Path != "/v1/secret/data/aods/apps/project-a/my-app/prod" {
-		t.Fatalf("unexpected final write request: %+v", requests[2])
+	if requests[2].Method != http.MethodGet || requests[2].Path != "/v1/secret/metadata/aods/staging/req_123" {
+		t.Fatalf("unexpected staging metadata read request: %+v", requests[2])
 	}
-	if requests[3].Method != http.MethodDelete || requests[3].Path != "/v1/secret/metadata/aods/staging/req_123" {
-		t.Fatalf("unexpected cleanup request: %+v", requests[3])
+	if requests[3].Method != http.MethodPost || requests[3].Path != "/v1/secret/data/aods/apps/project-a/my-app/prod" {
+		t.Fatalf("unexpected final write request: %+v", requests[3])
+	}
+	if requests[4].Method != http.MethodPost || requests[4].Path != "/v1/secret/metadata/aods/apps/project-a/my-app/prod" {
+		t.Fatalf("unexpected final metadata request: %+v", requests[4])
+	}
+	finalMetadata, ok := requests[4].Body["custom_metadata"].(map[string]any)
+	if !ok {
+		t.Fatalf("expected final custom_metadata payload, got %#v", requests[4].Body)
+	}
+	if finalMetadata["updatedBy"] != "deployer" || finalMetadata["status"] != "finalized" {
+		t.Fatalf("expected final metadata to preserve staging metadata, got %#v", finalMetadata)
+	}
+	if requests[5].Method != http.MethodDelete || requests[5].Path != "/v1/secret/metadata/aods/staging/req_123" {
+		t.Fatalf("unexpected cleanup request: %+v", requests[5])
 	}
 }
 

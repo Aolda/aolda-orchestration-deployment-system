@@ -8,6 +8,8 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -82,8 +84,20 @@ func (s RealStore) Finalize(ctx context.Context, staged application.StagedSecret
 		return err
 	}
 
+	metadata, found, err := s.readMetadata(ctx, staged.StagingPath)
+	if err != nil {
+		return err
+	}
+
 	if err := s.writeKVv2(ctx, staged.FinalPath, data); err != nil {
 		return err
+	}
+	if found && len(metadata.CustomMetadata) > 0 {
+		metadata.CustomMetadata["status"] = "finalized"
+		metadata.CustomMetadata["updatedAt"] = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := s.writeMetadata(ctx, staged.FinalPath, metadata.CustomMetadata); err != nil {
+			return err
+		}
 	}
 
 	if err := s.deleteMetadata(ctx, staged.StagingPath); err != nil {
@@ -226,6 +240,93 @@ func (s RealStore) Get(ctx context.Context, logicalPath string) (map[string]stri
 	return payload.Data.Data, nil
 }
 
+func (s RealStore) GetVersion(ctx context.Context, logicalPath string, version int) (map[string]string, application.SecretVersionSummary, error) {
+	if version <= 0 {
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("vault secret version must be positive")
+	}
+	endpoint, err := s.kvEndpoint(logicalPath, "data")
+	if err != nil {
+		return nil, application.SecretVersionSummary{}, err
+	}
+	u, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("parse vault endpoint: %w", err)
+	}
+	query := u.Query()
+	query.Set("version", strconv.Itoa(version))
+	u.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("build vault request: %w", err)
+	}
+	req.Header.Set("X-Vault-Token", s.Token)
+	if strings.TrimSpace(s.Namespace) != "" {
+		req.Header.Set("X-Vault-Namespace", s.Namespace)
+	}
+
+	resp, err := s.httpClient().Do(req)
+	if err != nil {
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("send vault request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("vault API returned %s: %s", resp.Status, string(body))
+	}
+
+	var payload struct {
+		Data struct {
+			Data     map[string]string `json:"data"`
+			Metadata kvVersionMetadata `json:"metadata"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("decode vault response: %w", err)
+	}
+	summary := payload.Data.Metadata.toSummary(version, 0)
+	summary.KeyCount = len(payload.Data.Data)
+	return payload.Data.Data, summary, nil
+}
+
+func (s RealStore) ListVersions(ctx context.Context, logicalPath string) (application.ApplicationSecretVersionsResponse, error) {
+	metadata, found, err := s.readMetadata(ctx, logicalPath)
+	if err != nil {
+		return application.ApplicationSecretVersionsResponse{}, err
+	}
+	if !found {
+		return application.ApplicationSecretVersionsResponse{SecretPath: logicalPath, Items: []application.SecretVersionSummary{}}, nil
+	}
+
+	keys := make([]int, 0, len(metadata.Versions))
+	for rawVersion := range metadata.Versions {
+		version, err := strconv.Atoi(rawVersion)
+		if err == nil {
+			keys = append(keys, version)
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(keys)))
+
+	items := make([]application.SecretVersionSummary, 0, len(keys))
+	for _, version := range keys {
+		item := metadata.Versions[strconv.Itoa(version)].toSummary(version, metadata.CurrentVersion)
+		if item.Current {
+			item.UpdatedBy = strings.TrimSpace(metadata.CustomMetadata["updatedBy"])
+			if item.UpdatedBy == "" {
+				item.UpdatedBy = strings.TrimSpace(metadata.CustomMetadata["createdBy"])
+			}
+		}
+		items = append(items, item)
+	}
+
+	return application.ApplicationSecretVersionsResponse{
+		SecretPath:     logicalPath,
+		CurrentVersion: metadata.CurrentVersion,
+		Items:          items,
+	}, nil
+}
+
 func (s RealStore) Delete(ctx context.Context, logicalPath string) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -281,9 +382,35 @@ func (s RealStore) kvEndpoint(logicalPath string, section string) (string, error
 }
 
 type kvMetadata struct {
-	CreatedTime    string            `json:"created_time"`
-	UpdatedTime    string            `json:"updated_time"`
-	CustomMetadata map[string]string `json:"custom_metadata"`
+	CurrentVersion int                          `json:"current_version"`
+	CreatedTime    string                       `json:"created_time"`
+	UpdatedTime    string                       `json:"updated_time"`
+	CustomMetadata map[string]string            `json:"custom_metadata"`
+	Versions       map[string]kvVersionMetadata `json:"versions"`
+}
+
+type kvVersionMetadata struct {
+	CreatedTime  string `json:"created_time"`
+	DeletionTime string `json:"deletion_time"`
+	Destroyed    bool   `json:"destroyed"`
+	Version      int    `json:"version"`
+}
+
+func (m kvVersionMetadata) toSummary(version int, currentVersion int) application.SecretVersionSummary {
+	if m.Version > 0 {
+		version = m.Version
+	}
+	var createdAt *time.Time
+	if parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(m.CreatedTime)); err == nil {
+		createdAt = &parsed
+	}
+	return application.SecretVersionSummary{
+		Version:   version,
+		CreatedAt: createdAt,
+		Current:   currentVersion > 0 && version == currentVersion,
+		Deleted:   strings.TrimSpace(m.DeletionTime) != "",
+		Destroyed: m.Destroyed,
+	}
 }
 
 func (s RealStore) cleanupStaleUnderPath(ctx context.Context, logicalPath string, cutoff time.Time) (int, error) {

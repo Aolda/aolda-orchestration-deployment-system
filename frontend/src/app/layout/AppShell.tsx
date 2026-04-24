@@ -15,6 +15,7 @@ type SidebarProject = {
 type AppShellProps = {
   activeSection: GlobalSection
   onSectionChange: (section: GlobalSection) => void
+  visibleSections?: GlobalSection[]
   breadcrumbs: string[]
   title: string
   description: string
@@ -34,6 +35,7 @@ type AppShellProps = {
 export function AppShell({
   activeSection,
   onSectionChange,
+  visibleSections,
   breadcrumbs,
   title,
   description,
@@ -70,6 +72,7 @@ export function AppShell({
             <SidebarNav
               activeSection={activeSection}
               onSectionChange={onSectionChange}
+              visibleSections={visibleSections}
               projects={projects}
               selectedProjectId={selectedProjectId}
               onProjectSelect={onProjectSelect}

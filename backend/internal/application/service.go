@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ type Store interface {
 	DeleteApplication(ctx context.Context, applicationID string) (ApplicationLifecycleResponse, error)
 	UpdateApplicationImage(ctx context.Context, project ProjectContext, applicationID string, imageTag string, deploymentID string) (Record, error)
 	PatchApplication(ctx context.Context, project ProjectContext, applicationID string, input UpdateApplicationRequest) (Record, error)
+	SaveApplicationSecretPath(ctx context.Context, project ProjectContext, applicationID string, secretPath string) (Record, error)
 	ListDeployments(ctx context.Context, applicationID string) ([]DeploymentRecord, error)
 	GetDeployment(ctx context.Context, applicationID string, deploymentID string) (DeploymentRecord, error)
 	UpdateDeployment(ctx context.Context, applicationID string, deployment DeploymentRecord) (DeploymentRecord, error)
@@ -90,6 +92,11 @@ type SecretStore interface {
 	Finalize(ctx context.Context, staged StagedSecret, data map[string]string) error
 	Get(ctx context.Context, logicalPath string) (map[string]string, error)
 	Delete(ctx context.Context, logicalPath string) error
+}
+
+type VersionedSecretStore interface {
+	ListVersions(ctx context.Context, logicalPath string) (ApplicationSecretVersionsResponse, error)
+	GetVersion(ctx context.Context, logicalPath string, version int) (map[string]string, SecretVersionSummary, error)
 }
 
 type Service struct {
@@ -571,6 +578,252 @@ func (s Service) PatchApplication(ctx context.Context, user core.User, applicati
 	return toApplication(updatedRecord, syncInfo), nil
 }
 
+func (s Service) GetApplicationSecrets(ctx context.Context, user core.User, applicationID string) (ApplicationSecretsResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	if s.Secrets == nil {
+		return ApplicationSecretsResponse{}, ValidationError{
+			Message: "vault secret store is not configured",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+
+	secretPath := strings.TrimSpace(record.SecretPath)
+	configured := secretPath != ""
+	if secretPath == "" {
+		secretPath = core.BuildVaultFinalPath(record.ProjectID, record.Name)
+	}
+
+	values := map[string]string{}
+	if configured {
+		stored, err := s.Secrets.Get(ctx, secretPath)
+		if err != nil {
+			return ApplicationSecretsResponse{}, fmt.Errorf("read application secrets: %w", err)
+		}
+		values = cloneSecretData(stored)
+	}
+
+	response, err := s.buildApplicationSecretsResponse(ctx, record.ID, secretPath, configured, values)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	return response, nil
+}
+
+func (s Service) UpdateApplicationSecrets(
+	ctx context.Context,
+	user core.User,
+	applicationID string,
+	input UpdateSecretsRequest,
+	requestID string,
+) (ApplicationSecretsResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	if s.Secrets == nil {
+		return ApplicationSecretsResponse{}, ValidationError{
+			Message: "vault secret store is not configured",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+
+	projectInfo, err := s.Projects.GetAuthorized(ctx, user, record.ProjectID)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	if !changeGuardBypassed(ctx) && requiresChangeFlow(projectInfo.Project, record.DefaultEnvironment) {
+		return ApplicationSecretsResponse{}, ErrChangeRequired
+	}
+
+	setValues, err := normalizeSecrets(input.Set)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	deleteKeys, err := normalizeSecretDeleteKeys(input.Delete, setValues)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+
+	currentPath := strings.TrimSpace(record.SecretPath)
+	secretPath := currentPath
+	if secretPath == "" {
+		secretPath = core.BuildVaultFinalPath(record.ProjectID, record.Name)
+	}
+
+	currentValues := map[string]string{}
+	if currentPath != "" {
+		stored, err := s.Secrets.Get(ctx, currentPath)
+		if err != nil {
+			return ApplicationSecretsResponse{}, fmt.Errorf("read application secrets: %w", err)
+		}
+		currentValues = cloneSecretData(stored)
+	}
+
+	nextValues := cloneSecretData(currentValues)
+	for _, key := range deleteKeys {
+		delete(nextValues, key)
+	}
+	for key, value := range setValues {
+		nextValues[key] = value
+	}
+
+	nextSecretPath := ""
+	if len(nextValues) > 0 {
+		nextSecretPath = secretPath
+	}
+	if nextSecretPath != currentPath {
+		record, err = s.Store.SaveApplicationSecretPath(ctx, buildProjectContext(projectInfo.Project), applicationID, nextSecretPath)
+		if err != nil {
+			return ApplicationSecretsResponse{}, err
+		}
+	}
+
+	if len(nextValues) > 0 {
+		staged, err := s.Secrets.StageAt(ctx, requestID+"_env", nextSecretPath, map[string]string{
+			"projectId": record.ProjectID,
+			"appName":   record.Name,
+			"updatedBy": user.Username,
+			"kind":      "application-env",
+		}, nextValues)
+		if err != nil {
+			return ApplicationSecretsResponse{}, err
+		}
+		if err := s.Secrets.Finalize(ctx, staged, nextValues); err != nil {
+			return ApplicationSecretsResponse{}, err
+		}
+	} else if currentPath != "" {
+		if err := s.Secrets.Delete(ctx, currentPath); err != nil {
+			return ApplicationSecretsResponse{}, err
+		}
+	}
+
+	_ = s.appendEvent(ctx, record.ID, "ApplicationSecretsUpdated", "애플리케이션 환경 변수를 갱신했습니다.", map[string]any{
+		"secretPath": nextSecretPath,
+		"keyCount":   len(nextValues),
+	})
+
+	response, err := s.buildApplicationSecretsResponse(ctx, record.ID, secretPath, nextSecretPath != "", nextValues)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	return response, nil
+}
+
+func (s Service) ListApplicationSecretVersions(ctx context.Context, user core.User, applicationID string) (ApplicationSecretVersionsResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return ApplicationSecretVersionsResponse{}, err
+	}
+	secretPath := strings.TrimSpace(record.SecretPath)
+	if secretPath == "" {
+		return ApplicationSecretVersionsResponse{
+			ApplicationID: applicationID,
+			SecretPath:    core.BuildVaultFinalPath(record.ProjectID, record.Name),
+			Items:         []SecretVersionSummary{},
+		}, nil
+	}
+	versioned, ok := s.Secrets.(VersionedSecretStore)
+	if !ok {
+		return ApplicationSecretVersionsResponse{
+			ApplicationID: applicationID,
+			SecretPath:    secretPath,
+			Items:         []SecretVersionSummary{},
+		}, nil
+	}
+
+	response, err := versioned.ListVersions(ctx, secretPath)
+	if err != nil {
+		return ApplicationSecretVersionsResponse{}, fmt.Errorf("read application secret versions: %w", err)
+	}
+	response.ApplicationID = applicationID
+	response.SecretPath = secretPath
+	if response.Items == nil {
+		response.Items = []SecretVersionSummary{}
+	}
+	return response, nil
+}
+
+func (s Service) RestoreApplicationSecretVersion(
+	ctx context.Context,
+	user core.User,
+	applicationID string,
+	version int,
+	requestID string,
+) (ApplicationSecretsResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	if version <= 0 {
+		return ApplicationSecretsResponse{}, ValidationError{
+			Message: "secret version must be a positive integer",
+			Details: map[string]any{"field": "version"},
+		}
+	}
+	secretPath := strings.TrimSpace(record.SecretPath)
+	if secretPath == "" {
+		return ApplicationSecretsResponse{}, ValidationError{
+			Message: "application has no configured environment secret",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+	versioned, ok := s.Secrets.(VersionedSecretStore)
+	if !ok {
+		return ApplicationSecretsResponse{}, ValidationError{
+			Message: "vault version history is not available",
+			Details: map[string]any{"applicationId": applicationID},
+		}
+	}
+
+	projectInfo, err := s.Projects.GetAuthorized(ctx, user, record.ProjectID)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	if !changeGuardBypassed(ctx) && requiresChangeFlow(projectInfo.Project, record.DefaultEnvironment) {
+		return ApplicationSecretsResponse{}, ErrChangeRequired
+	}
+
+	values, info, err := versioned.GetVersion(ctx, secretPath, version)
+	if err != nil {
+		return ApplicationSecretsResponse{}, fmt.Errorf("read application secret version: %w", err)
+	}
+	if info.Deleted || info.Destroyed {
+		return ApplicationSecretsResponse{}, ValidationError{
+			Message: "secret version cannot be restored because it is deleted or destroyed",
+			Details: map[string]any{"version": version},
+		}
+	}
+
+	staged, err := s.Secrets.StageAt(ctx, requestID+"_env_restore", secretPath, map[string]string{
+		"projectId":       record.ProjectID,
+		"appName":         record.Name,
+		"updatedBy":       user.Username,
+		"kind":            "application-env-restore",
+		"restoredVersion": fmt.Sprintf("%d", version),
+	}, values)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	if err := s.Secrets.Finalize(ctx, staged, values); err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+
+	_ = s.appendEvent(ctx, record.ID, "ApplicationSecretsRestored", fmt.Sprintf("환경 변수를 Vault version %d 기준으로 복원했습니다.", version), map[string]any{
+		"secretPath":       secretPath,
+		"restoredVersion":  version,
+		"restoredKeyCount": len(values),
+	})
+
+	response, err := s.buildApplicationSecretsResponse(ctx, record.ID, secretPath, true, values)
+	if err != nil {
+		return ApplicationSecretsResponse{}, err
+	}
+	return response, nil
+}
+
 func (s Service) ArchiveApplication(ctx context.Context, user core.User, applicationID string) (ApplicationLifecycleResponse, error) {
 	if _, _, err := s.requireProjectAdmin(ctx, user, applicationID); err != nil {
 		return ApplicationLifecycleResponse{}, err
@@ -683,6 +936,311 @@ func (s Service) GetMetrics(ctx context.Context, user core.User, applicationID s
 		ApplicationID: record.ID,
 		Metrics:       metrics,
 	}, nil
+}
+
+func (s Service) GetProjectHealth(ctx context.Context, user core.User, projectID string) (ProjectHealthResponse, error) {
+	if _, err := s.Projects.GetAuthorized(ctx, user, projectID); err != nil {
+		return ProjectHealthResponse{}, err
+	}
+
+	records, err := s.Store.ListApplications(ctx, projectID)
+	if err != nil {
+		return ProjectHealthResponse{}, err
+	}
+
+	observedAt := timeNowUTC()
+	syncInfos, syncErr := s.readSyncInfoMap(ctx, records)
+	items := make([]ApplicationHealthSnapshot, 0, len(records))
+	for _, record := range records {
+		signals := make([]HealthSignal, 0, 3)
+
+		if syncErr != nil {
+			signals = append(signals, HealthSignal{
+				Key:        "sync",
+				Status:     HealthSignalUnavailable,
+				Message:    syncErr.Error(),
+				ObservedAt: observedAt,
+			})
+		} else {
+			syncInfo, ok := syncInfos[record.ID]
+			if !ok {
+				syncInfo = SyncInfo{
+					Status:     SyncStatusUnknown,
+					Message:    "sync 상태를 읽지 못했습니다.",
+					ObservedAt: observedAt,
+				}
+			}
+			signals = append(signals, syncHealthSignal(syncInfo))
+		}
+
+		diagnostics, metrics := s.readMetricsDiagnostics(ctx, record, 15*time.Minute, time.Minute)
+		signals = append(signals, HealthSignal{
+			Key:        "metrics",
+			Status:     diagnostics.Status,
+			Message:    diagnostics.Message,
+			ObservedAt: diagnostics.CheckedAt,
+			Details: map[string]any{
+				"series":        len(diagnostics.Series),
+				"scrapeTargets": len(diagnostics.ScrapeTargets),
+			},
+		})
+
+		latestDeployment, deploymentSignal := s.latestDeploymentHealthSignal(ctx, record, observedAt)
+		signals = append(signals, deploymentSignal)
+
+		syncStatus := SyncStatusUnknown
+		if syncInfo, ok := syncInfos[record.ID]; ok && syncErr == nil {
+			syncStatus = syncInfo.Status
+		}
+
+		items = append(items, ApplicationHealthSnapshot{
+			ApplicationID:      record.ID,
+			Name:               record.Name,
+			Namespace:          record.Namespace,
+			Status:             deriveHealthStatus(signals),
+			SyncStatus:         syncStatus,
+			DeploymentStrategy: string(record.DeploymentStrategy),
+			Metrics:            metrics,
+			LatestDeployment:   latestDeployment,
+			Signals:            signals,
+		})
+	}
+
+	return ProjectHealthResponse{
+		ProjectID:  projectID,
+		ObservedAt: observedAt,
+		Items:      items,
+	}, nil
+}
+
+func (s Service) GetMetricsDiagnostics(ctx context.Context, user core.User, applicationID string, duration time.Duration, step time.Duration) (MetricsDiagnosticsResponse, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, false)
+	if err != nil {
+		return MetricsDiagnosticsResponse{}, err
+	}
+	diagnostics, _ := s.readMetricsDiagnostics(ctx, record, duration, step)
+	return diagnostics, nil
+}
+
+func (s Service) readSyncInfoMap(ctx context.Context, records []Record) (map[string]SyncInfo, error) {
+	items := make(map[string]SyncInfo, len(records))
+	if len(records) == 0 {
+		return items, nil
+	}
+	if s.StatusReader == nil {
+		return items, fmt.Errorf("sync status reader is not configured")
+	}
+	if batchReader, ok := s.StatusReader.(BatchStatusReader); ok {
+		return batchReader.ReadMany(ctx, records)
+	}
+	for _, record := range records {
+		info, err := s.StatusReader.Read(ctx, record)
+		if err != nil {
+			return items, err
+		}
+		items[record.ID] = info
+	}
+	return items, nil
+}
+
+func syncHealthSignal(info SyncInfo) HealthSignal {
+	status := HealthSignalUnknown
+	switch info.Status {
+	case SyncStatusSynced:
+		status = HealthSignalOK
+	case SyncStatusDegraded:
+		status = HealthSignalCritical
+	case SyncStatusSyncing, SyncStatusUnknown:
+		status = HealthSignalWarning
+	}
+	message := strings.TrimSpace(info.Message)
+	if message == "" {
+		message = "Flux sync 상태를 읽었습니다."
+	}
+	return HealthSignal{
+		Key:        "sync",
+		Status:     status,
+		Message:    message,
+		ObservedAt: info.ObservedAt,
+		Details: map[string]any{
+			"syncStatus": info.Status,
+		},
+	}
+}
+
+func (s Service) readMetricsDiagnostics(ctx context.Context, record Record, duration time.Duration, step time.Duration) (MetricsDiagnosticsResponse, []MetricSeries) {
+	checkedAt := timeNowUTC()
+	response := MetricsDiagnosticsResponse{
+		ApplicationID: record.ID,
+		CheckedAt:     checkedAt,
+		Status:        HealthSignalUnavailable,
+		Message:       "metrics reader is not configured",
+		MeshEnabled:   record.MeshEnabled,
+		ScrapeTargets: metricsScrapeTargets(record),
+		Series:        []MetricSeriesDiagnostic{},
+	}
+	if s.MetricsReader == nil {
+		return response, nil
+	}
+
+	metrics, err := s.MetricsReader.Read(ctx, record, duration, step)
+	if err != nil {
+		response.Message = err.Error()
+		return response, nil
+	}
+
+	response.Series = diagnoseMetricSeries(metrics)
+	response.Status, response.Message = summarizeMetricDiagnostics(response.Series)
+	return response, metrics
+}
+
+func (s Service) latestDeploymentHealthSignal(ctx context.Context, record Record, observedAt time.Time) (*DeploymentRecord, HealthSignal) {
+	deployments, err := s.Store.ListDeployments(ctx, record.ID)
+	if err != nil {
+		return nil, HealthSignal{
+			Key:        "deployment",
+			Status:     HealthSignalUnavailable,
+			Message:    err.Error(),
+			ObservedAt: observedAt,
+		}
+	}
+	if len(deployments) == 0 {
+		return nil, HealthSignal{
+			Key:        "deployment",
+			Status:     HealthSignalOK,
+			Message:    "아직 기록된 배포 이력이 없습니다.",
+			ObservedAt: observedAt,
+		}
+	}
+
+	latest := deployments[0]
+	status := HealthSignalOK
+	message := "최근 배포 이력을 읽었습니다."
+	switch strings.ToLower(strings.TrimSpace(latest.Status)) {
+	case "failed", "degraded":
+		status = HealthSignalCritical
+		message = "최근 배포가 실패 상태입니다."
+	case "aborted", "autorollbacktriggered":
+		status = HealthSignalWarning
+		message = "최근 배포가 중단되었거나 자동 롤백을 트리거했습니다."
+	}
+
+	return &latest, HealthSignal{
+		Key:        "deployment",
+		Status:     status,
+		Message:    message,
+		ObservedAt: latest.UpdatedAt,
+		Details: map[string]any{
+			"deploymentId": latest.DeploymentID,
+			"status":       latest.Status,
+			"imageTag":     latest.ImageTag,
+		},
+	}
+}
+
+func metricsScrapeTargets(record Record) []MetricsScrapeTarget {
+	targets := []MetricsScrapeTarget{
+		{
+			Name:     "application-http",
+			Port:     "http",
+			Path:     defaultMetricsPath,
+			Required: true,
+		},
+	}
+	if record.MeshEnabled {
+		targets = append(targets, MetricsScrapeTarget{
+			Name:     "istio-envoy",
+			Port:     "envoy-metrics",
+			Path:     defaultEnvoyMetricsPath,
+			Required: true,
+		})
+	}
+	return targets
+}
+
+func diagnoseMetricSeries(metrics []MetricSeries) []MetricSeriesDiagnostic {
+	items := make([]MetricSeriesDiagnostic, 0, len(metrics))
+	for _, series := range metrics {
+		valueCount := 0
+		var latestValue *float64
+		for _, point := range series.Points {
+			if point.Value == nil {
+				continue
+			}
+			valueCount++
+			valueCopy := *point.Value
+			latestValue = &valueCopy
+		}
+		status := HealthSignalOK
+		message := "series has recent values"
+		if len(series.Points) == 0 {
+			status = HealthSignalWarning
+			message = "series has no sampled points"
+		} else if valueCount == 0 {
+			status = HealthSignalWarning
+			message = "series is present but all sampled values are empty"
+		}
+		items = append(items, MetricSeriesDiagnostic{
+			Key:         series.Key,
+			Label:       series.Label,
+			Unit:        series.Unit,
+			Status:      status,
+			Message:     message,
+			PointCount:  len(series.Points),
+			ValueCount:  valueCount,
+			LatestValue: latestValue,
+		})
+	}
+	return items
+}
+
+func summarizeMetricDiagnostics(series []MetricSeriesDiagnostic) (HealthSignalStatus, string) {
+	if len(series) == 0 {
+		return HealthSignalUnavailable, "수집된 metric series가 없습니다."
+	}
+	valueSeries := 0
+	warningSeries := 0
+	for _, item := range series {
+		if item.ValueCount > 0 {
+			valueSeries++
+		}
+		if item.Status != HealthSignalOK {
+			warningSeries++
+		}
+	}
+	switch {
+	case valueSeries == 0:
+		return HealthSignalWarning, "metric series는 있으나 값이 비어 있습니다. ServiceMonitor target, /metrics endpoint, label 매칭을 확인해야 합니다."
+	case warningSeries > 0:
+		return HealthSignalWarning, "일부 metric series가 비어 있습니다."
+	default:
+		return HealthSignalOK, "metric series가 정상적으로 수집되고 있습니다."
+	}
+}
+
+func deriveHealthStatus(signals []HealthSignal) HealthStatus {
+	if len(signals) == 0 {
+		return HealthStatusUnknown
+	}
+	hasWarning := false
+	hasUnknown := false
+	for _, signal := range signals {
+		switch signal.Status {
+		case HealthSignalCritical:
+			return HealthStatusCritical
+		case HealthSignalWarning, HealthSignalUnavailable:
+			hasWarning = true
+		case HealthSignalUnknown:
+			hasUnknown = true
+		}
+	}
+	if hasWarning {
+		return HealthStatusWarning
+	}
+	if hasUnknown {
+		return HealthStatusUnknown
+	}
+	return HealthStatusHealthy
 }
 
 func (s Service) GetNetworkExposure(ctx context.Context, user core.User, applicationID string) (NetworkExposureResponse, error) {
@@ -1472,6 +2030,89 @@ func normalizeSecrets(entries []SecretEntry) (map[string]string, error) {
 	}
 
 	return values, nil
+}
+
+func normalizeSecretDeleteKeys(entries []string, setValues map[string]string) ([]string, error) {
+	if len(entries) == 0 {
+		return nil, nil
+	}
+
+	seen := make(map[string]struct{}, len(entries))
+	keys := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		key := strings.TrimSpace(entry)
+		if key == "" {
+			return nil, ValidationError{
+				Message: "secret delete key must not be blank",
+				Details: map[string]any{"field": "delete"},
+			}
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		if _, ok := setValues[key]; ok {
+			return nil, ValidationError{
+				Message: fmt.Sprintf("secret key %s cannot be set and deleted in the same request", key),
+				Details: map[string]any{"field": "delete", "key": key},
+			}
+		}
+		seen[key] = struct{}{}
+		keys = append(keys, key)
+	}
+	return keys, nil
+}
+
+func cloneSecretData(values map[string]string) map[string]string {
+	cloned := map[string]string{}
+	for key, value := range values {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+func (s Service) buildApplicationSecretsResponse(
+	ctx context.Context,
+	applicationID string,
+	secretPath string,
+	configured bool,
+	values map[string]string,
+) (ApplicationSecretsResponse, error) {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+
+	items := make([]SecretKeySummary, 0, len(keys))
+	for _, key := range keys {
+		items = append(items, SecretKeySummary{Key: key})
+	}
+
+	response := ApplicationSecretsResponse{
+		ApplicationID: applicationID,
+		SecretPath:    secretPath,
+		Configured:    configured,
+		Items:         items,
+	}
+
+	versioned, ok := s.Secrets.(VersionedSecretStore)
+	if !ok || strings.TrimSpace(secretPath) == "" || !configured {
+		return response, nil
+	}
+
+	versions, err := versioned.ListVersions(ctx, secretPath)
+	if err != nil {
+		return ApplicationSecretsResponse{}, fmt.Errorf("read application secret versions: %w", err)
+	}
+	response.VersioningEnabled = true
+	response.CurrentVersion = versions.CurrentVersion
+	for _, item := range versions.Items {
+		if item.Current {
+			response.UpdatedAt = item.CreatedAt
+			break
+		}
+	}
+	return response, nil
 }
 
 func resolveEnvironment(project project.CatalogProject, requested string) string {

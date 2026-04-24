@@ -57,10 +57,11 @@ jobs:
           go-version-file: backend/go.mod
           cache-dependency-path: backend/go.sum
 
+      - name: Install kind
+        run: go install sigs.k8s.io/kind@v0.24.0
+
       - name: Create kind cluster
-        uses: engineerd/setup-kind@v0.6.0
-        with:
-          version: v0.24.0
+        run: kind create cluster --wait 120s
 
       - name: Install kubeconform
         run: |
@@ -72,3 +73,13 @@ jobs:
           AODS_MANIFEST_REQUIRE_SERVER: "1"
           AODS_MANIFEST_SERVER_DRY_RUN: "1"
         run: make check-manifests
+
+  images:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Build backend and frontend images
+        run: make check-images
