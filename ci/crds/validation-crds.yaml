@@ -110,9 +110,16 @@ spec:
     singular: virtualservice
     kind: VirtualService
   versions:
-    - name: v1beta1
+    - name: v1
       served: true
       storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+    - name: v1beta1
+      served: true
+      storage: false
       schema:
         openAPIV3Schema:
           type: object
@@ -130,9 +137,16 @@ spec:
     singular: destinationrule
     kind: DestinationRule
   versions:
-    - name: v1beta1
+    - name: v1
       served: true
       storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          x-kubernetes-preserve-unknown-fields: true
+    - name: v1beta1
+      served: true
+      storage: false
       schema:
         openAPIV3Schema:
           type: object
