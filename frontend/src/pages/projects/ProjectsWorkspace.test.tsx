@@ -1,4 +1,5 @@
 import type { ComponentProps } from 'react'
+import userEvent from '@testing-library/user-event'
 import { describe, expect, it, vi } from 'vitest'
 import { render, screen } from '../../testing/test-utils'
 import { ProjectsWorkspace } from './ProjectsWorkspace'
@@ -36,5 +37,39 @@ describe('ProjectsWorkspace', () => {
     expect(screen.getByRole('tab', { name: '모니터링' })).toBeInTheDocument()
     expect(screen.queryByRole('tab', { name: '개요' })).not.toBeInTheDocument()
     expect(screen.getByText('애플리케이션 패널')).toBeInTheDocument()
+  })
+
+  it('[US-PROJ-003] 비활성 프로젝트 탭 패널은 DOM에서 제거해 숨은 화면 클릭과 렌더 오류를 막는다', async () => {
+    const user = userEvent.setup()
+    const onProjectTabChange = vi.fn()
+
+    const { rerender } = render(
+      <ProjectsWorkspace
+        {...buildProps({
+          projectName: 'Payments',
+          onProjectTabChange,
+        })}
+      />,
+    )
+
+    expect(screen.getByText('애플리케이션 패널')).toBeInTheDocument()
+    expect(screen.queryByText('모니터링 패널')).not.toBeInTheDocument()
+    expect(screen.queryByText('운영 규칙 패널')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('tab', { name: '모니터링' }))
+    expect(onProjectTabChange).toHaveBeenCalledWith('monitoring')
+
+    rerender(
+      <ProjectsWorkspace
+        {...buildProps({
+          projectName: 'Payments',
+          projectTab: 'monitoring',
+          onProjectTabChange,
+        })}
+      />,
+    )
+
+    expect(screen.queryByText('애플리케이션 패널')).not.toBeInTheDocument()
+    expect(screen.getByText('모니터링 패널')).toBeInTheDocument()
   })
 })

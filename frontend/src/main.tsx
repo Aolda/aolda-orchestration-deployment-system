@@ -7,12 +7,15 @@ import { Notifications } from '@mantine/notifications'
 import './index.css'
 import App from './App.tsx'
 import { theme } from './app/theme'
+import { AppErrorBoundary } from './components/ui/AppErrorBoundary'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <MantineProvider theme={theme} defaultColorScheme="light">
       <Notifications position="top-right" zIndex={2000} />
-      <App />
+      <AppErrorBoundary>
+        <App />
+      </AppErrorBoundary>
     </MantineProvider>
   </StrictMode>,
 )
