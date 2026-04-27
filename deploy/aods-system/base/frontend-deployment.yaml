@@ -12,15 +12,29 @@ spec:
       labels:
         app: aods-frontend
     spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 101
+        runAsGroup: 101
+        fsGroup: 101
       imagePullSecrets:
         - name: aods-registry-creds
       containers:
         - name: frontend
           image: ghcr.io/aolda/aods-frontend:latest
           imagePullPolicy: Always
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           ports:
-            - containerPort: 80
+            - containerPort: 8080
               name: http
+          volumeMounts:
+            - name: nginx-runtime
+              mountPath: /tmp/nginx
           readinessProbe:
             httpGet:
               path: /
@@ -33,3 +47,6 @@ spec:
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20
+      volumes:
+        - name: nginx-runtime
+          emptyDir: {}

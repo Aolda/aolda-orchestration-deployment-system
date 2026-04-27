@@ -27,5 +27,13 @@ RUN npm run build
 
 FROM nginx:1.27-alpine
 
+COPY nginx-main.conf /etc/nginx/nginx.conf
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
+
+RUN mkdir -p /tmp/nginx \
+  && chown -R nginx:nginx /tmp/nginx /usr/share/nginx/html
+
+USER nginx
+ENTRYPOINT ["nginx"]
+CMD ["-g", "daemon off;"]
