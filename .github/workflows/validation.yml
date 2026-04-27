@@ -97,7 +97,25 @@ jobs:
         run: docker build -t "${{ steps.image-tags.outputs.backend }}" ./backend
 
       - name: Build frontend image
-        run: docker build -t "${{ steps.image-tags.outputs.frontend }}" ./frontend
+        env:
+          VITE_API_BASE_URL: ${{ vars.AODS_FRONTEND_API_BASE_URL || 'https://aods-backend.ajou.app' }}
+          VITE_AODS_AUTH_MODE: ${{ vars.AODS_AUTH_MODE || 'oidc' }}
+          VITE_AODS_OIDC_ISSUER_URL: ${{ vars.AODS_OIDC_ISSUER_URL || 'https://sso.aoldacloud.com/realms/aolda' }}
+          VITE_AODS_OIDC_CLIENT_ID: ${{ vars.AODS_OIDC_CLIENT_ID || 'aods' }}
+          VITE_AODS_OIDC_REDIRECT_URI: ${{ vars.AODS_OIDC_REDIRECT_URI || 'https://aods.ajou.app/' }}
+          VITE_AODS_OIDC_SCOPE: ${{ vars.AODS_OIDC_SCOPE || 'openid profile email' }}
+          VITE_AODS_ALLOW_EMERGENCY_LOGIN: ${{ vars.AODS_ALLOW_EMERGENCY_LOGIN || 'true' }}
+        run: |
+          docker build \
+            --build-arg VITE_API_BASE_URL="${VITE_API_BASE_URL}" \
+            --build-arg VITE_AODS_AUTH_MODE="${VITE_AODS_AUTH_MODE}" \
+            --build-arg VITE_AODS_OIDC_ISSUER_URL="${VITE_AODS_OIDC_ISSUER_URL}" \
+            --build-arg VITE_AODS_OIDC_CLIENT_ID="${VITE_AODS_OIDC_CLIENT_ID}" \
+            --build-arg VITE_AODS_OIDC_REDIRECT_URI="${VITE_AODS_OIDC_REDIRECT_URI}" \
+            --build-arg VITE_AODS_OIDC_SCOPE="${VITE_AODS_OIDC_SCOPE}" \
+            --build-arg VITE_AODS_ALLOW_EMERGENCY_LOGIN="${VITE_AODS_ALLOW_EMERGENCY_LOGIN}" \
+            -t "${{ steps.image-tags.outputs.frontend }}" \
+            ./frontend
 
       - name: Log in to GHCR
         if: github.event_name == 'push'
