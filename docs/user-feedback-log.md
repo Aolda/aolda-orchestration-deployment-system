@@ -602,6 +602,15 @@
 * References: `frontend/src/App.tsx`
 * Status: applied
 
+### 2026-04-28 - FB-061 - 배포 헬퍼가 backend Secret에서 Vault token을 지우면 안 됨
+
+* Area: Deployment / Vault / Testbed Script
+* User signal: `이거 파드 뜰때마 사라지는거 가틍ㄴ데? 뭔가 이상함`
+* Interpreted intent: 배포 중 `aods-backend-secrets`가 `AODS_GIT_REMOTE`만 가진 상태로 다시 apply되면 새 backend Pod는 `AODS_VAULT_TOKEN` env를 찾지 못해 `CreateContainerConfigError`가 된다. real Vault 전환 후에는 모든 bootstrap Secret 생성 경로가 `AODS_VAULT_TOKEN`을 포함해야 한다.
+* Action: `scripts/deploy-testbed.sh`가 `AODS_VAULT_TOKEN`을 필수 env로 검사하고 `aods-backend-secrets` 생성 시 함께 넣도록 수정했다.
+* References: `scripts/deploy-testbed.sh`
+* Status: applied
+
 ## 운영 메모
 
 앞으로 에이전트는 아래 순서를 기본으로 따른다.

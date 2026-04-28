@@ -33,6 +33,11 @@ if [[ -z "${AODS_GIT_REMOTE:-}" ]]; then
   exit 1
 fi
 
+if [[ -z "${AODS_VAULT_TOKEN:-}" ]]; then
+  echo "AODS_VAULT_TOKEN must be set before deploying with the real Vault adapter." >&2
+  exit 1
+fi
+
 if [[ -z "${GHCR_TOKEN}" ]]; then
   echo "AODS_GHCR_TOKEN or gh auth token must be available before deploying." >&2
   exit 1
@@ -59,6 +64,7 @@ kubectl "${kubectl_args[@]}" create namespace aods-system --dry-run=client -o ya
 
 kubectl "${kubectl_args[@]}" -n aods-system create secret generic aods-backend-secrets \
   --from-literal=AODS_GIT_REMOTE="${AODS_GIT_REMOTE}" \
+  --from-literal=AODS_VAULT_TOKEN="${AODS_VAULT_TOKEN}" \
   --dry-run=client -o yaml | kubectl "${kubectl_args[@]}" apply -f -
 
 kubectl "${kubectl_args[@]}" -n aods-system create secret docker-registry aods-registry-creds \
