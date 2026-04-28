@@ -584,6 +584,24 @@
 * References: `deploy/aods-system/base/backend-deployment.yaml`, `docs/current-baseline-runbook.md`
 * Status: applied
 
+### 2026-04-28 - FB-059 - 애플리케이션 목록 카드가 긴 이미지/배포 태그에서 깨지면 안 됨
+
+* Area: Frontend / Application Catalog / Layout
+* User signal: `이렇게 UI 망가진다잉`
+* Interpreted intent: Git SHA 기반 이미지 태그와 긴 registry URL이 목록 카드 내부 grid 폭을 밀어내면 운영 목록을 스캔하기 어렵다. 목록 카드는 긴 토큰을 축약하거나 줄바꿈해 카드 경계 안에 안정적으로 머물러야 한다.
+* Action: 애플리케이션 목록 카드의 긴 이미지/배포 태그에 줄바꿈 규칙을 추가하고, 최근 배포 태그는 목록용 compact label로 표시하도록 수정했다.
+* References: `frontend/src/App.tsx`, `frontend/src/App.module.css`
+* Status: applied
+
+### 2026-04-28 - FB-060 - 생성된 애플리케이션을 UI에서 삭제할 수 있어야 함
+
+* Area: Frontend / Application Lifecycle
+* User signal: `그 만들어진 애플리케이션에 대해서도 삭제할 수 있는 기능은 있어야할 것 같은데`
+* Interpreted intent: 앱 생성 후 잘못 만든 앱을 UI에서 정리할 수 없으면 GitOps manifest와 Vault secret cleanup 흐름을 직접 명령어로 처리해야 한다. 프로젝트 admin은 애플리케이션 목록/운영 화면에서 삭제 확인으로 진입할 수 있어야 한다.
+* Action: 숨겨져 있던 애플리케이션 lifecycle 컨트롤을 노출하고, 목록 카드에 admin 전용 삭제 액션을 추가해 기존 delete API 확인 흐름으로 연결했다.
+* References: `frontend/src/App.tsx`
+* Status: applied
+
 ## 운영 메모
 
 앞으로 에이전트는 아래 순서를 기본으로 따른다.

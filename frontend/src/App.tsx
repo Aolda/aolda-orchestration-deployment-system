@@ -24,7 +24,6 @@ import {
   Textarea,
   TextInput,
   Tooltip,
-  UnstyledButton,
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import {
@@ -46,6 +45,7 @@ import {
   IconDatabase,
   IconBolt,
   IconExternalLink,
+  IconTrash,
   IconUser,
 } from '@tabler/icons-react'
 import { ApiError, api } from './api/client'
@@ -117,7 +117,7 @@ const showProjectComposer = false
 const showRollbackPolicyControls = false
 const showServiceMeshControls = false
 const showEmergencyActionControls = false
-const showApplicationLifecycleControls = false
+const showApplicationLifecycleControls = true
 const cpuLimitPresetOptions = [
   { value: '500m', label: '기본 상한 500m' },
   { value: '1000m', label: '확장 상한 1000m' },
@@ -3112,22 +3112,30 @@ export default function App() {
             const signal = applicationCatalogSignals[app.id]
             const syncIssue = applicationSyncIssue(app, signal)
             return (
-            <UnstyledButton
+            <div
               key={app.id}
+              role="button"
+              tabIndex={0}
               onClick={() => setSelectedAppId(app.id)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter' || event.key === ' ') {
+                  event.preventDefault()
+                  setSelectedAppId(app.id)
+                }
+              }}
               className={`${classes.appItem} ${classes.applicationCatalogCard} ${selectedAppId === app.id ? classes.selectCardActive : ''}`}
             >
               <div className={classes.surfaceCard}>
                 <Stack gap="md">
-                  <Group justify="space-between" align="start">
-                    <Stack gap={2}>
+                  <Group justify="space-between" align="start" className={classes.applicationCatalogHeader}>
+                    <Stack gap={2} className={classes.applicationCatalogIdentity}>
                       <Text className={classes.cardTitle}>{app.name}</Text>
                       <Text className={classes.cardMeta}>{app.image}</Text>
                     </Stack>
-                    <Stack gap="xs" align="end">
+                    <Stack gap="xs" align="end" className={classes.applicationCatalogBadges}>
                       <SyncStatusBadge status={app.syncStatus} />
                       <Badge color="gray" variant="outline" radius="sm">
-                        {formatLatestDeploymentLabel(signal)}
+                        {formatCompactLatestDeploymentLabel(signal)}
                       </Badge>
                     </Stack>
                   </Group>
@@ -3152,33 +3160,52 @@ export default function App() {
                   <SimpleGrid cols={{ base: 2, lg: 4 }} spacing="sm">
                     <div className={classes.applicationCatalogStat}>
                       <Text size="xs" c="dimmed" fw={700}>배포 전략</Text>
-                      <Text size="sm" fw={800} c="lagoon.9">
+                      <Text size="sm" fw={800} c="lagoon.9" className={classes.applicationCatalogStatValue}>
                         {app.deploymentStrategy === 'Canary' ? '카나리아' : '롤아웃'}
                       </Text>
                     </div>
                     <div className={classes.applicationCatalogStat}>
                       <Text size="xs" c="dimmed" fw={700}>네임스페이스</Text>
-                      <Text size="sm" fw={800} c="lagoon.9">{selectedProject?.namespace || 'default'}</Text>
+                      <Text size="sm" fw={800} c="lagoon.9" className={classes.applicationCatalogStatValue}>{selectedProject?.namespace || 'default'}</Text>
                     </div>
                     <div className={classes.applicationCatalogStat}>
                       <Text size="xs" c="dimmed" fw={700}>최근 배포</Text>
-                      <Text size="sm" fw={800} c="lagoon.9">{formatLatestDeploymentLabel(signal)}</Text>
+                      <Text size="sm" fw={800} c="lagoon.9" className={classes.applicationCatalogStatValue}>{formatCompactLatestDeploymentLabel(signal)}</Text>
                     </div>
                     <div className={classes.applicationCatalogStat}>
                       <Text size="xs" c="dimmed" fw={700}>최근 상태</Text>
-                      <Text size="sm" fw={800} c="lagoon.9">{formatLatestDeploymentStatus(signal)}</Text>
+                      <Text size="sm" fw={800} c="lagoon.9" className={classes.applicationCatalogStatValue}>{formatLatestDeploymentStatus(signal)}</Text>
                     </div>
                   </SimpleGrid>
 
                   <Group justify="space-between" align="center" className={classes.applicationCatalogFooter}>
-                    <Text size="sm" fw={700} c="lagoon.7">
-                      클릭해서 상세 운영 보기
-                    </Text>
-                    <IconChevronRight size={18} color="#1d66d6" />
+                    <Group gap="xs">
+                      <Text size="sm" fw={700} c="lagoon.7">
+                        클릭해서 상세 운영 보기
+                      </Text>
+                      <IconChevronRight size={18} color="#1d66d6" />
+                    </Group>
+                    {canAdminProject ? (
+                      <Button
+                        size="xs"
+                        variant="subtle"
+                        color="red"
+                        leftSection={<IconTrash size={14} />}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          setSelectedAppId(app.id)
+                          setApplicationDrawerTab('status')
+                          setPendingLifecycleAction('delete')
+                        }}
+                        onKeyDown={(event) => event.stopPropagation()}
+                      >
+                        삭제
+                      </Button>
+                    ) : null}
                   </Group>
                 </Stack>
               </div>
-            </UnstyledButton>
+            </div>
           )})}
         </SimpleGrid>
       ) : (
@@ -5454,6 +5481,17 @@ function formatLatestDeploymentLabel(signal?: ApplicationCatalogSignal) {
   if (signal.deploymentState === 'failed') return '조회 실패'
   if (!signal.latestDeployment) return '이력 없음'
   return signal.latestDeployment.imageTag
+}
+
+function formatCompactLatestDeploymentLabel(signal?: ApplicationCatalogSignal) {
+  return compactLongToken(formatLatestDeploymentLabel(signal), 22)
+}
+
+function compactLongToken(value: string, maxLength: number) {
+  if (value.length <= maxLength) return value
+  const headLength = Math.max(8, Math.ceil((maxLength - 3) * 0.55))
+  const tailLength = Math.max(6, maxLength - 3 - headLength)
+  return `${value.slice(0, headLength)}...${value.slice(-tailLength)}`
 }
 
 function formatLatestDeploymentStatus(signal?: ApplicationCatalogSignal) {
