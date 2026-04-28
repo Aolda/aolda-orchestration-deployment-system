@@ -622,7 +622,7 @@ func TestCreateRedeployAndObserveApplication(t *testing.T) {
 		}
 	}
 	assertFluxBootstrapFiles(t, env.repoRoot, "default")
-	assertFluxChildManifestPath(t, env.repoRoot, "default", "project-a-my-app", "./apps/project-a/my-app/overlays/prod", true)
+	assertFluxChildManifestPath(t, env.repoRoot, "default", "project-a-my-app", "./apps/project-a/my-app/overlays/prod", false, "Deployment")
 
 	repoFiles := []string{
 		filepath.Join(appDir, "deployment.yaml"),
@@ -1187,7 +1187,7 @@ func TestCanaryApplicationCreatesRolloutArtifacts(t *testing.T) {
 		t.Fatalf("expected dev overlay to exist: %v", err)
 	}
 	assertFluxBootstrapFiles(t, env.repoRoot, "default")
-	assertFluxChildManifestPath(t, env.repoRoot, "default", "project-a-canary-app", "./apps/project-a/canary-app/overlays/dev", false)
+	assertFluxChildManifestPath(t, env.repoRoot, "default", "project-a-canary-app", "./apps/project-a/canary-app/overlays/dev", false, "")
 	rolloutManifest, err := os.ReadFile(filepath.Join(appDir, "rollout.yaml"))
 	if err != nil {
 		t.Fatalf("read rollout manifest: %v", err)
@@ -1795,7 +1795,7 @@ func TestRedeployCanSwitchEnvironment(t *testing.T) {
 	if createResponse.StatusCode != http.StatusCreated {
 		t.Fatalf("expected 201 from create, got %d", createResponse.StatusCode)
 	}
-	assertFluxChildManifestPath(t, env.repoRoot, "default", "project-a-env-switch-app", "./apps/project-a/env-switch-app/overlays/prod", true)
+	assertFluxChildManifestPath(t, env.repoRoot, "default", "project-a-env-switch-app", "./apps/project-a/env-switch-app/overlays/prod", false, "Deployment")
 
 	redeployResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/applications/project-a__env-switch-app/deployments", map[string]any{
 		"imageTag":    "v2",
@@ -1827,7 +1827,7 @@ func TestRedeployCanSwitchEnvironment(t *testing.T) {
 	}
 	assertNoFluxChildManifest(t, env.repoRoot, "default", "project-a-env-switch-app")
 	assertFluxBootstrapFiles(t, env.repoRoot, "analytics")
-	assertFluxChildManifestPath(t, env.repoRoot, "analytics", "project-a-env-switch-app", "./apps/project-a/env-switch-app/overlays/dev", true)
+	assertFluxChildManifestPath(t, env.repoRoot, "analytics", "project-a-env-switch-app", "./apps/project-a/env-switch-app/overlays/dev", false, "Deployment")
 }
 
 func TestCreateApplicationRejectsDisallowedEnvironment(t *testing.T) {
@@ -2269,7 +2269,7 @@ func assertFluxBootstrapFiles(t *testing.T, repoRoot string, clusterID string) {
 	}
 }
 
-func assertFluxChildManifestPath(t *testing.T, repoRoot string, clusterID string, fileBase string, overlayPath string, wait bool) {
+func assertFluxChildManifestPath(t *testing.T, repoRoot string, clusterID string, fileBase string, overlayPath string, wait bool, healthKind string) {
 	t.Helper()
 
 	childPath := filepath.Join(repoRoot, "platform", "flux", "clusters", clusterID, "applications", fileBase+".yaml")
@@ -2288,6 +2288,14 @@ func assertFluxChildManifestPath(t *testing.T, repoRoot string, clusterID string
 	}
 	if !strings.Contains(string(childContent), fmt.Sprintf("wait: %t", wait)) {
 		t.Fatalf("expected flux child manifest to set wait=%t, got:\n%s", wait, childContent)
+	}
+	if healthKind != "" {
+		if !strings.Contains(string(childContent), "healthChecks:") {
+			t.Fatalf("expected flux child manifest to define explicit health checks, got:\n%s", childContent)
+		}
+		if !strings.Contains(string(childContent), "kind: "+healthKind) {
+			t.Fatalf("expected flux child manifest to health-check %s, got:\n%s", healthKind, childContent)
+		}
 	}
 
 	rootPath := filepath.Join(repoRoot, "platform", "flux", "clusters", clusterID, "kustomization.yaml")

@@ -629,6 +629,15 @@
 * References: `backend/internal/core/http.go`, `backend/internal/core/http_test.go`
 * Status: applied
 
+### 2026-04-28 - FB-064 - Flux 앱 health가 ExternalSecret InProgress 하나에 묶이면 안 됨
+
+* Area: Backend / GitOps / Flux Health
+* User signal: `health check failed after 3m2.273637411s: timeout waiting for: [ExternalSecret/shared/bear-feast-web-registry status: 'InProgress']`
+* Interpreted intent: 앱 sync 실패 원인이 registry ExternalSecret의 ESO 동기화 대기 상태로만 보이면 운영자는 실제 workload 문제가 무엇인지 파악하기 어렵다. Flux child Kustomization은 모든 리소스 wait가 아니라 실제 앱 workload readiness 중심으로 health를 판단해야 한다.
+* Action: 표준 배포 앱의 Flux child Kustomization을 `wait: false` + 명시적 `Deployment` health check로 렌더링하도록 바꿔 `ExternalSecret` 자체 health가 앱 sync를 직접 타임아웃시키지 않게 했다. Secret이 실제로 없어서 앱이 뜨지 못하면 Deployment readiness와 Pod event 쪽에서 원인이 드러난다.
+* References: `backend/internal/application/flux_support.go`, `backend/internal/server/server_test.go`, `backend/internal/server/server_git_test.go`
+* Status: applied
+
 ## 운영 메모
 
 앞으로 에이전트는 아래 순서를 기본으로 따른다.

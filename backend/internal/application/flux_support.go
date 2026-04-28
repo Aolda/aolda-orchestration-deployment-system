@@ -147,18 +147,27 @@ metadata:
 spec:
   interval: 1m0s
   prune: true
-  wait: %t
+  wait: false
   timeout: 3m0s
+%s
   path: %s
   targetNamespace: %s
   sourceRef:
     kind: GitRepository
     name: %s
-`, yamlScalar(fluxChildName(record)), yamlScalar(s.fluxKustomizationNamespace()), yamlScalar(record.ID), yamlScalar(record.ProjectID), yamlScalar(record.DefaultEnvironment), fluxChildWait(record), yamlScalar("./"+fluxOverlayPath(record)), yamlScalar(record.Namespace), yamlScalar(s.fluxSourceName()))
+`, yamlScalar(fluxChildName(record)), yamlScalar(s.fluxKustomizationNamespace()), yamlScalar(record.ID), yamlScalar(record.ProjectID), yamlScalar(record.DefaultEnvironment), renderFluxChildHealthChecks(record), yamlScalar("./"+fluxOverlayPath(record)), yamlScalar(record.Namespace), yamlScalar(s.fluxSourceName()))
 }
 
-func fluxChildWait(record Record) bool {
-	return !IsCanaryDeploymentStrategy(record.DeploymentStrategy)
+func renderFluxChildHealthChecks(record Record) string {
+	if IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
+		return ""
+	}
+	return fmt.Sprintf(`  healthChecks:
+    - apiVersion: apps/v1
+      kind: Deployment
+      name: %s
+      namespace: %s
+`, yamlScalar(record.Name), yamlScalar(record.Namespace))
 }
 
 func (s LocalManifestStore) fluxKustomizationNamespace() string {
