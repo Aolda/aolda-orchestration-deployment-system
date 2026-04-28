@@ -557,6 +557,15 @@
 * References: `frontend/src/App.tsx`
 * Status: applied
 
+### 2026-04-28 - FB-056 - 애플리케이션 생성은 토큰/연결 검증 흐름으로 자연스럽게 따라갈 수 있어야 함
+
+* Area: Frontend / Application Creation DX
+* User signal: `토큰을 생성하고, 해당 토큰에 대해서 차례대로 넣으면 바로 연결이 되도록 ... private면 토큰 생성으로 유도 하고 해당 레포 url이랑 토큰 넣으면 제대로 잘 접근되는지 확인하는 곳 넣고 그 다음 이미지 레지스토리지에 대해서도 이 과정을 단계별로 쭉 따라서 이어 갈 수 있게`
+* Interpreted intent: 앱 생성 위저드가 긴 설명을 읽고 모든 값을 한 화면에 맞춰 넣는 구조면 private repository + private registry 조합에서 실수가 많다. 저장소 접근, 설정 파일 확인, 이미지 pull credential을 순서대로 확인하는 guided flow가 필요하다.
+* Action: ApplicationWizard를 `등록 방식 -> GitHub 연결 -> 설정 파일 확인 -> 이미지 접근 -> 배포 설정 -> 비밀값 -> 최종 확인` 흐름으로 분리했다. public/private 저장소 선택, GitHub 토큰 생성 유도, 저장소 연결 확인 상태, 이미지/레지스트리 인증 단계, registry credential 저장 안내를 추가하고 관련 테스트를 갱신했다.
+* References: `frontend/src/components/ApplicationWizard.tsx`, `frontend/src/components/ApplicationWizard.test.tsx`
+* Status: applied
+
 ## 운영 메모
 
 앞으로 에이전트는 아래 순서를 기본으로 따른다.

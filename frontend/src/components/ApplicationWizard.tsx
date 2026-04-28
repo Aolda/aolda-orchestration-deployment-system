@@ -80,6 +80,9 @@ export function ApplicationWizard({
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [previewKey, setPreviewKey] = useState('')
+  const [repositoryAccess, setRepositoryAccess] = useState<'public' | 'private'>(
+    initialState.repositoryToken.trim() ? 'private' : 'public',
+  )
   const [envBulkText, setEnvBulkText] = useState('')
   const [envBulkMessage, setEnvBulkMessage] = useState('')
   const [validationMessage, setValidationMessage] = useState('')
@@ -121,6 +124,16 @@ export function ApplicationWizard({
   const repositoryTarget = useMemo(
     () => parseGitHubRepositoryInput(form.repositoryUrl),
     [form.repositoryUrl],
+  )
+  const repositoryPreviewKey = useMemo(
+    () =>
+      JSON.stringify({
+        repositoryUrl: form.repositoryUrl.trim(),
+        repositoryBranch: form.repositoryBranch.trim(),
+        repositoryToken: form.repositoryToken.trim(),
+        configPath: form.configPath.trim(),
+      }),
+    [form.repositoryUrl, form.repositoryBranch, form.repositoryToken, form.configPath],
   )
   const repositoryConfigExample = useMemo(
     () =>
@@ -185,7 +198,7 @@ export function ApplicationWizard({
   }
 
   const nextStep = () => {
-    const message = validateStep(active, form, environments, preview, previewError)
+    const message = validateStep(active, form, environments, preview, previewError, repositoryAccess, repositoryConnectionReady)
     if (message) {
       setValidationMessage(message)
       focusFirstInvalidField(active, form, {
@@ -197,21 +210,21 @@ export function ApplicationWizard({
     }
     setValidationMessage('')
     setActive((current) => {
-      if (current === 0 && form.sourceMode === 'quick') return 2
-      return current < 4 ? current + 1 : current
+      if (current === 0 && form.sourceMode === 'quick') return 3
+      return current < 6 ? current + 1 : current
     })
   }
 
   const prevStep = () => {
     setValidationMessage('')
     setActive((current) => {
-      if (current === 2 && form.sourceMode === 'quick') return 0
+      if (current === 3 && form.sourceMode === 'quick') return 0
       return current > 0 ? current - 1 : current
     })
   }
 
   const handleFinish = () => {
-    const message = validateAllSteps(form, environments, preview, previewError)
+    const message = validateAllSteps(form, environments, preview, previewError, repositoryAccess, repositoryConnectionReady)
     if (message) {
       setValidationMessage(message)
       focusFirstInvalidField(active, form, {
@@ -262,17 +275,28 @@ export function ApplicationWizard({
     })
   }, [preview, form.registryServer, updateForm])
 
+  const previewMatchesCurrentRepository = Boolean(preview && previewKey === repositoryPreviewKey)
+  const repositoryConnectionReady = form.sourceMode !== 'github' || (previewMatchesCurrentRepository && !previewError)
+
+  const selectedRepositoryService = useMemo(() => {
+    if (!previewMatchesCurrentRepository) return null
+    if (!preview) return null
+    const selectedServiceID = form.repositoryServiceId.trim() || preview.selectedServiceId || ''
+    if (selectedServiceID) {
+      return preview.services.find((service) => service.serviceId === selectedServiceID) ?? null
+    }
+    return preview.services.length === 1 ? preview.services[0] : null
+  }, [preview, previewMatchesCurrentRepository, form.repositoryServiceId])
+
+  const selectedImage = form.sourceMode === 'github'
+    ? selectedRepositoryService?.image ?? ''
+    : form.image.trim()
+  const registryServerPreview = form.registryServer.trim() || inferRegistryServer(selectedImage) || '이미지 주소에서 자동 추론'
+
   const loadPreview = useCallback(async (force = false) => {
     if (form.sourceMode !== 'github' || !form.repositoryUrl.trim()) return
 
-    const nextPreviewKey = JSON.stringify({
-      repositoryUrl: form.repositoryUrl.trim(),
-      repositoryBranch: form.repositoryBranch.trim(),
-      repositoryToken: form.repositoryToken.trim(),
-      configPath: form.configPath.trim(),
-    })
-
-    if (!force && nextPreviewKey === previewKey) {
+    if (!force && repositoryPreviewKey === previewKey) {
       return
     }
 
@@ -281,13 +305,13 @@ export function ApplicationWizard({
     try {
       const response = await onPreviewSource(form)
       setPreview(response)
-      setPreviewKey(nextPreviewKey)
+      setPreviewKey(repositoryPreviewKey)
       if (response.selectedServiceId) {
         applyPreviewSelection(response.selectedServiceId)
       }
     } catch (error) {
       setPreview(null)
-      setPreviewKey(nextPreviewKey)
+      setPreviewKey(repositoryPreviewKey)
       if (error instanceof Error) {
         setPreviewError(translatePreviewError(error.message, form.configPath))
       } else {
@@ -296,7 +320,7 @@ export function ApplicationWizard({
     } finally {
       setPreviewLoading(false)
     }
-  }, [form, onPreviewSource, previewKey, applyPreviewSelection])
+  }, [form, onPreviewSource, previewKey, repositoryPreviewKey, applyPreviewSelection])
 
   useEffect(() => {
     if (active !== 1 || form.sourceMode !== 'github' || !form.repositoryUrl.trim()) {
@@ -307,6 +331,8 @@ export function ApplicationWizard({
 
   const repositoryUrlError =
     validationMessage === 'GitHub 저장소 URL을 입력하세요.' ? validationMessage : undefined
+  const repositoryTokenError =
+    validationMessage === 'Private 저장소는 GitHub 저장소 토큰을 입력하세요.' ? validationMessage : undefined
   const appNameError =
     validationMessage === '애플리케이션 이름을 입력하세요.' ||
     validationMessage === '애플리케이션 이름은 영문 소문자, 숫자, 하이픈만 사용할 수 있습니다.'
@@ -316,13 +342,20 @@ export function ApplicationWizard({
   const registryCredentialError = validationMessage.includes('레지스트리') ? validationMessage : undefined
   const nextStepDisabled =
     submitting ||
-    (active === 1 && form.sourceMode === 'github' && (previewLoading || Boolean(previewError) || !preview))
+    (
+      active === 1 &&
+      form.sourceMode === 'github' &&
+      previewLoading
+    )
 
   return (
     <Card shadow="sm" p="lg" radius="md" withBorder className="glass-panel">
       <Stepper
         active={active}
         onStepClick={(nextStepIndex) => {
+          if (form.sourceMode === 'quick' && (nextStepIndex === 1 || nextStepIndex === 2)) {
+            return
+          }
           if (nextStepIndex <= active) {
             setValidationMessage('')
             setActive(nextStepIndex)
@@ -332,7 +365,7 @@ export function ApplicationWizard({
         color="lagoon.6"
         mb="xl"
       >
-        <Stepper.Step label="등록 방식" description="GitHub 연결과 기본 정보">
+        <Stepper.Step label="등록 방식" description="시작 방식 선택">
           <Stack gap="md" mt="md">
             <Text size="sm" c="dimmed">
               지금 바로 이미지와 포트를 입력해서 만들 수도 있고, GitHub 저장소의 `aolda_deploy.json`을 읽어서 자동으로
@@ -399,203 +432,32 @@ export function ApplicationWizard({
             </SimpleGrid>
 
             {form.sourceMode === 'github' ? (
-              <Stack gap="md">
-                <div
-                  aria-hidden="true"
-                  style={{
-                    position: 'absolute',
-                    opacity: 0,
-                    pointerEvents: 'none',
-                    width: 0,
-                    height: 0,
-                    overflow: 'hidden',
-                  }}
-                >
-                  <input type="text" name="username" autoComplete="username" tabIndex={-1} />
-                  <input type="password" name="password" autoComplete="current-password" tabIndex={-1} />
-                </div>
-
-                <Alert color="lagoon" variant="light">
-                  저장소 기본 브랜치의 <Code>{form.configPath || 'aolda_deploy.json'}</Code> 파일을 읽습니다.
-                  서비스 ID와 애플리케이션 이름은 다음 단계에서 읽은 결과를 기준으로 자동 정합니다.
-                </Alert>
-
-                <Card withBorder radius="md" padding="lg" bg="gray.0">
-                  <Stack gap="md">
-                    <Group justify="space-between" align="flex-start">
-                      <Stack gap={2}>
-                        <Text fw={800}>AODS 연결 설정</Text>
-                        <Text size="sm" c="dimmed">
-                          저장소 토큰, 이미지 Pull 토큰, <Code>aolda_deploy.json</Code>, 모노레포 구성, 이미지 태그 운영 규칙은
-                          설정 가이드 페이지로 모아 두었습니다.
-                        </Text>
-                      </Stack>
-                      <Group gap="xs" wrap="wrap">
-                        <Button
-                          component="a"
-                          href={applicationSourceGuideURL}
-                          target="_blank"
-                          rel="noreferrer"
-                          variant="filled"
-                          color="lagoon.6"
-                          radius="xl"
-                          size="xs"
-                        >
-                          설정 페이지 열기
-                        </Button>
-                        <Button variant="default" radius="xl" size="xs" onClick={handleDownloadRepositoryConfigExample}>
-                          예시 JSON 다운로드
-                        </Button>
-                        <Button
-                          component="a"
-                          href={githubFineGrainedTokenURL}
-                          target="_blank"
-                          rel="noreferrer"
-                          variant="default"
-                          radius="xl"
-                          size="xs"
-                        >
-                          GitHub 토큰 발급
-                        </Button>
-                        <Button
-                          component="a"
-                          href={githubRegistryTokenURL}
-                          target="_blank"
-                          rel="noreferrer"
-                          variant="default"
-                          radius="xl"
-                          size="xs"
-                        >
-                          GHCR 토큰 발급
-                        </Button>
-                      </Group>
-                    </Group>
-
-                    <SimpleGrid cols={{ base: 1, md: 2 }} spacing="md">
-                      <Alert color="blue" variant="light">
-                        <Stack gap={4}>
-                          <Text fw={700}>입력 전에 먼저 볼 것</Text>
-                          <Text size="sm">
-                            public 저장소는 URL만 넣어도 되고, private 저장소면 저장소 읽기 토큰이 필요합니다.
-                          </Text>
-                          <Text size="sm">
-                            private 이미지면 레지스트리 사용자명과 레지스트리 토큰도 함께 입력해야 합니다.
-                          </Text>
-                          <Text size="sm">
-                            <Code>{form.configPath || 'aolda_deploy.json'}</Code> 파일이 실제 브랜치에 있어야 합니다.
-                          </Text>
-                        </Stack>
-                      </Alert>
-
-                      <Alert color="lagoon" variant="light">
-                        <Stack gap={4}>
-                          <Text fw={700}>같은 레포에 프론트와 백이 같이 있으면</Text>
-                          <Text size="sm">
-                            <Code>services</Code> 안에 <Code>web</Code>, <Code>api</Code> 처럼 서비스별 항목을 나누고,
-                            AODS에서는 앱을 각각 따로 등록합니다.
-                          </Text>
-                          <Text size="sm">
-                            이미지 태그는 <Code>latest</Code> 덮어쓰기보다 새 tag를 계속 발급하는 방식을 권장합니다.
-                          </Text>
-                          <Text size="sm">
-                            자세한 예시는 설정 페이지에서 바로 확인할 수 있습니다.
-                          </Text>
-                        </Stack>
-                      </Alert>
-                    </SimpleGrid>
-
-                    <List spacing="xs" size="sm">
-                      <List.Item>
-                        저장소 owner: <Code>{repositoryTarget?.owner || '저장소 owner'}</Code>
-                      </List.Item>
-                      <List.Item>
-                        저장소 이름: <Code>{repositoryTarget?.repo || '저장소 이름'}</Code>
-                      </List.Item>
-                      <List.Item>
-                        레지스트리 주소: <Code>{form.registryServer.trim() || 'ghcr.io 또는 이미지 주소에서 자동 추론'}</Code>
-                      </List.Item>
-                    </List>
-                  </Stack>
-                </Card>
-
-                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                  <TextInput
-                    label="GitHub 저장소 URL"
-                    placeholder="예: https://github.com/aods/example-app.git"
-                    required
-                    ref={repositoryUrlInputRef}
-                    name="aods-github-repository-url"
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    data-form-type="other"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={form.repositoryUrl}
-                    error={repositoryUrlError}
-                    onChange={(event) => updateForm({ repositoryUrl: event.target.value })}
-                  />
-                  <PasswordInput
-                    label="GitHub 저장소 토큰 (선택)"
-                    description="public 저장소면 비워 두고, private 저장소일 때만 입력합니다."
-                    name="aods-github-token"
-                    autoComplete="new-password"
-                    data-form-type="other"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={form.repositoryToken}
-                    onChange={(event) => updateForm({ repositoryToken: event.target.value })}
-                  />
-                </SimpleGrid>
-
-                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-                  <TextInput
-                    label="브랜치"
-                    placeholder="기본값: main"
-                    name="aods-github-branch"
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    data-form-type="other"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={form.repositoryBranch}
-                    onChange={(event) => updateForm({ repositoryBranch: event.target.value })}
-                  />
-                  <TextInput
-                    label="설정 파일 경로"
-                    name="aods-github-config-path"
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    data-form-type="other"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={form.configPath}
-                    onChange={(event) => updateForm({ configPath: event.target.value })}
-                  />
-                </SimpleGrid>
-
-                <Alert color="gray" variant="light">
+              <Card withBorder radius="md" padding="lg" bg="gray.0">
+                <Group justify="space-between" align="flex-start">
                   <Stack gap={4}>
-                    <Text size="sm">
-                      지금 단계에서는 저장소 URL만 맞게 넣으면 됩니다. AODS가 먼저
-                      <Code>{form.configPath || 'aolda_deploy.json'}</Code>을 읽고 서비스 목록을 확인합니다.
-                    </Text>
-                    <Text size="sm">
-                      단일 서비스면 그 <Code>serviceId</Code>가 자동 저장되고, 서비스가 여러 개면 다음 단계에서 하나를 선택하면 됩니다.
-                    </Text>
-                    <Text size="sm">
-                      값 입력 방법이 헷갈리면
-                      {' '}
-                      <Text component="a" href={applicationSourceGuideURL} target="_blank" rel="noreferrer" span c="lagoon.7" fw={700}>
-                        설정 페이지
-                      </Text>
-                      에서 예시를 보고 그대로 넣으면 됩니다.
+                    <Text fw={800}>연결 마법사로 진행</Text>
+                    <Text size="sm" c="dimmed">
+                      다음 단계에서 저장소 URL과 필요 토큰을 넣고, AODS가 설정 파일과 이미지 정보를 순서대로 확인합니다.
                     </Text>
                   </Stack>
-                </Alert>
-              </Stack>
+                  <Group gap="xs" wrap="wrap">
+                    <Button
+                      component="a"
+                      href={applicationSourceGuideURL}
+                      target="_blank"
+                      rel="noreferrer"
+                      variant="default"
+                      radius="xl"
+                      size="xs"
+                    >
+                      설정 페이지 열기
+                    </Button>
+                    <Button variant="default" radius="xl" size="xs" onClick={handleDownloadRepositoryConfigExample}>
+                      예시 JSON 다운로드
+                    </Button>
+                  </Group>
+                </Group>
+              </Card>
             ) : null}
 
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
@@ -639,94 +501,189 @@ export function ApplicationWizard({
               onChange={(event) => updateForm({ description: event.target.value })}
             />
 
-            <Card withBorder radius="md" padding="md" bg="gray.0">
-              <Stack gap="md">
-                <Stack gap={2}>
-                  <Text fw={700}>컨테이너 레지스트리 인증</Text>
-                  <Text size="sm" c="dimmed">
-                    public 이미지는 비워 두면 됩니다. private 이미지면 레지스트리 사용자명과 토큰을 입력하면 앱별
-                    docker registry Secret을 같이 생성합니다.
-                  </Text>
-                </Stack>
-
-                <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="md">
-                  <Select
-                    label="레지스트리 종류"
-                    data={[
-                      { value: 'auto', label: '자동 추론' },
-                      { value: 'ghcr.io', label: 'GHCR (ghcr.io)' },
-                      { value: 'docker.io', label: 'Docker Hub (docker.io)' },
-                      { value: 'custom', label: '직접 입력' },
-                    ]}
-                    value={currentRegistryMode}
-                    onChange={handleRegistryModeChange}
-                  />
-                  <TextInput
-                    label="레지스트리 사용자명"
-                    name="aods-registry-username"
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    data-form-type="other"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={form.registryUsername}
-                    error={registryCredentialError}
-                    onChange={(event) => updateForm({ registryUsername: event.target.value })}
-                  />
-                  <PasswordInput
-                    label="레지스트리 토큰"
-                    name="aods-registry-token"
-                    autoComplete="new-password"
-                    data-form-type="other"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={form.registryToken}
-                    error={registryCredentialError}
-                    onChange={(event) => updateForm({ registryToken: event.target.value })}
-                  />
-                </SimpleGrid>
-
-                {currentRegistryMode === 'custom' ? (
-                  <TextInput
-                    label="직접 입력 레지스트리 주소"
-                    placeholder="예: registry.example.com"
-                    name="aods-registry-server-custom"
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                    data-form-type="other"
-                    data-lpignore="true"
-                    data-1p-ignore="true"
-                    value={form.registryServer}
-                    onChange={(event) => updateForm({ registryServer: event.target.value })}
-                  />
-                ) : null}
-
-                <Text size="xs" c="dimmed">
-                  레지스트리 토큰은 앱 환경변수 및 GitHub 저장소 토큰과 분리해서 <Code>{registrySecretPathPreview}</Code> 경로에 저장합니다.
-                  {!effectiveAppNameIsValid ? ' 올바른 앱 이름을 입력하면 실제 경로가 확정됩니다.' : ''}
-                </Text>
-                <Text size="xs" c="dimmed">
-                  GHCR private 이미지를 쓰면
-                  {' '}
-                  <Text component="a" href={githubRegistryTokenURL} target="_blank" rel="noreferrer" span c="lagoon.7" fw={700}>
-                    GHCR 토큰 발급 페이지
-                  </Text>
-                  또는
-                  {' '}
-                  <Text component="a" href={applicationSourceGuideURL} target="_blank" rel="noreferrer" span c="lagoon.7" fw={700}>
-                    설정 페이지
-                  </Text>
-                  에서 발급 방법을 확인할 수 있습니다.
-                </Text>
-              </Stack>
-            </Card>
-
             <Text size="xs" c="dimmed">
               앱 이름은 GitOps 경로와 애플리케이션 ID를 결정합니다. 비워두면 저장소 서비스 ID를 기준으로 생성됩니다. 예: <Code>{applicationIdPreview}</Code>
               {!effectiveAppNameIsValid ? ' 현재 입력값은 경로 preview에 반영하지 않았습니다.' : ''}
             </Text>
+          </Stack>
+        </Stepper.Step>
+
+        <Stepper.Step label="GitHub 연결" description="저장소 접근 확인">
+          <Stack gap="md" mt="md">
+            {form.sourceMode === 'github' ? (
+              <>
+                <div
+                  aria-hidden="true"
+                  style={{
+                    position: 'absolute',
+                    opacity: 0,
+                    pointerEvents: 'none',
+                    width: 0,
+                    height: 0,
+                    overflow: 'hidden',
+                  }}
+                >
+                  <input type="text" name="username" autoComplete="username" tabIndex={-1} />
+                  <input type="password" name="password" autoComplete="current-password" tabIndex={-1} />
+                </div>
+
+                <Alert color="lagoon" variant="light">
+                  저장소 URL을 넣고 접근을 확인하면 AODS가 바로 <Code>{form.configPath || 'aolda_deploy.json'}</Code>까지 읽습니다.
+                  public 저장소는 토큰 없이 진행하고, private 저장소만 읽기 토큰을 추가합니다.
+                </Alert>
+
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                  <TextInput
+                    label="GitHub 저장소 URL"
+                    placeholder="예: https://github.com/aods/example-app.git"
+                    required
+                    ref={repositoryUrlInputRef}
+                    name="aods-github-repository-url"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    value={form.repositoryUrl}
+                    error={repositoryUrlError}
+                    onChange={(event) => updateForm({ repositoryUrl: event.target.value })}
+                  />
+                  <Select
+                    label="저장소 공개 여부"
+                    data={[
+                      { value: 'public', label: 'Public 저장소' },
+                      { value: 'private', label: 'Private 저장소' },
+                    ]}
+                    value={repositoryAccess}
+                    onChange={(value) => setRepositoryAccess(value === 'private' ? 'private' : 'public')}
+                    allowDeselect={false}
+                  />
+                </SimpleGrid>
+
+                <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
+                  <TextInput
+                    label="브랜치"
+                    placeholder="기본값: main"
+                    name="aods-github-branch"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    value={form.repositoryBranch}
+                    onChange={(event) => updateForm({ repositoryBranch: event.target.value })}
+                  />
+                  <TextInput
+                    label="설정 파일 경로"
+                    name="aods-github-config-path"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    value={form.configPath}
+                    onChange={(event) => updateForm({ configPath: event.target.value })}
+                  />
+                </SimpleGrid>
+
+                {repositoryAccess === 'private' ? (
+                  <Card withBorder radius="md" padding="md" bg="gray.0">
+                    <Stack gap="sm">
+                      <Group justify="space-between" align="flex-start">
+                        <Stack gap={2}>
+                          <Text fw={700}>Private 저장소 토큰</Text>
+                          <Text size="sm" c="dimmed">
+                            fine-grained token에서 대상 repository를 선택하고 Contents 권한을 Read-only로 둡니다.
+                          </Text>
+                        </Stack>
+                        <Button
+                          component="a"
+                          href={githubFineGrainedTokenURL}
+                          target="_blank"
+                          rel="noreferrer"
+                          variant="default"
+                          radius="xl"
+                          size="xs"
+                        >
+                          GitHub 토큰 만들기
+                        </Button>
+                      </Group>
+                      <PasswordInput
+                        label="GitHub 저장소 토큰"
+                        description="이 토큰은 aolda_deploy.json을 읽는 용도로만 저장됩니다."
+                        name="aods-github-token"
+                        autoComplete="new-password"
+                        data-form-type="other"
+                        data-lpignore="true"
+                        data-1p-ignore="true"
+                        value={form.repositoryToken}
+                        error={repositoryTokenError}
+                        onChange={(event) => updateForm({ repositoryToken: event.target.value })}
+                      />
+                    </Stack>
+                  </Card>
+                ) : (
+                  <Alert color="gray" variant="light">
+                    public 저장소로 진행합니다. 토큰 없이 저장소와 설정 파일을 확인합니다.
+                  </Alert>
+                )}
+
+                <Group justify="space-between" align="center">
+                  <Group gap="xs">
+                    <Button
+                      component="a"
+                      href={applicationSourceGuideURL}
+                      target="_blank"
+                      rel="noreferrer"
+                      variant="default"
+                      radius="xl"
+                      size="xs"
+                    >
+                      설정 페이지 열기
+                    </Button>
+                    <Button variant="default" radius="xl" size="xs" onClick={handleDownloadRepositoryConfigExample}>
+                      예시 JSON 다운로드
+                    </Button>
+                  </Group>
+                  <Button variant="light" onClick={() => void loadPreview(true)} loading={previewLoading}>
+                    저장소 연결 확인
+                  </Button>
+                </Group>
+
+                {previewLoading ? (
+                  <Alert color="lagoon" variant="light">
+                    저장소와 설정 파일을 확인하는 중입니다.
+                  </Alert>
+                ) : null}
+
+                {previewError ? (
+                  <Alert color="red" variant="light">
+                    {previewError}
+                  </Alert>
+                ) : null}
+
+                {repositoryConnectionReady && preview ? (
+                  <Card withBorder radius="md" padding="md" bg="gray.0">
+                    <Stack gap="xs">
+                      <Group gap="xs">
+                        <Badge color="green" variant="light">저장소 접근 가능</Badge>
+                        <Badge color="green" variant="light">설정 파일 확인됨</Badge>
+                      </Group>
+                      <Text size="sm">저장소 owner: <Code>{repositoryTarget?.owner || '-'}</Code></Text>
+                      <Text size="sm">저장소 이름: <Code>{repositoryTarget?.repo || '-'}</Code></Text>
+                      <Text size="sm">감지된 서비스 수: <Code>{String(preview.services.length)}</Code></Text>
+                    </Stack>
+                  </Card>
+                ) : null}
+              </>
+            ) : (
+              <Alert color="gray" variant="light">
+                빠른 생성 모드는 GitHub 저장소를 읽지 않으므로 이 단계를 건너뜁니다.
+              </Alert>
+            )}
           </Stack>
         </Stepper.Step>
 
@@ -833,6 +790,130 @@ export function ApplicationWizard({
                 빠른 생성 모드에서는 저장소 설정 파일을 읽지 않으므로 이 단계를 건너뛰고 다음 단계에서 배포 설정을 직접 입력합니다.
               </Alert>
             )}
+          </Stack>
+        </Stepper.Step>
+
+        <Stepper.Step label="이미지 접근" description="레지스트리 인증">
+          <Stack gap="md" mt="md">
+            <Alert color="blue" variant="light">
+              <Stack gap={4}>
+                <Text fw={700}>컨테이너 이미지를 pull할 수 있게 준비합니다</Text>
+                <Text size="sm">
+                  public 이미지는 인증 없이 진행하고, private 이미지만 레지스트리 사용자명과 토큰을 입력합니다.
+                </Text>
+                <Text size="sm">
+                  실제 이미지 접근성은 애플리케이션 생성 시 backend preflight에서 한 번 더 검증합니다.
+                </Text>
+              </Stack>
+            </Alert>
+
+            <Card withBorder radius="md" padding="md" bg="gray.0">
+              <Stack gap="xs">
+                <Text fw={700}>배포 이미지</Text>
+                <Text size="sm">
+                  {selectedImage ? <Code>{selectedImage}</Code> : '아직 선택된 이미지가 없습니다.'}
+                </Text>
+                <Text size="sm">레지스트리: <Code>{registryServerPreview}</Code></Text>
+                {form.sourceMode === 'github' && !selectedImage ? (
+                  <Text size="sm" c="red">
+                    설정 파일 확인 단계에서 배포할 서비스를 먼저 선택하세요.
+                  </Text>
+                ) : null}
+              </Stack>
+            </Card>
+
+            <Card withBorder radius="md" padding="md" bg="gray.0">
+              <Stack gap="md">
+                <Group justify="space-between" align="flex-start">
+                  <Stack gap={2}>
+                    <Text fw={700}>레지스트리 인증</Text>
+                    <Text size="sm" c="dimmed">
+                      GHCR private 이미지는 GitHub token에 read:packages 권한이 필요합니다.
+                    </Text>
+                  </Stack>
+                  <Button
+                    component="a"
+                    href={githubRegistryTokenURL}
+                    target="_blank"
+                    rel="noreferrer"
+                    variant="default"
+                    radius="xl"
+                    size="xs"
+                  >
+                    GHCR 토큰 만들기
+                  </Button>
+                </Group>
+
+                <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="md">
+                  <Select
+                    label="레지스트리 종류"
+                    data={[
+                      { value: 'auto', label: '자동 추론' },
+                      { value: 'ghcr.io', label: 'GHCR (ghcr.io)' },
+                      { value: 'docker.io', label: 'Docker Hub (docker.io)' },
+                      { value: 'custom', label: '직접 입력' },
+                    ]}
+                    value={currentRegistryMode}
+                    onChange={handleRegistryModeChange}
+                  />
+                  <TextInput
+                    label="레지스트리 사용자명"
+                    name="aods-registry-username"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    value={form.registryUsername}
+                    error={registryCredentialError}
+                    onChange={(event) => updateForm({ registryUsername: event.target.value })}
+                  />
+                  <PasswordInput
+                    label="레지스트리 토큰"
+                    name="aods-registry-token"
+                    autoComplete="new-password"
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    value={form.registryToken}
+                    error={registryCredentialError}
+                    onChange={(event) => updateForm({ registryToken: event.target.value })}
+                  />
+                </SimpleGrid>
+
+                {currentRegistryMode === 'custom' ? (
+                  <TextInput
+                    label="직접 입력 레지스트리 주소"
+                    placeholder="예: registry.example.com"
+                    name="aods-registry-server-custom"
+                    autoComplete="off"
+                    autoCapitalize="none"
+                    spellCheck={false}
+                    data-form-type="other"
+                    data-lpignore="true"
+                    data-1p-ignore="true"
+                    value={form.registryServer}
+                    onChange={(event) => updateForm({ registryServer: event.target.value })}
+                  />
+                ) : null}
+
+                <Text size="xs" c="dimmed">
+                  레지스트리 토큰은 앱 환경변수 및 GitHub 저장소 토큰과 분리해서 <Code>{registrySecretPathPreview}</Code> 경로에 저장합니다.
+                  {!effectiveAppNameIsValid ? ' 올바른 앱 이름을 입력하면 실제 경로가 확정됩니다.' : ''}
+                </Text>
+
+                {form.registryUsername.trim() && form.registryToken.trim() ? (
+                  <Alert color="green" variant="light">
+                    private 이미지 pull credential을 함께 저장합니다.
+                  </Alert>
+                ) : (
+                  <Alert color="gray" variant="light">
+                    토큰 없이 public 이미지 기준으로 진행합니다. private image pull 실패가 나면 이 단계로 돌아와 토큰을 추가하세요.
+                  </Alert>
+                )}
+              </Stack>
+            </Card>
           </Stack>
         </Stepper.Step>
 
@@ -1108,7 +1189,7 @@ export function ApplicationWizard({
             이전
           </Button>
         ) : null}
-        {active < 4 ? (
+        {active < 6 ? (
           <Button onClick={nextStep} color="lagoon.6" disabled={nextStepDisabled}>
             다음 단계
           </Button>
@@ -1128,15 +1209,21 @@ function validateStep(
   environments: WizardEnvironment[],
   preview: PreviewApplicationSourceResponse | null,
   previewError: string,
+  repositoryAccess: 'public' | 'private',
+  repositoryConnectionReady: boolean,
 ) {
   switch (step) {
     case 0:
       return validateIdentityStep(form)
     case 1:
-      return validatePreviewStep(form, preview, previewError)
+      return validateRepositoryStep(form, preview, previewError, repositoryAccess, repositoryConnectionReady)
     case 2:
-      return validateDeploymentStep(form, environments)
+      return validatePreviewStep(form, preview, previewError)
     case 3:
+      return validateRegistryStep(form, preview)
+    case 4:
+      return validateDeploymentStep(form, environments)
+    case 5:
       return validateSecretsStep(form)
     default:
       return ''
@@ -1148,10 +1235,14 @@ function validateAllSteps(
   environments: WizardEnvironment[],
   preview: PreviewApplicationSourceResponse | null,
   previewError: string,
+  repositoryAccess: 'public' | 'private',
+  repositoryConnectionReady: boolean,
 ) {
   return (
     validateIdentityStep(form) ||
+    validateRepositoryStep(form, preview, previewError, repositoryAccess, repositoryConnectionReady) ||
     validatePreviewStep(form, preview, previewError) ||
+    validateRegistryStep(form, preview) ||
     validateDeploymentStep(form, environments) ||
     validateSecretsStep(form)
   )
@@ -1166,12 +1257,11 @@ function focusFirstInvalidField(
     imageInput: HTMLInputElement | null
   },
 ) {
-  if (step !== 0) return
-  if (form.sourceMode === 'github' && !form.repositoryUrl.trim()) {
+  if (step === 1 && form.sourceMode === 'github' && !form.repositoryUrl.trim()) {
     refs.repositoryUrlInput?.focus()
     return
   }
-  if (form.sourceMode === 'quick') {
+  if (step === 0 && form.sourceMode === 'quick') {
     const normalizedName = form.name.trim()
     if (!normalizedName || !appNamePattern.test(normalizedName)) {
       refs.appNameInput?.focus()
@@ -1185,11 +1275,7 @@ function focusFirstInvalidField(
 
 function validateIdentityStep(form: CreateFormState) {
   const normalizedName = form.name.trim()
-  if (form.sourceMode === 'github') {
-    if (!form.repositoryUrl.trim()) {
-      return 'GitHub 저장소 URL을 입력하세요.'
-    }
-  } else if (!normalizedName) {
+  if (form.sourceMode === 'quick' && !normalizedName) {
     return '애플리케이션 이름을 입력하세요.'
   }
   if (normalizedName && !appNamePattern.test(normalizedName)) {
@@ -1201,14 +1287,50 @@ function validateIdentityStep(form: CreateFormState) {
   if (form.sourceMode === 'quick' && !form.image.trim()) {
     return '컨테이너 이미지 주소를 입력하세요.'
   }
-  const hasRegistryServer = Boolean(form.registryServer.trim())
+  return ''
+}
+
+function validateRepositoryStep(
+  form: CreateFormState,
+  preview: PreviewApplicationSourceResponse | null,
+  previewError: string,
+  repositoryAccess: 'public' | 'private',
+  repositoryConnectionReady: boolean,
+) {
+  if (form.sourceMode !== 'github') {
+    return ''
+  }
+  if (!form.repositoryUrl.trim()) {
+    return 'GitHub 저장소 URL을 입력하세요.'
+  }
+  if (repositoryAccess === 'private' && !form.repositoryToken.trim()) {
+    return 'Private 저장소는 GitHub 저장소 토큰을 입력하세요.'
+  }
+  if (previewError) {
+    return previewError
+  }
+  if (!preview) {
+    return '저장소 연결 확인을 먼저 실행하세요.'
+  }
+  if (!repositoryConnectionReady) {
+    return '저장소 또는 설정 파일 값이 바뀌었습니다. 저장소 연결 확인을 다시 실행하세요.'
+  }
+  return ''
+}
+
+function validateRegistryStep(form: CreateFormState, preview: PreviewApplicationSourceResponse | null) {
+  if (form.sourceMode === 'github') {
+    const selectedServiceID = form.repositoryServiceId.trim() || preview?.selectedServiceId || ''
+    const selectedService = preview?.services.find((service) => service.serviceId === selectedServiceID)
+      ?? (preview?.services.length === 1 ? preview.services[0] : null)
+    if (!selectedService) {
+      return '설정 파일에서 배포할 서비스를 먼저 선택하세요.'
+    }
+  }
   const hasRegistryUsername = Boolean(form.registryUsername.trim())
   const hasRegistryToken = Boolean(form.registryToken.trim())
   if (hasRegistryUsername !== hasRegistryToken) {
     return '레지스트리 사용자명과 레지스트리 토큰은 함께 입력하세요.'
-  }
-  if (hasRegistryServer && !hasRegistryUsername) {
-    return '레지스트리 주소를 직접 넣는 경우 사용자명과 토큰도 함께 입력하세요.'
   }
   return ''
 }

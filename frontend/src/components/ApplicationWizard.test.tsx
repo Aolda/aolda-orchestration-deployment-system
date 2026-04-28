@@ -26,7 +26,9 @@ function buildInitialState(overrides: Partial<CreateFormState> = {}): CreateForm
 }
 
 describe('ApplicationWizard', () => {
-  it('[US-APP-001] 기본으로 공개 저장소 기준의 GitHub 등록 흐름을 보여준다', () => {
+  it('[US-APP-001] 기본으로 공개 저장소 기준의 GitHub 등록 흐름을 보여준다', async () => {
+    const user = userEvent.setup()
+
     render(
       <ApplicationWizard
         projectId="shared"
@@ -50,19 +52,21 @@ describe('ApplicationWizard', () => {
     )
 
     expect(screen.getByText('GitHub에서 읽기')).toBeInTheDocument()
-    expect(screen.getByText('AODS 연결 설정')).toBeInTheDocument()
+    expect(screen.getByText('연결 마법사로 진행')).toBeInTheDocument()
     expect(screen.getByText('설정 페이지 열기')).toBeInTheDocument()
-    expect(screen.getByText('GitHub 토큰 발급')).toBeInTheDocument()
-    expect(screen.getByText('GHCR 토큰 발급')).toBeInTheDocument()
     expect(screen.getByText('예시 JSON 다운로드')).toBeInTheDocument()
-    expect(screen.getByText('같은 레포에 프론트와 백이 같이 있으면')).toBeInTheDocument()
-    expect(screen.getByPlaceholderText('예: https://github.com/aods/example-app.git')).toBeInTheDocument()
-    expect(screen.getByLabelText('GitHub 저장소 토큰 (선택)')).toBeInTheDocument()
-    expect(screen.getByDisplayValue('aolda_deploy.json')).toBeInTheDocument()
-    expect(screen.getByLabelText('레지스트리 사용자명')).toBeInTheDocument()
-    expect(screen.getByLabelText('레지스트리 토큰')).toBeInTheDocument()
+    expect(screen.getByText('GitHub 연결')).toBeInTheDocument()
+    expect(screen.getByText('이미지 접근')).toBeInTheDocument()
+    expect(screen.queryByLabelText('레지스트리 사용자명')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('저장소 내 서비스 ID')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('애플리케이션 이름')).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
+
+    expect(await screen.findByPlaceholderText('예: https://github.com/aods/example-app.git')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Public 저장소')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('aolda_deploy.json')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '저장소 연결 확인' })).toBeInTheDocument()
   })
 
   it('[US-APP-002] GitHub 등록에서 저장소 URL 없이 다음 단계로 넘어가면 즉시 검증 메시지를 보여준다', async () => {
@@ -86,6 +90,7 @@ describe('ApplicationWizard', () => {
       />,
     )
 
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
 
     expect(screen.getAllByText('GitHub 저장소 URL을 입력하세요.').length).toBeGreaterThan(0)
@@ -115,6 +120,8 @@ describe('ApplicationWizard', () => {
       />,
     )
 
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
+    expect(await screen.findByText('저장소 접근 가능')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
 
     expect(await screen.findByText('저장소 서비스 미리보기')).toBeInTheDocument()
@@ -148,6 +155,10 @@ describe('ApplicationWizard', () => {
     )
 
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
+    expect(await screen.findByText('저장소 접근 가능')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
 
     expect(screen.getAllByText('레지스트리 사용자명과 레지스트리 토큰은 함께 입력하세요.').length).toBeGreaterThan(0)
   })
@@ -176,7 +187,10 @@ describe('ApplicationWizard', () => {
     )
 
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
+    expect(await screen.findByText('저장소 접근 가능')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
     expect(await screen.findByText('저장소 서비스 미리보기')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
 
@@ -212,6 +226,8 @@ describe('ApplicationWizard', () => {
     )
 
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
+    expect(await screen.findByText('저장소 접근 가능')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
 
     expect(await screen.findByText('감지된 서비스 수:')).toBeInTheDocument()
     expect(screen.getByText('example-web')).toBeInTheDocument()
@@ -242,6 +258,10 @@ describe('ApplicationWizard', () => {
       />,
     )
 
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
+
+    expect(screen.getByText('컨테이너 이미지를 pull할 수 있게 준비합니다')).toBeInTheDocument()
+    expect(screen.getByText('배포 이미지')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '다음 단계' }))
 
     expect(screen.getByText('현재 프로젝트 정책')).toBeInTheDocument()
