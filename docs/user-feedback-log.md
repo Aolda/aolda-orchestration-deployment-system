@@ -620,6 +620,15 @@
 * References: `backend/internal/application/poller.go`, `backend/internal/application/poller_test.go`
 * Status: applied
 
+### 2026-04-28 - FB-063 - UI 실패와 backend pod 로그를 request id로 추적할 수 있어야 함
+
+* Area: Backend / Observability / Error Logging
+* User signal: `UI에 대해서는 실패라는데 백엔드가면 로그가 정확히 안나와 로그에 대해서 argocd로 보통보니깐 이거 관련해서 제대로 어떤 중요한 문제가 생기면 제대로 나올 수 있게 처리좀`
+* Interpreted intent: 운영자는 ArgoCD에서 backend pod logs를 기준으로 장애를 확인한다. UI/API 응답에는 실패가 보여도 backend stdout에 request id, endpoint, status, 원인 detail이 구조화되어 남지 않으면 실제 원인 추적이 어렵다.
+* Action: 공통 HTTP error writer가 4xx/5xx 응답을 구조화 로그로 남기도록 수정하고, request id/method/path/status/code/retryable/detail을 포함하되 URL credential, bearer token, Vault/GitHub token, 민감 key 값은 redaction하도록 했다.
+* References: `backend/internal/core/http.go`, `backend/internal/core/http_test.go`
+* Status: applied
+
 ## 운영 메모
 
 앞으로 에이전트는 아래 순서를 기본으로 따른다.
