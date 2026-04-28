@@ -179,6 +179,20 @@ export type PreviewApplicationSourceResponse = {
   requiresServiceSelection: boolean
 }
 
+export type VerifyImageAccessRequest = {
+  image: string
+  registryServer?: string
+  registryUsername?: string
+  registryToken?: string
+}
+
+export type VerifyImageAccessResponse = {
+  image: string
+  registry: string
+  accessible: boolean
+  message: string
+}
+
 export type SyncStatus = 'Unknown' | 'Syncing' | 'Synced' | 'Degraded'
 export type RepositoryPollResult = 'Pending' | 'Success' | 'Error'
 

@@ -121,6 +121,40 @@ func (h Handler) PreviewRepositorySource(w http.ResponseWriter, r *http.Request)
 	core.WriteJSON(w, http.StatusOK, response)
 }
 
+func (h Handler) VerifyImageAccess(w http.ResponseWriter, r *http.Request) {
+	user, ok := h.currentUser(w, r)
+	if !ok {
+		return
+	}
+
+	var request VerifyImageAccessRequest
+	if err := core.DecodeJSON(r, &request); err != nil {
+		core.WriteError(
+			w,
+			r,
+			http.StatusBadRequest,
+			"INVALID_REQUEST",
+			"Request body is invalid.",
+			map[string]any{"error": err.Error()},
+			false,
+		)
+		return
+	}
+
+	response, err := h.Service.VerifyImageAccess(
+		r.Context(),
+		user,
+		r.PathValue("projectId"),
+		request,
+	)
+	if err != nil {
+		h.writeDomainError(w, r, err)
+		return
+	}
+
+	core.WriteJSON(w, http.StatusOK, response)
+}
+
 func (h Handler) CreateDeployment(w http.ResponseWriter, r *http.Request) {
 	user, ok := h.currentUser(w, r)
 	if !ok {

@@ -140,6 +140,20 @@ type PreviewRepositorySourceResponse struct {
 	RequiresServiceSelection bool                       `json:"requiresServiceSelection"`
 }
 
+type VerifyImageAccessRequest struct {
+	Image            string `json:"image"`
+	RegistryServer   string `json:"registryServer,omitempty"`
+	RegistryUsername string `json:"registryUsername,omitempty"`
+	RegistryToken    string `json:"registryToken,omitempty"`
+}
+
+type VerifyImageAccessResponse struct {
+	Image      string `json:"image"`
+	Registry   string `json:"registry"`
+	Accessible bool   `json:"accessible"`
+	Message    string `json:"message"`
+}
+
 type CreateDeploymentRequest struct {
 	ImageTag    string `json:"imageTag"`
 	Environment string `json:"environment,omitempty"`

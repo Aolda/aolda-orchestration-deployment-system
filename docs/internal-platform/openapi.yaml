@@ -412,6 +412,37 @@ paths:
         '500':
           $ref: '#/components/responses/InternalServerError'
 
+  /api/v1/projects/{projectId}/applications/image-access:
+    post:
+      tags: [Applications]
+      operationId: verifyImageAccess
+      summary: Verify whether an image can be pulled with the supplied registry credentials
+      parameters:
+        - $ref: '#/components/parameters/ProjectId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyImageAccessRequest'
+      responses:
+        '200':
+          description: Image access verified
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyImageAccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   /api/v1/applications/{applicationId}/deployments:
     get:
       tags: [Deployments]
@@ -1694,6 +1725,51 @@ components:
             strategy: Canary
         selectedServiceId: payment-api
         requiresServiceSelection: false
+
+    VerifyImageAccessRequest:
+      type: object
+      required:
+        - image
+      properties:
+        image:
+          type: string
+          description: Full container image reference including tag or digest.
+        registryServer:
+          type: string
+          description: Optional registry server override. If omitted, AODS infers it from the image.
+        registryUsername:
+          type: string
+          description: Optional registry username for private images.
+        registryToken:
+          type: string
+          description: Optional registry token/password for private images.
+      example:
+        image: ghcr.io/aolda/payment-api:sha-1a2b3c4d
+        registryServer: ghcr.io
+        registryUsername: octocat
+        registryToken: ghp_packages_xxx
+
+    VerifyImageAccessResponse:
+      type: object
+      required:
+        - image
+        - registry
+        - accessible
+        - message
+      properties:
+        image:
+          type: string
+        registry:
+          type: string
+        accessible:
+          type: boolean
+        message:
+          type: string
+      example:
+        image: ghcr.io/aolda/payment-api:sha-1a2b3c4d
+        registry: ghcr.io
+        accessible: true
+        message: 이미지를 가져올 수 있습니다.
 
     Application:
       type: object

@@ -18,7 +18,12 @@ import {
   TextInput,
   Textarea,
 } from '@mantine/core'
-import type { PreviewApplicationSourceResponse, WriteMode } from '../types/api'
+import type {
+  PreviewApplicationSourceResponse,
+  VerifyImageAccessRequest,
+  VerifyImageAccessResponse,
+  WriteMode,
+} from '../types/api'
 
 const appNamePattern = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/
 const githubFineGrainedTokenURL = 'https://github.com/settings/personal-access-tokens/new'
@@ -58,6 +63,7 @@ type ApplicationWizardProps = {
   allowedStrategies: readonly string[]
   initialState: CreateFormState
   onPreviewSource: (state: CreateFormState) => Promise<PreviewApplicationSourceResponse>
+  onVerifyImageAccess: (request: VerifyImageAccessRequest) => Promise<VerifyImageAccessResponse>
   onSubmit: (state: CreateFormState) => Promise<void>
   onCancel: () => void
   submitting: boolean
@@ -70,6 +76,7 @@ export function ApplicationWizard({
   allowedStrategies,
   initialState,
   onPreviewSource,
+  onVerifyImageAccess,
   onSubmit,
   onCancel,
   submitting,
@@ -80,6 +87,10 @@ export function ApplicationWizard({
   const [previewLoading, setPreviewLoading] = useState(false)
   const [previewError, setPreviewError] = useState('')
   const [previewKey, setPreviewKey] = useState('')
+  const [imageAccessLoading, setImageAccessLoading] = useState(false)
+  const [imageAccessError, setImageAccessError] = useState('')
+  const [imageAccessResult, setImageAccessResult] = useState<VerifyImageAccessResponse | null>(null)
+  const [imageAccessKey, setImageAccessKey] = useState('')
   const [repositoryAccess, setRepositoryAccess] = useState<'public' | 'private'>(
     initialState.repositoryToken.trim() ? 'private' : 'public',
   )
@@ -165,6 +176,7 @@ export function ApplicationWizard({
   const updateForm = useCallback((updates: Partial<CreateFormState>) => {
     setForm((current) => ({ ...current, ...updates }))
     setValidationMessage('')
+    setImageAccessError('')
   }, [])
 
   const nextStrategy = (value: string | null): CreateFormState['deploymentStrategy'] =>
@@ -292,6 +304,13 @@ export function ApplicationWizard({
     ? selectedRepositoryService?.image ?? ''
     : form.image.trim()
   const registryServerPreview = form.registryServer.trim() || inferRegistryServer(selectedImage) || '이미지 주소에서 자동 추론'
+  const currentImageAccessKey = JSON.stringify({
+    image: selectedImage,
+    registryServer: form.registryServer.trim(),
+    registryUsername: form.registryUsername.trim(),
+    registryToken: form.registryToken.trim(),
+  })
+  const imageAccessResultIsCurrent = Boolean(imageAccessResult && imageAccessKey === currentImageAccessKey)
 
   const loadPreview = useCallback(async (force = false) => {
     if (form.sourceMode !== 'github' || !form.repositoryUrl.trim()) return
@@ -328,6 +347,42 @@ export function ApplicationWizard({
     }
     void loadPreview(false)
   }, [active, form.sourceMode, form.repositoryUrl, form.repositoryBranch, form.repositoryToken, form.configPath, loadPreview])
+
+  const verifyImageAccess = async () => {
+    const message = validateRegistryStep(form, preview)
+    if (message) {
+      setValidationMessage(message)
+      return
+    }
+    if (!selectedImage) {
+      setValidationMessage('확인할 컨테이너 이미지가 없습니다.')
+      return
+    }
+
+    const request: VerifyImageAccessRequest = {
+      image: selectedImage,
+      registryServer: form.registryServer.trim() || undefined,
+      registryUsername: form.registryUsername.trim() || undefined,
+      registryToken: form.registryToken.trim() || undefined,
+    }
+
+    setImageAccessLoading(true)
+    setImageAccessError('')
+    setImageAccessResult(null)
+    try {
+      const response = await onVerifyImageAccess(request)
+      setImageAccessResult(response)
+      setImageAccessKey(currentImageAccessKey)
+    } catch (error) {
+      if (error instanceof Error) {
+        setImageAccessError(error.message)
+      } else {
+        setImageAccessError('이미지 접근 상태를 확인하지 못했습니다.')
+      }
+    } finally {
+      setImageAccessLoading(false)
+    }
+  }
 
   const repositoryUrlError =
     validationMessage === 'GitHub 저장소 URL을 입력하세요.' ? validationMessage : undefined
@@ -902,6 +957,41 @@ export function ApplicationWizard({
                   레지스트리 토큰은 앱 환경변수 및 GitHub 저장소 토큰과 분리해서 <Code>{registrySecretPathPreview}</Code> 경로에 저장합니다.
                   {!effectiveAppNameIsValid ? ' 올바른 앱 이름을 입력하면 실제 경로가 확정됩니다.' : ''}
                 </Text>
+
+                <Group justify="space-between" align="center">
+                  <Stack gap={2}>
+                    <Text fw={700}>이미지 pull 확인</Text>
+                    <Text size="sm" c="dimmed">
+                      현재 입력한 이미지와 레지스트리 인증 정보로 manifest 접근을 확인합니다.
+                    </Text>
+                  </Stack>
+                  <Button
+                    variant="light"
+                    onClick={() => void verifyImageAccess()}
+                    loading={imageAccessLoading}
+                    disabled={!selectedImage}
+                  >
+                    이미지 접근 확인
+                  </Button>
+                </Group>
+
+                {imageAccessResultIsCurrent ? (
+                  <Alert color="green" variant="light">
+                    {imageAccessResult?.message || '이미지를 가져올 수 있습니다.'} registry: <Code>{imageAccessResult?.registry || registryServerPreview}</Code>
+                  </Alert>
+                ) : null}
+
+                {imageAccessResult && !imageAccessResultIsCurrent ? (
+                  <Alert color="yellow" variant="light">
+                    이미지 또는 인증 정보가 바뀌었습니다. 다시 확인하세요.
+                  </Alert>
+                ) : null}
+
+                {imageAccessError ? (
+                  <Alert color="red" variant="light">
+                    {imageAccessError}
+                  </Alert>
+                ) : null}
 
                 {form.registryUsername.trim() && form.registryToken.trim() ? (
                   <Alert color="green" variant="light">

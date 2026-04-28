@@ -25,6 +25,15 @@ function buildInitialState(overrides: Partial<CreateFormState> = {}): CreateForm
   }
 }
 
+function createImageAccessMock() {
+  return vi.fn().mockResolvedValue({
+    image: 'ghcr.io/aods/example-app:sha-abc1234',
+    registry: 'ghcr.io',
+    accessible: true,
+    message: '이미지를 가져올 수 있습니다.',
+  })
+}
+
 describe('ApplicationWizard', () => {
   it('[US-APP-001] 기본으로 공개 저장소 기준의 GitHub 등록 흐름을 보여준다', async () => {
     const user = userEvent.setup()
@@ -45,6 +54,7 @@ describe('ApplicationWizard', () => {
           selectedServiceId: 'example-app',
           requiresServiceSelection: false,
         })}
+        onVerifyImageAccess={createImageAccessMock()}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         onCancel={vi.fn()}
         submitting={false}
@@ -84,6 +94,7 @@ describe('ApplicationWizard', () => {
           selectedServiceId: 'example-app',
           requiresServiceSelection: false,
         })}
+        onVerifyImageAccess={createImageAccessMock()}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         onCancel={vi.fn()}
         submitting={false}
@@ -114,6 +125,7 @@ describe('ApplicationWizard', () => {
           selectedServiceId: 'example-app',
           requiresServiceSelection: false,
         })}
+        onVerifyImageAccess={createImageAccessMock()}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         onCancel={vi.fn()}
         submitting={false}
@@ -148,6 +160,7 @@ describe('ApplicationWizard', () => {
           selectedServiceId: 'example-app',
           requiresServiceSelection: false,
         })}
+        onVerifyImageAccess={createImageAccessMock()}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         onCancel={vi.fn()}
         submitting={false}
@@ -180,6 +193,7 @@ describe('ApplicationWizard', () => {
           selectedServiceId: 'example-app',
           requiresServiceSelection: false,
         })}
+        onVerifyImageAccess={createImageAccessMock()}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         onCancel={vi.fn()}
         submitting={false}
@@ -219,6 +233,7 @@ describe('ApplicationWizard', () => {
           ],
           requiresServiceSelection: true,
         })}
+        onVerifyImageAccess={createImageAccessMock()}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         onCancel={vi.fn()}
         submitting={false}
@@ -252,6 +267,7 @@ describe('ApplicationWizard', () => {
           image: 'ghcr.io/aods/payment-api:1.0.0',
         })}
         onPreviewSource={vi.fn()}
+        onVerifyImageAccess={createImageAccessMock()}
         onSubmit={vi.fn().mockResolvedValue(undefined)}
         onCancel={vi.fn()}
         submitting={false}
@@ -267,5 +283,48 @@ describe('ApplicationWizard', () => {
     expect(screen.getByText('현재 프로젝트 정책')).toBeInTheDocument()
     expect(screen.getByText('서비스 포트')).toBeInTheDocument()
     expect(screen.queryByText('빠른 생성 모드에서는 저장소 설정 파일을 읽지 않으므로')).not.toBeInTheDocument()
+  })
+
+  it('[US-APP-008] 이미지 접근 단계에서 입력된 레지스트리 정보로 pull 가능 여부를 확인한다', async () => {
+    const user = userEvent.setup()
+    const verifyImageAccess = createImageAccessMock()
+
+    render(
+      <ApplicationWizard
+        projectId="shared"
+        environments={[{ id: 'shared', name: '공용', writeMode: 'direct', default: true }]}
+        allowedStrategies={['Rollout']}
+        initialState={buildInitialState({
+          repositoryUrl: 'https://github.com/aods/example-app.git',
+          registryUsername: 'octocat',
+          registryToken: 'ghp_packages_xxx',
+        })}
+        onPreviewSource={vi.fn().mockResolvedValue({
+          configPath: 'aolda_deploy.json',
+          services: [{ serviceId: 'example-app', image: 'ghcr.io/aods/example-app:sha-abc1234', port: 3000, replicas: 1, strategy: 'Rollout' }],
+          selectedServiceId: 'example-app',
+          requiresServiceSelection: false,
+        })}
+        onVerifyImageAccess={verifyImageAccess}
+        onSubmit={vi.fn().mockResolvedValue(undefined)}
+        onCancel={vi.fn()}
+        submitting={false}
+      />,
+    )
+
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
+    expect(await screen.findByText('저장소 접근 가능')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
+    await user.click(screen.getByRole('button', { name: '다음 단계' }))
+
+    await user.click(screen.getByRole('button', { name: '이미지 접근 확인' }))
+
+    expect(verifyImageAccess).toHaveBeenCalledWith({
+      image: 'ghcr.io/aods/example-app:sha-abc1234',
+      registryServer: undefined,
+      registryUsername: 'octocat',
+      registryToken: 'ghp_packages_xxx',
+    })
+    expect(await screen.findByText(/이미지를 가져올 수 있습니다/)).toBeInTheDocument()
   })
 })

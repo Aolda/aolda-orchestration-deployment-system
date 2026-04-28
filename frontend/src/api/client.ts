@@ -14,6 +14,8 @@ import type {
   CreateApplicationRequest,
   PreviewApplicationSourceRequest,
   PreviewApplicationSourceResponse,
+  VerifyImageAccessRequest,
+  VerifyImageAccessResponse,
   CreateClusterRequest,
   CreateChangeRequest,
   CreateDeploymentRequest,
@@ -258,6 +260,12 @@ export const api = {
   },
   previewApplicationSource(projectId: string, body: PreviewApplicationSourceRequest) {
     return request<PreviewApplicationSourceResponse>(`/api/v1/projects/${projectId}/applications/source-preview`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    })
+  },
+  verifyImageAccess(projectId: string, body: VerifyImageAccessRequest) {
+    return request<VerifyImageAccessResponse>(`/api/v1/projects/${projectId}/applications/image-access`, {
       method: 'POST',
       body: JSON.stringify(body),
     })

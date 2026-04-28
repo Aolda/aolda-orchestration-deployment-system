@@ -365,6 +365,59 @@ func (s Service) PreviewRepositorySource(
 	}, nil
 }
 
+func (s Service) VerifyImageAccess(
+	ctx context.Context,
+	user core.User,
+	projectID string,
+	input VerifyImageAccessRequest,
+) (VerifyImageAccessResponse, error) {
+	authorizedProject, err := s.Projects.GetAuthorized(ctx, user, projectID)
+	if err != nil {
+		return VerifyImageAccessResponse{}, err
+	}
+	if !authorizedProject.Role.CanDeploy() {
+		return VerifyImageAccessResponse{}, ErrRequiresDeployer
+	}
+
+	image := strings.TrimSpace(input.Image)
+	if image == "" {
+		return VerifyImageAccessResponse{}, ValidationError{
+			Message: "image is required",
+			Details: map[string]any{"field": "image"},
+		}
+	}
+
+	ref, err := parseImageReference(image)
+	if err != nil {
+		return VerifyImageAccessResponse{}, ImageValidationError{
+			Code:    "INVALID_IMAGE_REFERENCE",
+			Message: "컨테이너 이미지 형식이 올바르지 않습니다.",
+			Image:   image,
+		}
+	}
+
+	credential, _, err := normalizeRegistryCredentialInput(
+		image,
+		input.RegistryServer,
+		input.RegistryUsername,
+		input.RegistryToken,
+	)
+	if err != nil {
+		return VerifyImageAccessResponse{}, err
+	}
+
+	if err := s.verifyImageReference(ctx, image, credential); err != nil {
+		return VerifyImageAccessResponse{}, err
+	}
+
+	return VerifyImageAccessResponse{
+		Image:      image,
+		Registry:   ref.Registry,
+		Accessible: true,
+		Message:    "이미지를 가져올 수 있습니다.",
+	}, nil
+}
+
 func (s Service) CreateDeployment(
 	ctx context.Context,
 	user core.User,

@@ -87,9 +87,18 @@ spec:
             - name: AODS_PROMETHEUS_STEP
               value: 5m
             - name: AODS_VAULT_MODE
-              value: local
-            - name: AODS_LOCAL_VAULT_DIR
-              value: /data/local-vault
+              value: token
+            - name: AODS_VAULT_ADDR
+              value: http://vault-active.shared.svc.cluster.local:8200
+            - name: AODS_VAULT_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_VAULT_TOKEN
+            - name: AODS_VAULT_NAMESPACE
+              value: ""
+            - name: AODS_VAULT_REQUEST_TIMEOUT
+              value: 5s
             - name: AODS_IMAGE_CHECK_MODE
               value: anonymous
             - name: AODS_IMAGE_CHECK_TIMEOUT

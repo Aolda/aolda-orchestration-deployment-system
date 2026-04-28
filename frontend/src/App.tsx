@@ -91,6 +91,7 @@ import type {
   SyncStatus,
   SyncStatusResponse,
   ClusterSummary,
+  VerifyImageAccessRequest,
 } from './types/api'
 import { AppShell as PortalShell } from './app/layout/AppShell'
 import type { GlobalSection } from './app/layout/navigation'
@@ -142,6 +143,22 @@ function translateCreateApplicationError(message: string) {
 function translatePreviewSourceError(error: ApiError) {
   if (error.code === 'ROUTE_NOT_FOUND' || error.message === 'Route was not found.') {
     return '백엔드를 다시 시작하세요. 현재 실행 중인 서버에는 설정 파일 확인 API가 아직 반영되지 않았습니다.'
+  }
+  return error.message
+}
+
+function translateImageAccessError(error: ApiError) {
+  if (error.code === 'ROUTE_NOT_FOUND' || error.message === 'Route was not found.') {
+    return '백엔드를 다시 시작하세요. 현재 실행 중인 서버에는 이미지 접근 확인 API가 아직 반영되지 않았습니다.'
+  }
+  if (error.code === 'IMAGE_AUTH_REQUIRED') {
+    return '현재 입력한 정보로는 이미지를 가져올 수 없습니다. private 이미지라면 레지스트리 사용자명과 read 권한 토큰을 확인하세요.'
+  }
+  if (error.code === 'IMAGE_NOT_FOUND') {
+    return '이미지를 찾지 못했습니다. 이미지 이름과 태그가 실제 레지스트리에 있는지 확인하세요.'
+  }
+  if (error.code === 'INVALID_IMAGE_REFERENCE') {
+    return '컨테이너 이미지 주소 형식이 올바르지 않습니다.'
   }
   return error.message
 }
@@ -2008,6 +2025,21 @@ export default function App() {
     } catch (error) {
       if (error instanceof ApiError) {
         throw new Error(translatePreviewSourceError(error))
+      }
+      throw error
+    }
+  }
+
+  const handleVerifyAppImageAccess = async (request: VerifyImageAccessRequest) => {
+    if (!selectedProjectId) {
+      throw new Error('프로젝트를 먼저 선택하세요.')
+    }
+
+    try {
+      return await api.verifyImageAccess(selectedProjectId, request)
+    } catch (error) {
+      if (error instanceof ApiError) {
+        throw new Error(translateImageAccessError(error))
       }
       throw error
     }
@@ -5242,6 +5274,7 @@ export default function App() {
           allowedStrategies={supportedDeploymentStrategies}
           initialState={wizardInitialState}
           onPreviewSource={handlePreviewAppSource}
+          onVerifyImageAccess={handleVerifyAppImageAccess}
           onSubmit={handleCreateApp}
           onCancel={() => setWizardOpened(false)}
           submitting={creatingApplication}

@@ -17,7 +17,7 @@
 * 앱 ID 규칙: `{projectId}__{appName}`
 * Git write 모델: Phase 1은 `direct push`
 * Secret 처리: Vault KV v2, `staging -> git commit -> final -> cleanup`
-* 개발 실연동 순서: `GitHub 먼저`, `Vault는 local adapter 유지 후 후속 연결`
+* 개발 실연동 순서: GitHub, Vault, Kubernetes, Prometheus real adapter 기준으로 검증한다.
 
 현재 구현 범위를 코드 기준으로 확인하려면 아래 문서를 먼저 본다.
 
@@ -175,8 +175,9 @@ export AODS_IMAGE_CHECK_MODE=anonymous
 export AODS_IMAGE_CHECK_TIMEOUT="5s"
 ```
 
-Vault는 GitHub-first 초기 단계에서는 local adapter 를 유지해도 된다.
-다만 real Vault 검증 단계에서는 아래 env 를 추가한다.
+배포 manifest 기준 AODS backend 는 real Vault token adapter 를 사용한다.
+로컬 단독 실행에서만 `AODS_VAULT_MODE=local` 을 명시적으로 사용한다.
+real Vault 검증 단계에서는 아래 env 를 사용한다.
 
 ```bash
 export AODS_VAULT_MODE=token

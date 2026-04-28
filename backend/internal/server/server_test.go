@@ -97,6 +97,52 @@ func TestPreviewRepositorySourceRouteIsRegistered(t *testing.T) {
 	}
 }
 
+func TestVerifyImageAccessRouteUsesProjectPermissions(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	response := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications/image-access", map[string]any{
+		"image": "ghcr.io/aolda/demo:v1",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "alice",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from image access route, got %d", response.StatusCode)
+	}
+
+	var body struct {
+		Image      string `json:"image"`
+		Registry   string `json:"registry"`
+		Accessible bool   `json:"accessible"`
+		Message    string `json:"message"`
+	}
+	decodeBody(t, response, &body)
+
+	if body.Image != "ghcr.io/aolda/demo:v1" {
+		t.Fatalf("expected image echo, got %q", body.Image)
+	}
+	if body.Registry != "ghcr.io" {
+		t.Fatalf("expected ghcr.io registry, got %q", body.Registry)
+	}
+	if !body.Accessible {
+		t.Fatal("expected accessible=true")
+	}
+
+	viewerResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications/image-access", map[string]any{
+		"image": "ghcr.io/aolda/demo:v1",
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-2",
+		"X-AODS-Username": "viewer",
+		"X-AODS-Groups":   "aods:project-a:view",
+	})
+
+	if viewerResponse.StatusCode != http.StatusForbidden {
+		t.Fatalf("expected viewer to get 403, got %d", viewerResponse.StatusCode)
+	}
+}
+
 func TestProjectRepositoriesCanBeListed(t *testing.T) {
 	env := newTestEnvironment(t)
 

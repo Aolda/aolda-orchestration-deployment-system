@@ -566,6 +566,24 @@
 * References: `frontend/src/components/ApplicationWizard.tsx`, `frontend/src/components/ApplicationWizard.test.tsx`
 * Status: applied
 
+### 2026-04-28 - FB-057 - 앱 생성 중 입력된 정보로 이미지 pull 가능 여부를 확인해야 함
+
+* Area: Frontend / Backend / Application Creation DX
+* User signal: `그 중간에 이미지도 가져올 수 있는지 아닌지의 여부를 확인하고 싶은데 가능할라나? 입력된 정보 기반으로다가`
+* Interpreted intent: 앱 생성 완료 후 backend preflight 에서야 image pull 실패를 알면 사용자는 다시 앞 단계로 돌아가야 한다. 이미지 접근 단계에서 현재 image, registry server, username/token 조합을 즉시 검증해 사용자가 credential 문제를 먼저 고칠 수 있어야 한다.
+* Action: 프로젝트 deployer 전용 `POST /api/v1/projects/{projectId}/applications/image-access` API를 추가하고 기존 registry image verifier를 재사용하도록 했다. ApplicationWizard의 `이미지 접근` 단계에는 `이미지 접근 확인` 버튼과 성공/실패/입력 변경 상태를 추가했다.
+* References: `backend/internal/application/http.go`, `backend/internal/application/service.go`, `backend/internal/server/server.go`, `frontend/src/components/ApplicationWizard.tsx`, `docs/internal-platform/openapi.yaml`
+* Status: applied
+
+### 2026-04-28 - FB-058 - AODS backend secret 저장소도 real Vault를 사용해야 함
+
+* Area: Deployment / Vault / External Secrets
+* User signal: `근본 해결은 AODS backend도 real Vault를 쓰게 바꿔줘 local 말고`
+* Interpreted intent: ESO가 실제 Vault에서 읽는데 AODS backend가 local vault adapter에 쓰면 앱별 ExternalSecret이 값을 찾지 못한다. 배포 환경에서는 AODS backend와 ESO가 같은 Vault KV v2 mount를 보도록 맞춰야 한다.
+* Action: AODS backend 기본 배포 manifest의 Vault 설정을 `local` 에서 real Vault token adapter로 전환하고, token은 `aods-backend-secrets/AODS_VAULT_TOKEN`에서 주입하도록 바꿨다. 로컬 orbstack overlay는 local vault adapter를 유지한다.
+* References: `deploy/aods-system/base/backend-deployment.yaml`, `docs/current-baseline-runbook.md`
+* Status: applied
+
 ## 운영 메모
 
 앞으로 에이전트는 아래 순서를 기본으로 따른다.
