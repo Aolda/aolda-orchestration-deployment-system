@@ -187,11 +187,13 @@ func (p *AutoUpdatePoller) SyncRepositoryNow(
 			token = resolveRepositoryToken(secrets)
 		}
 		if token == "" {
-			err := fmt.Errorf("repository token was empty")
-			if p.Service != nil && p.Service.PollTracker != nil {
-				p.Service.PollTracker.MarkFailure(app, repo, checkedAt, err)
-			}
-			return result, err
+			slog.Warn(
+				"repository token secret was empty; falling back to public repository access",
+				"app",
+				app.ID,
+				"tokenPath",
+				tokenPath,
+			)
 		}
 	}
 

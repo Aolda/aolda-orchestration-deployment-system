@@ -611,6 +611,15 @@
 * References: `scripts/deploy-testbed.sh`
 * Status: applied
 
+### 2026-04-28 - FB-062 - public repository poll은 token secret이 비어 있어도 중단되면 안 됨
+
+* Area: Backend / Repository Poller / Public Source
+* User signal: `토큰 없어도 되야하는거 아님? 컨테이너 이미지에 대한 토큰도 그렇고`
+* Interpreted intent: public GitHub 저장소와 public container image는 credential 없이 운영되어야 한다. 기존 앱 메타데이터에 repository token path가 남아 있더라도 Vault 값이 비어 있다는 이유만으로 poller가 sync를 hard fail 하면 public 앱 운영이 불필요하게 막힌다.
+* Action: repository poller가 token path를 찾았지만 실제 token 값이 비어 있으면 warning을 남기고 public raw GitHub 접근으로 fallback하도록 수정했다.
+* References: `backend/internal/application/poller.go`, `backend/internal/application/poller_test.go`
+* Status: applied
+
 ## 운영 메모
 
 앞으로 에이전트는 아래 순서를 기본으로 따른다.

@@ -2,6 +2,9 @@ package application
 
 import (
 	"context"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -134,6 +137,54 @@ func TestResolveRepositoryFileTargetUsesRawGitHubURLWithoutToken(t *testing.T) {
 	}
 }
 
+func TestSyncRepositoryNowFallsBackToPublicAccessWhenTokenSecretIsEmpty(t *testing.T) {
+	t.Parallel()
+
+	transport := roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("Authorization"); got != "" {
+			t.Fatalf("expected no authorization header for empty repository token, got %q", got)
+		}
+		if !strings.HasPrefix(req.URL.String(), "https://raw.githubusercontent.com/Aolda/public-repo/main/") {
+			t.Fatalf("expected raw GitHub URL, got %s", req.URL.String())
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(strings.NewReader("{}")),
+		}, nil
+	})
+	poller := AutoUpdatePoller{
+		Client: &http.Client{Transport: transport},
+		Service: &Service{
+			Secrets: emptyRepositoryTokenStore{},
+		},
+	}
+
+	response, err := poller.SyncRepositoryNow(
+		context.Background(),
+		core.User{ID: "system", Username: "system", Groups: []string{"aods:platform:admin"}},
+		project.CatalogProject{ID: "shared", Namespace: "shared"},
+		Record{
+			ID:                  "shared__public-app",
+			ProjectID:           "shared",
+			Name:                "public-app",
+			Image:               "ghcr.io/aolda/public-app:v1",
+			ConfigPath:          DefaultRepositoryConfigPath,
+			RepositoryTokenPath: "secret/aods/apps/shared/public-app/repository",
+		},
+		project.Repository{
+			URL:    "https://github.com/Aolda/public-repo.git",
+			Branch: "main",
+		},
+	)
+	if err != nil {
+		t.Fatalf("expected public fallback to succeed, got %v", err)
+	}
+	if response.DeploymentTriggered {
+		t.Fatal("expected no deployment to be triggered when update config has no imageTag")
+	}
+}
+
 type autoRollbackStore struct {
 	record             Record
 	deployments        []DeploymentRecord
@@ -141,6 +192,28 @@ type autoRollbackStore struct {
 	events             []Event
 	updatedImageTags   []string
 	updatedDeployments []DeploymentRecord
+}
+
+type emptyRepositoryTokenStore struct{}
+
+func (emptyRepositoryTokenStore) Stage(ctx context.Context, requestID string, projectID string, appName string, createdBy string, data map[string]string) (StagedSecret, error) {
+	return StagedSecret{}, nil
+}
+
+func (emptyRepositoryTokenStore) StageAt(ctx context.Context, requestID string, finalPath string, metadata map[string]string, data map[string]string) (StagedSecret, error) {
+	return StagedSecret{}, nil
+}
+
+func (emptyRepositoryTokenStore) Finalize(ctx context.Context, staged StagedSecret, data map[string]string) error {
+	return nil
+}
+
+func (emptyRepositoryTokenStore) Get(ctx context.Context, logicalPath string) (map[string]string, error) {
+	return map[string]string{"token": ""}, nil
+}
+
+func (emptyRepositoryTokenStore) Delete(ctx context.Context, logicalPath string) error {
+	return nil
 }
 
 func (s *autoRollbackStore) ListApplications(ctx context.Context, projectID string) ([]Record, error) {
