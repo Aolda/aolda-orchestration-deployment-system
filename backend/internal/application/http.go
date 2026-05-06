@@ -482,6 +482,7 @@ func (h Handler) StreamContainerLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
 	w.WriteHeader(http.StatusOK)
+	_, _ = fmt.Fprint(w, ": connected\n\n")
 	flusher.Flush()
 
 	emit := func(event ContainerLogEvent) error {
