@@ -481,8 +481,9 @@ func (h Handler) StreamContainerLogs(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
 
-	wroteEvent := false
 	emit := func(event ContainerLogEvent) error {
 		payload, err := json.Marshal(event)
 		if err != nil {
@@ -491,7 +492,6 @@ func (h Handler) StreamContainerLogs(w http.ResponseWriter, r *http.Request) {
 		if _, err := fmt.Fprintf(w, "event: log\ndata: %s\n\n", payload); err != nil {
 			return err
 		}
-		wroteEvent = true
 		flusher.Flush()
 		return nil
 	}
@@ -505,11 +505,6 @@ func (h Handler) StreamContainerLogs(w http.ResponseWriter, r *http.Request) {
 		tailLines,
 		emit,
 	); err != nil {
-		if !wroteEvent {
-			h.writeDomainError(w, r, err)
-			return
-		}
-
 		payload, _ := json.Marshal(map[string]string{
 			"message": err.Error(),
 		})

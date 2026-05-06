@@ -170,6 +170,7 @@ type StreamApplicationLogsOptions = {
   containerName: string
   tailLines?: number
   signal?: AbortSignal
+  onOpen?: () => void
   onEvent: (event: ContainerLogEvent) => void
 }
 
@@ -470,6 +471,7 @@ export const api = {
       )
     }
 
+    options.onOpen?.()
     await consumeSSEStream(response, options)
   },
 }

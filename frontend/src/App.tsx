@@ -1871,6 +1871,9 @@ export default function App() {
       containerName: selectedLogContainerName,
       tailLines: 120,
       signal: controller.signal,
+      onOpen: () => {
+        setLiveLogStatus('streaming')
+      },
       onEvent: (event) => {
         setLiveLogEvents((current) => [...current, event].slice(-400))
         setLiveLogStatus('streaming')
