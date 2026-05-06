@@ -3560,6 +3560,7 @@ export default function App() {
         centered
         radius="lg"
         size="lg"
+        zIndex={3000}
         title="LoadBalancer 노출 요청 확인"
       >
         <Stack gap="md">
@@ -3671,6 +3672,7 @@ export default function App() {
         }}
         position="right"
         size="75%"
+        trapFocus={!loadBalancerConfirmOpened}
         title={
           <Group gap="sm">
             <IconRocket size={20} color="#1d66d6" />
