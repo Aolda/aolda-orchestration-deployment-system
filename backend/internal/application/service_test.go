@@ -168,12 +168,47 @@ func (s staticStatusReader) Read(ctx context.Context, record Record) (SyncInfo, 
 	return s.info, nil
 }
 
+type deploymentStore struct {
+	stubStore
+	deployments []DeploymentRecord
+}
+
+func (s deploymentStore) ListDeployments(ctx context.Context, applicationID string) ([]DeploymentRecord, error) {
+	return append([]DeploymentRecord(nil), s.deployments...), nil
+}
+
+func (s deploymentStore) GetDeployment(ctx context.Context, applicationID string, deploymentID string) (DeploymentRecord, error) {
+	for _, deployment := range s.deployments {
+		if deployment.DeploymentID == deploymentID {
+			return deployment, nil
+		}
+	}
+	return DeploymentRecord{}, nil
+}
+
 type staticCatalogSource struct {
 	items []project.CatalogProject
 }
 
 func (s staticCatalogSource) ListProjects(ctx context.Context) ([]project.CatalogProject, error) {
 	return s.items, nil
+}
+
+func authorizedProjectService() *project.Service {
+	return &project.Service{
+		Source: staticCatalogSource{
+			items: []project.CatalogProject{
+				{
+					ID:        "project-a",
+					Name:      "Project A",
+					Namespace: "project-a",
+					Access: project.Access{
+						DeployerGroups: []string{"aods:project-a:deploy"},
+					},
+				},
+			},
+		},
+	}
 }
 
 type createSpyStore struct {
@@ -467,6 +502,102 @@ func TestGetSyncStatusReturnsUnknownWhenStatusReaderFails(t *testing.T) {
 	}
 	if !strings.Contains(response.Message, "kubernetes api timeout") {
 		t.Fatalf("expected reader error in message, got %q", response.Message)
+	}
+}
+
+func TestListDeploymentsMarksRolloutCompleteWhenFluxSynced(t *testing.T) {
+	t.Parallel()
+
+	syncedAt := time.Date(2026, 5, 6, 7, 8, 34, 0, time.UTC)
+	record := Record{
+		ID:                 "project-a__demo",
+		ProjectID:          "project-a",
+		Name:               "demo",
+		Image:              "ghcr.io/example/demo:sha-new",
+		DeploymentStrategy: DeploymentStrategyRollout,
+	}
+	service := Service{
+		Projects: authorizedProjectService(),
+		Store: deploymentStore{
+			stubStore: stubStore{records: []Record{record}},
+			deployments: []DeploymentRecord{
+				{
+					DeploymentID:       "dep_1",
+					ApplicationID:      record.ID,
+					ProjectID:          record.ProjectID,
+					ApplicationName:    record.Name,
+					Image:              record.Image,
+					ImageTag:           "sha-new",
+					DeploymentStrategy: DeploymentStrategyRollout,
+					Status:             "Syncing",
+				},
+			},
+		},
+		StatusReader: staticStatusReader{info: SyncInfo{
+			Status:     SyncStatusSynced,
+			Message:    "Applied revision",
+			ObservedAt: syncedAt,
+		}},
+	}
+
+	response, err := service.ListDeployments(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID)
+	if err != nil {
+		t.Fatalf("list deployments: %v", err)
+	}
+	if got := response.Items[0].Status; got != "Completed" {
+		t.Fatalf("expected completed deployment status, got %s", got)
+	}
+	if response.Items[0].SyncStatus != SyncStatusSynced {
+		t.Fatalf("expected synced status on deployment, got %s", response.Items[0].SyncStatus)
+	}
+	if !response.Items[0].UpdatedAt.Equal(syncedAt) {
+		t.Fatalf("expected updatedAt to use sync observed time, got %s", response.Items[0].UpdatedAt)
+	}
+}
+
+func TestListDeploymentsDoesNotCompleteCanaryFromFluxSync(t *testing.T) {
+	t.Parallel()
+
+	record := Record{
+		ID:                 "project-a__demo",
+		ProjectID:          "project-a",
+		Name:               "demo",
+		Image:              "ghcr.io/example/demo:sha-new",
+		DeploymentStrategy: DeploymentStrategyCanary,
+	}
+	service := Service{
+		Projects: authorizedProjectService(),
+		Store: deploymentStore{
+			stubStore: stubStore{records: []Record{record}},
+			deployments: []DeploymentRecord{
+				{
+					DeploymentID:       "dep_1",
+					ApplicationID:      record.ID,
+					ProjectID:          record.ProjectID,
+					ApplicationName:    record.Name,
+					Image:              record.Image,
+					ImageTag:           "sha-new",
+					DeploymentStrategy: DeploymentStrategyCanary,
+					Status:             "Syncing",
+				},
+			},
+		},
+		StatusReader: staticStatusReader{info: SyncInfo{Status: SyncStatusSynced}},
+	}
+
+	response, err := service.ListDeployments(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID)
+	if err != nil {
+		t.Fatalf("list deployments: %v", err)
+	}
+	if got := response.Items[0].Status; got != "Syncing" {
+		t.Fatalf("expected canary status to remain syncing, got %s", got)
+	}
+	if response.Items[0].SyncStatus != SyncStatusSynced {
+		t.Fatalf("expected synced status on deployment, got %s", response.Items[0].SyncStatus)
 	}
 }
 

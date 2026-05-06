@@ -1183,6 +1183,7 @@ func (s Service) latestDeploymentHealthSignal(ctx context.Context, record Record
 		}
 	}
 
+	deployments = s.decorateDeploymentStatuses(ctx, record, deployments)
 	latest := deployments[0]
 	status := HealthSignalOK
 	message := "최근 배포 이력을 읽었습니다."
@@ -1508,7 +1509,7 @@ func (s Service) ListDeployments(ctx context.Context, user core.User, applicatio
 	}
 	return DeploymentListResponse{
 		ApplicationID: record.ID,
-		Items:         items,
+		Items:         s.decorateDeploymentStatuses(ctx, record, items),
 	}, nil
 }
 
@@ -1522,6 +1523,8 @@ func (s Service) GetDeployment(ctx context.Context, user core.User, applicationI
 	if err != nil {
 		return DeploymentRecord{}, err
 	}
+
+	deployment = s.decorateDeploymentStatus(ctx, record, deployment)
 
 	if s.Rollouts != nil && IsCanaryDeploymentStrategy(record.DeploymentStrategy) {
 		rollout, err := s.Rollouts.GetRollout(ctx, record)
@@ -1537,6 +1540,41 @@ func (s Service) GetDeployment(ctx context.Context, user core.User, applicationI
 		}
 	}
 	return deployment, nil
+}
+
+func (s Service) decorateDeploymentStatuses(ctx context.Context, record Record, deployments []DeploymentRecord) []DeploymentRecord {
+	if len(deployments) == 0 {
+		return deployments
+	}
+	syncInfo := s.readSyncInfoOrUnknown(ctx, record)
+	items := make([]DeploymentRecord, len(deployments))
+	for i, deployment := range deployments {
+		items[i] = decorateDeploymentStatus(record, deployment, syncInfo)
+	}
+	return items
+}
+
+func (s Service) decorateDeploymentStatus(ctx context.Context, record Record, deployment DeploymentRecord) DeploymentRecord {
+	return decorateDeploymentStatus(record, deployment, s.readSyncInfoOrUnknown(ctx, record))
+}
+
+func decorateDeploymentStatus(record Record, deployment DeploymentRecord, syncInfo SyncInfo) DeploymentRecord {
+	deployment.SyncStatus = syncInfo.Status
+	if syncInfo.Status != SyncStatusSynced || IsCanaryDeploymentStrategy(deployment.DeploymentStrategy) {
+		return deployment
+	}
+	if strings.TrimSpace(deployment.Image) != strings.TrimSpace(record.Image) {
+		return deployment
+	}
+	switch strings.ToLower(strings.TrimSpace(deployment.Status)) {
+	case "created", "running", "syncing":
+		deployment.Status = "Completed"
+		deployment.Message = "Flux 동기화와 Kubernetes 롤아웃이 완료되었습니다."
+		if !syncInfo.ObservedAt.IsZero() {
+			deployment.UpdatedAt = syncInfo.ObservedAt
+		}
+	}
+	return deployment
 }
 
 func (s Service) PromoteDeployment(ctx context.Context, user core.User, applicationID string, deploymentID string) (DeploymentRecord, error) {
