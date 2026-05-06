@@ -1359,10 +1359,7 @@ func (s Service) GetContainerLogs(ctx context.Context, user core.User, applicati
 		return ContainerLogsResponse{}, err
 	}
 	if s.LogsReader == nil {
-		return ContainerLogsResponse{}, ValidationError{
-			Message: "container logs are unavailable because kubernetes api is not configured",
-			Details: map[string]any{"applicationId": applicationID},
-		}
+		return emptyContainerLogsResponse(record.ID, tailLines), nil
 	}
 
 	if tailLines <= 0 {
@@ -1374,7 +1371,7 @@ func (s Service) GetContainerLogs(ctx context.Context, user core.User, applicati
 
 	items, err := s.LogsReader.Read(ctx, record, tailLines)
 	if err != nil {
-		return ContainerLogsResponse{}, err
+		return emptyContainerLogsResponse(record.ID, tailLines), nil
 	}
 
 	return ContainerLogsResponse{
@@ -1391,15 +1388,12 @@ func (s Service) GetContainerLogTargets(ctx context.Context, user core.User, app
 		return ContainerLogTargetsResponse{}, err
 	}
 	if s.LogsReader == nil {
-		return ContainerLogTargetsResponse{}, ValidationError{
-			Message: "container logs are unavailable because kubernetes api is not configured",
-			Details: map[string]any{"applicationId": applicationID},
-		}
+		return emptyContainerLogTargetsResponse(record.ID), nil
 	}
 
 	items, err := s.LogsReader.ListTargets(ctx, record)
 	if err != nil {
-		return ContainerLogTargetsResponse{}, err
+		return emptyContainerLogTargetsResponse(record.ID), nil
 	}
 
 	return ContainerLogTargetsResponse{
@@ -1407,6 +1401,29 @@ func (s Service) GetContainerLogTargets(ctx context.Context, user core.User, app
 		CollectedAt:   timeNowUTC(),
 		Items:         items,
 	}, nil
+}
+
+func emptyContainerLogsResponse(applicationID string, tailLines int) ContainerLogsResponse {
+	if tailLines <= 0 {
+		tailLines = 120
+	}
+	if tailLines > 500 {
+		tailLines = 500
+	}
+	return ContainerLogsResponse{
+		ApplicationID: applicationID,
+		CollectedAt:   timeNowUTC(),
+		TailLines:     tailLines,
+		Items:         []ContainerLogStream{},
+	}
+}
+
+func emptyContainerLogTargetsResponse(applicationID string) ContainerLogTargetsResponse {
+	return ContainerLogTargetsResponse{
+		ApplicationID: applicationID,
+		CollectedAt:   timeNowUTC(),
+		Items:         []ContainerLogTarget{},
+	}
 }
 
 func (s Service) StreamContainerLogs(

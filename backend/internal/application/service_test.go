@@ -144,6 +144,22 @@ func (s *failingBatchStatusReader) ReadMany(ctx context.Context, records []Recor
 	return nil, s.err
 }
 
+type failingLogsReader struct {
+	err error
+}
+
+func (s failingLogsReader) ListTargets(ctx context.Context, record Record) ([]ContainerLogTarget, error) {
+	return nil, s.err
+}
+
+func (s failingLogsReader) Read(ctx context.Context, record Record, tailLines int) ([]ContainerLogStream, error) {
+	return nil, s.err
+}
+
+func (s failingLogsReader) Stream(ctx context.Context, record Record, podName string, containerName string, tailLines int, emit func(ContainerLogEvent) error) error {
+	return s.err
+}
+
 type staticStatusReader struct {
 	info SyncInfo
 }
@@ -451,6 +467,85 @@ func TestGetSyncStatusReturnsUnknownWhenStatusReaderFails(t *testing.T) {
 	}
 	if !strings.Contains(response.Message, "kubernetes api timeout") {
 		t.Fatalf("expected reader error in message, got %q", response.Message)
+	}
+}
+
+func TestGetContainerLogTargetsReturnsEmptyWhenReaderFails(t *testing.T) {
+	t.Parallel()
+
+	record := Record{
+		ID:        "project-a__demo",
+		ProjectID: "project-a",
+		Name:      "demo",
+	}
+	service := Service{
+		Projects: &project.Service{
+			Source: staticCatalogSource{
+				items: []project.CatalogProject{
+					{
+						ID:        "project-a",
+						Name:      "Project A",
+						Namespace: "project-a",
+						Access: project.Access{
+							DeployerGroups: []string{"aods:project-a:deploy"},
+						},
+					},
+				},
+			},
+		},
+		Store:      stubStore{records: []Record{record}},
+		LogsReader: failingLogsReader{err: errors.New("pod list timeout")},
+	}
+
+	response, err := service.GetContainerLogTargets(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID)
+	if err != nil {
+		t.Fatalf("log targets should not fail on reader errors: %v", err)
+	}
+	if len(response.Items) != 0 {
+		t.Fatalf("expected empty log targets, got %d", len(response.Items))
+	}
+}
+
+func TestGetContainerLogsReturnsEmptyWhenReaderFails(t *testing.T) {
+	t.Parallel()
+
+	record := Record{
+		ID:        "project-a__demo",
+		ProjectID: "project-a",
+		Name:      "demo",
+	}
+	service := Service{
+		Projects: &project.Service{
+			Source: staticCatalogSource{
+				items: []project.CatalogProject{
+					{
+						ID:        "project-a",
+						Name:      "Project A",
+						Namespace: "project-a",
+						Access: project.Access{
+							DeployerGroups: []string{"aods:project-a:deploy"},
+						},
+					},
+				},
+			},
+		},
+		Store:      stubStore{records: []Record{record}},
+		LogsReader: failingLogsReader{err: errors.New("pod logs timeout")},
+	}
+
+	response, err := service.GetContainerLogs(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID, 200)
+	if err != nil {
+		t.Fatalf("container logs should not fail on reader errors: %v", err)
+	}
+	if len(response.Items) != 0 {
+		t.Fatalf("expected empty log streams, got %d", len(response.Items))
+	}
+	if response.TailLines != 200 {
+		t.Fatalf("expected requested tailLines, got %d", response.TailLines)
 	}
 }
 
