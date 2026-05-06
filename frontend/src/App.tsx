@@ -1830,6 +1830,74 @@ export default function App() {
     }
   }, [selectedApp?.loadBalancerEnabled, selectedApp?.meshEnabled, selectedAppId])
 
+  const saveApplicationNetworkDraft = async (
+    draft: ApplicationNetworkDraft,
+    messages: { title?: string; message?: string } = {},
+  ) => {
+    if (!selectedAppId) return false
+    if (!canAdminProject) {
+      notifications.show({
+        title: '권한 없음',
+        message: '프로젝트 admin만 네트워크 노출 정책을 수정할 수 있습니다.',
+        color: 'yellow',
+      })
+      return false
+    }
+    if (selectedApp?.deploymentStrategy === 'Canary' && draft.loadBalancerEnabled) {
+      notifications.show({
+        title: '설정 확인 필요',
+        message: '카나리아 배포는 LoadBalancer 직접 노출을 함께 사용할 수 없습니다.',
+        color: 'yellow',
+      })
+      return false
+    }
+
+    setSavingApplicationNetwork(true)
+    try {
+      const saved = await api.patchApplication(selectedAppId, {
+        meshEnabled: draft.meshEnabled,
+        loadBalancerEnabled: draft.loadBalancerEnabled,
+      })
+
+      setApplications((current) =>
+        current.map((application) =>
+          application.id === saved.id
+            ? {
+                ...application,
+                image: saved.image,
+                deploymentStrategy: saved.deploymentStrategy as 'Rollout' | 'Canary',
+                syncStatus: saved.syncStatus ?? application.syncStatus,
+                resources: saved.resources,
+                meshEnabled: saved.meshEnabled,
+                loadBalancerEnabled: saved.loadBalancerEnabled,
+              }
+            : application,
+        ),
+      )
+      setApplicationNetworkDraft(resolveApplicationNetworkDraft(saved))
+      notifications.show({
+        title: messages.title ?? '트래픽 설정 저장 완료',
+        message: messages.message ?? 'LoadBalancer 노출 정책을 갱신했습니다.',
+        color: 'green',
+      })
+      if (selectedProjectId) {
+        await refreshProjectData(selectedProjectId)
+      }
+      await fetchAppDetails(selectedAppId)
+      return true
+    } catch (error) {
+      const message = translateApplicationNetworkError(error)
+      notifications.show({
+        title: '트래픽 설정 저장 실패',
+        message,
+        color: 'red',
+      })
+      return false
+    } finally {
+      setSavingApplicationNetwork(false)
+    }
+  }
+
   const handleLoadBalancerDraftChange = (checked: boolean) => {
     if (!checked) {
       setApplicationNetworkDraft((current) => ({
@@ -1845,12 +1913,21 @@ export default function App() {
     setLoadBalancerConfirmOpened(true)
   }
 
-  const confirmLoadBalancerDraft = () => {
-    setApplicationNetworkDraft((current) => ({
-      ...current,
-      loadBalancerEnabled: true,
-    }))
-    setLoadBalancerConfirmOpened(false)
+  const confirmLoadBalancerDraft = async () => {
+    const saved = await saveApplicationNetworkDraft(
+      {
+        ...applicationNetworkDraft,
+        loadBalancerEnabled: true,
+      },
+      {
+        title: '외부 노출 요청 저장 완료',
+        message: 'LoadBalancer 노출 요청을 저장했습니다. Flux 반영과 floating IP 연결 상태를 이어서 확인하세요.',
+      },
+    )
+    if (saved) {
+      setLoadBalancerConfirmOpened(false)
+      setLoadBalancerConfirmAcknowledged(false)
+    }
   }
 
   useEffect(() => {
@@ -2508,66 +2585,7 @@ export default function App() {
   }
 
   const handleSaveApplicationNetwork = async () => {
-    if (!selectedAppId) return
-    if (!canAdminProject) {
-      notifications.show({
-        title: '권한 없음',
-        message: '프로젝트 admin만 네트워크 노출 정책을 수정할 수 있습니다.',
-        color: 'yellow',
-      })
-      return
-    }
-    if (selectedApp?.deploymentStrategy === 'Canary' && applicationNetworkDraft.loadBalancerEnabled) {
-      notifications.show({
-        title: '설정 확인 필요',
-        message: '카나리아 배포는 LoadBalancer 직접 노출을 함께 사용할 수 없습니다.',
-        color: 'yellow',
-      })
-      return
-    }
-
-    setSavingApplicationNetwork(true)
-    try {
-      const saved = await api.patchApplication(selectedAppId, {
-        meshEnabled: selectedApp?.meshEnabled ?? applicationNetworkDraft.meshEnabled,
-        loadBalancerEnabled: applicationNetworkDraft.loadBalancerEnabled,
-      })
-
-      setApplications((current) =>
-        current.map((application) =>
-          application.id === saved.id
-            ? {
-                ...application,
-                image: saved.image,
-                deploymentStrategy: saved.deploymentStrategy as 'Rollout' | 'Canary',
-                syncStatus: saved.syncStatus ?? application.syncStatus,
-                resources: saved.resources,
-                meshEnabled: saved.meshEnabled,
-                loadBalancerEnabled: saved.loadBalancerEnabled,
-              }
-            : application,
-        ),
-      )
-      setApplicationNetworkDraft(resolveApplicationNetworkDraft(saved))
-      notifications.show({
-        title: '트래픽 설정 저장 완료',
-        message: 'LoadBalancer 노출 정책을 갱신했습니다.',
-        color: 'green',
-      })
-      if (selectedProjectId) {
-        await refreshProjectData(selectedProjectId)
-      }
-      await fetchAppDetails(selectedAppId)
-    } catch (error) {
-      const message = translateApplicationNetworkError(error)
-      notifications.show({
-        title: '트래픽 설정 저장 실패',
-        message,
-        color: 'red',
-      })
-    } finally {
-      setSavingApplicationNetwork(false)
-    }
+    await saveApplicationNetworkDraft(applicationNetworkDraft)
   }
 
   const handleApplySecretBulkText = () => {
@@ -3554,12 +3572,15 @@ export default function App() {
       <Modal
         opened={loadBalancerConfirmOpened}
         onClose={() => {
+          if (savingApplicationNetwork) return
           setLoadBalancerConfirmOpened(false)
           setLoadBalancerConfirmAcknowledged(false)
         }}
         centered
         radius="lg"
         size="lg"
+        closeOnClickOutside={!savingApplicationNetwork}
+        closeOnEscape={!savingApplicationNetwork}
         zIndex={3000}
         title="LoadBalancer 노출 요청 확인"
       >
@@ -3584,6 +3605,7 @@ export default function App() {
             <Button
               variant="subtle"
               color="gray"
+              disabled={savingApplicationNetwork}
               onClick={() => {
                 setLoadBalancerConfirmOpened(false)
                 setLoadBalancerConfirmAcknowledged(false)
@@ -3593,10 +3615,11 @@ export default function App() {
             </Button>
             <Button
               color="lagoon.6"
+              loading={savingApplicationNetwork}
               disabled={!loadBalancerConfirmAcknowledged}
-              onClick={confirmLoadBalancerDraft}
+              onClick={() => void confirmLoadBalancerDraft()}
             >
-              LB 요청 켜기
+              예, 적용
             </Button>
           </Group>
         </Stack>
