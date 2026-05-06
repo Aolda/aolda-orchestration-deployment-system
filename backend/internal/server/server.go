@@ -194,6 +194,8 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /healthz", healthHandler)
+	mux.HandleFunc("GET /readyz", healthHandler)
 	mux.HandleFunc("GET /api/v1/me", core.CurrentUserHandler(userProvider))
 	mux.HandleFunc("GET /api/v1/clusters", clusterHandler.ListClusters)
 	mux.HandleFunc("POST /api/v1/clusters", clusterHandler.CreateCluster)
@@ -251,6 +253,10 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 	})
 
 	return core.WithRequestID(core.WithCORS(mux, cfg.AllowedOrigin, cfg.AllowDevFallback)), applicationService, projectService
+}
+
+func healthHandler(w http.ResponseWriter, _ *http.Request) {
+	core.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
 func maxDuration(value time.Duration, fallback time.Duration) time.Duration {

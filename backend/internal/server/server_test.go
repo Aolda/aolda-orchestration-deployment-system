@@ -15,6 +15,25 @@ import (
 	"github.com/aolda/aods-backend/internal/server"
 )
 
+func TestHealthRoutesDoNotRequireAuth(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	for _, path := range []string{"/healthz", "/readyz"} {
+		response := performJSONRequest(t, env, http.MethodGet, path, nil, nil)
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("expected 200 from %s, got %d", path, response.StatusCode)
+		}
+
+		var body struct {
+			Status string `json:"status"`
+		}
+		decodeBody(t, response, &body)
+		if body.Status != "ok" {
+			t.Fatalf("expected ok status from %s, got %q", path, body.Status)
+		}
+	}
+}
+
 func TestProjectsAreFilteredByRole(t *testing.T) {
 	env := newTestEnvironment(t)
 

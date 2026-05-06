@@ -66,13 +66,13 @@ spec:
               value: 5s
           readinessProbe:
             httpGet:
-              path: /api/v1/projects
+              path: /healthz
               port: http
             initialDelaySeconds: 5
             periodSeconds: 10
           livenessProbe:
             httpGet:
-              path: /api/v1/projects
+              path: /healthz
               port: http
             initialDelaySeconds: 15
             periodSeconds: 20

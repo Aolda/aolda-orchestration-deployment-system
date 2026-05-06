@@ -42,6 +42,17 @@
 
 ## Entries
 
+### 2026-05-06 - 프로덕션 probe가 Git catalog API를 호출함
+
+* Area: Backend / Deployment / Production QA
+* Summary: `aolda-prod` 배포의 readiness/liveness probe가 `GET /api/v1/projects`를 호출해 health check마다 Git fetch/checkout 경로를 실행했다.
+* Impact: 1초 probe timeout 안에 Git 작업이 끝나지 않으면 프로세스가 종료되고 `/data/gitops/.git` 아래 stale lock이 남아, 로그인 직후 bootstrap의 `/api/v1/projects`가 500을 반환했다.
+* Root cause: cheap health endpoint 없이 사용자 catalog API를 Kubernetes probe로 재사용했다. 이 API는 GitHub default branch source of truth를 동기화하므로 runtime dependency와 파일 락을 가진다.
+* Fix: 인증과 Git 접근이 없는 `/healthz`, `/readyz`를 추가하고 backend deployment probe를 `/healthz`로 이동했다. 프로덕션 GitOps manifest에도 같은 probe override를 남긴다.
+* Prevention: Kubernetes probe는 외부 연동, Git 동기화, Vault, Prometheus, 권한 계산을 수행하는 사용자 API를 호출하지 않는다. source-of-truth read path는 브라우저 QA와 API smoke에서 따로 검증한다.
+* References: `backend/internal/server/server.go`, `deploy/aods-system/base/backend-deployment.yaml`, `../openstack-k8s-manifests/apps/aods-orchestration-deployment-system/manifests/kustomization.yaml`
+* Status: fixed
+
 ### 2026-04-18 - LoadBalancer 진행 상태를 sync-status로만 추정함
 
 * Area: Frontend / Backend / Observability

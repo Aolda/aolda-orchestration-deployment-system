@@ -6,6 +6,7 @@ spec:
   gateways:
     - istio-ingress/public-gateway
   hosts:
+    - aods.ajou.app
     - aods.jalju.com
   http:
     - match:
