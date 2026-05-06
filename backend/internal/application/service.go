@@ -124,20 +124,19 @@ func (s Service) ListApplications(ctx context.Context, user core.User, projectID
 	}
 
 	syncByApplicationID := map[string]SyncInfo{}
+	var syncReadErr error
 	if reader, ok := s.StatusReader.(BatchStatusReader); ok {
-		syncByApplicationID, err = reader.ReadMany(ctx, records)
-		if err != nil {
-			return nil, err
-		}
+		syncByApplicationID, syncReadErr = reader.ReadMany(ctx, records)
 	}
 
 	items := make([]Summary, 0, len(records))
 	for _, record := range records {
-		syncInfo, ok := syncByApplicationID[record.ID]
-		if !ok {
-			syncInfo, err = s.StatusReader.Read(ctx, record)
-			if err != nil {
-				return nil, err
+		syncInfo := unavailableSyncInfo(syncReadErr)
+		if syncReadErr == nil {
+			var ok bool
+			syncInfo, ok = syncByApplicationID[record.ID]
+			if !ok {
+				syncInfo = s.readSyncInfoOrUnknown(ctx, record)
 			}
 		}
 
@@ -295,10 +294,7 @@ func (s Service) CreateApplication(
 		}
 	}
 
-	syncInfo, err := s.StatusReader.Read(ctx, record)
-	if err != nil {
-		return Application{}, err
-	}
+	syncInfo := s.readSyncInfoOrUnknown(ctx, record)
 	_ = s.appendEvent(ctx, record.ID, "ApplicationCreated", fmt.Sprintf("애플리케이션 %s 생성", record.Name), map[string]any{
 		"environment": record.DefaultEnvironment,
 		"strategy":    record.DeploymentStrategy,
@@ -620,10 +616,7 @@ func (s Service) PatchApplication(ctx context.Context, user core.User, applicati
 	if s.PollTracker != nil && input.RepositoryPollIntervalSeconds != nil {
 		s.PollTracker.Reschedule(updatedRecord, timeNowUTC())
 	}
-	syncInfo, err := s.StatusReader.Read(ctx, updatedRecord)
-	if err != nil {
-		return Application{}, err
-	}
+	syncInfo := s.readSyncInfoOrUnknown(ctx, updatedRecord)
 	_ = s.appendEvent(ctx, updatedRecord.ID, "ApplicationUpdated", "애플리케이션 설정 갱신", map[string]any{
 		"environment": updatedRecord.DefaultEnvironment,
 		"strategy":    updatedRecord.DeploymentStrategy,
@@ -926,10 +919,7 @@ func (s Service) GetSyncStatus(ctx context.Context, user core.User, applicationI
 		return SyncStatusResponse{}, err
 	}
 
-	syncInfo, err := s.StatusReader.Read(ctx, record)
-	if err != nil {
-		return SyncStatusResponse{}, err
-	}
+	syncInfo := s.readSyncInfoOrUnknown(ctx, record)
 
 	return SyncStatusResponse{
 		ApplicationID:  record.ID,
@@ -1094,6 +1084,33 @@ func (s Service) readSyncInfoMap(ctx context.Context, records []Record) (map[str
 		items[record.ID] = info
 	}
 	return items, nil
+}
+
+func (s Service) readSyncInfoOrUnknown(ctx context.Context, record Record) SyncInfo {
+	if s.StatusReader == nil {
+		return unavailableSyncInfo(fmt.Errorf("sync status reader is not configured"))
+	}
+	info, err := s.StatusReader.Read(ctx, record)
+	if err != nil {
+		return unavailableSyncInfo(err)
+	}
+	return info
+}
+
+func unavailableSyncInfo(err error) SyncInfo {
+	observedAt := timeNowUTC()
+	if err == nil {
+		return SyncInfo{
+			Status:     SyncStatusUnknown,
+			Message:    "Sync status was not read.",
+			ObservedAt: observedAt,
+		}
+	}
+	return SyncInfo{
+		Status:     SyncStatusUnknown,
+		Message:    fmt.Sprintf("Sync status is temporarily unavailable: %v", err),
+		ObservedAt: observedAt,
+	}
 }
 
 func syncHealthSignal(info SyncInfo) HealthSignal {

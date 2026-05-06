@@ -126,6 +126,24 @@ func (s *batchStatusReaderStub) ReadMany(ctx context.Context, records []Record) 
 	return items, nil
 }
 
+type failingStatusReader struct {
+	err error
+}
+
+func (s failingStatusReader) Read(ctx context.Context, record Record) (SyncInfo, error) {
+	return SyncInfo{}, s.err
+}
+
+type failingBatchStatusReader struct {
+	failingStatusReader
+	readManyCalls int
+}
+
+func (s *failingBatchStatusReader) ReadMany(ctx context.Context, records []Record) (map[string]SyncInfo, error) {
+	s.readManyCalls++
+	return nil, s.err
+}
+
 type staticStatusReader struct {
 	info SyncInfo
 }
@@ -288,6 +306,50 @@ func TestServiceListApplicationsUsesBatchStatusReaderWhenAvailable(t *testing.T)
 	}
 }
 
+func TestServiceListApplicationsFallsBackToUnknownWhenStatusReaderFails(t *testing.T) {
+	t.Parallel()
+
+	reader := &failingBatchStatusReader{
+		failingStatusReader: failingStatusReader{err: errors.New("flux api timeout")},
+	}
+	service := Service{
+		Projects: &project.Service{
+			Source: staticCatalogSource{
+				items: []project.CatalogProject{
+					{
+						ID:        "project-a",
+						Name:      "Project A",
+						Namespace: "project-a",
+						Access: project.Access{
+							DeployerGroups: []string{"aods:project-a:deploy"},
+						},
+					},
+				},
+			},
+		},
+		Store: stubStore{
+			records: []Record{{ID: "project-a__one", ProjectID: "project-a", Name: "one"}},
+		},
+		StatusReader: reader,
+	}
+
+	items, err := service.ListApplications(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, "project-a")
+	if err != nil {
+		t.Fatalf("list applications should not fail on sync status read errors: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("expected 1 item, got %d", len(items))
+	}
+	if items[0].SyncStatus != SyncStatusUnknown {
+		t.Fatalf("expected unknown sync status, got %s", items[0].SyncStatus)
+	}
+	if reader.readManyCalls != 1 {
+		t.Fatalf("expected batch reader to be used once, got %d", reader.readManyCalls)
+	}
+}
+
 func TestGetSyncStatusIncludesRepositoryPollMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -347,6 +409,48 @@ func TestGetSyncStatusIncludesRepositoryPollMetadata(t *testing.T) {
 	}
 	if response.RepositoryPoll.IntervalSeconds != 300 {
 		t.Fatalf("expected intervalSeconds=300, got %d", response.RepositoryPoll.IntervalSeconds)
+	}
+}
+
+func TestGetSyncStatusReturnsUnknownWhenStatusReaderFails(t *testing.T) {
+	t.Parallel()
+
+	record := Record{
+		ID:        "project-a__demo",
+		ProjectID: "project-a",
+		Name:      "demo",
+	}
+	service := Service{
+		Projects: &project.Service{
+			Source: staticCatalogSource{
+				items: []project.CatalogProject{
+					{
+						ID:        "project-a",
+						Name:      "Project A",
+						Namespace: "project-a",
+						Access: project.Access{
+							DeployerGroups: []string{"aods:project-a:deploy"},
+						},
+					},
+				},
+			},
+		},
+		Store:        stubStore{records: []Record{record}},
+		StatusReader: failingStatusReader{err: errors.New("kubernetes api timeout")},
+		PollTracker:  NewRepositoryPollTracker(5 * time.Minute),
+	}
+
+	response, err := service.GetSyncStatus(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID)
+	if err != nil {
+		t.Fatalf("get sync status should not fail on reader errors: %v", err)
+	}
+	if response.Status != SyncStatusUnknown {
+		t.Fatalf("expected unknown sync status, got %s", response.Status)
+	}
+	if !strings.Contains(response.Message, "kubernetes api timeout") {
+		t.Fatalf("expected reader error in message, got %q", response.Message)
 	}
 }
 
