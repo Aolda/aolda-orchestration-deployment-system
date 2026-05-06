@@ -1862,9 +1862,43 @@ export default function App() {
     }
 
     const controller = new AbortController()
+    let active = true
+    let streamOpened = false
     setLiveLogEvents([])
     setLiveLogStatus('connecting')
     setLiveLogError(null)
+
+    const fallbackTimer = window.setTimeout(() => {
+      if (!active || streamOpened) {
+        return
+      }
+
+      controller.abort()
+      void api.getApplicationLogs(selectedAppId, 120).then((response) => {
+        if (!active) {
+          return
+        }
+
+        const stream = response.items.find(
+          (item) => item.podName === selectedLogPodName && item.containerName === selectedLogContainerName,
+        )
+        const lines = (stream?.content ?? '').split('\n').filter((line) => line.trim().length > 0)
+        setLiveLogEvents(lines.map((line) => ({
+          podName: selectedLogPodName,
+          containerName: selectedLogContainerName,
+          message: line,
+          rawLine: line,
+        })))
+        setLiveLogStatus('closed')
+        setLiveLogError(null)
+      }).catch((error) => {
+        if (!active) {
+          return
+        }
+        setLiveLogStatus('error')
+        setLiveLogError(translateApplicationLogsError(error))
+      })
+    }, 5000)
 
     void api.streamApplicationLogs(selectedAppId, {
       podName: selectedLogPodName,
@@ -1872,6 +1906,8 @@ export default function App() {
       tailLines: 120,
       signal: controller.signal,
       onOpen: () => {
+        streamOpened = true
+        window.clearTimeout(fallbackTimer)
         setLiveLogStatus('streaming')
       },
       onEvent: (event) => {
@@ -1898,7 +1934,11 @@ export default function App() {
       setLiveLogError(translateApplicationLogsError(error))
     })
 
-    return () => controller.abort()
+    return () => {
+      active = false
+      window.clearTimeout(fallbackTimer)
+      controller.abort()
+    }
   }, [logStreamRefreshKey, refreshApplicationLogTargets, selectedAppId, selectedLogContainerName, selectedLogPodName])
 
   useEffect(() => {
