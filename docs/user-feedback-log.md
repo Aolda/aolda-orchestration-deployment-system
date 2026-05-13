@@ -44,6 +44,24 @@
 
 ## Entries
 
+### 2026-05-12 - FB-041 - AODS 자체 배포는 Argo CD app-of-apps 로 한 번에 가능해야 함
+
+* Area: Deployment / Argo CD / Platform Operations
+* User signal: `argocd 용 app of apps 로 만들어서 aods를 한번에 배포 가능하게 만들어줘 db는 이미 띄워놓은 게 있을 가능성이 높아서 포트를 안겹치게 잘 설정해주고`
+* Interpreted intent: AODS 런타임 배포는 Argo CD root application 하나로 재현 가능해야 하며, MariaDB 는 기존 클러스터 DB 를 재사용할 수 있어야 하므로 기본 배포가 새 DB 포트나 NodePort 를 점유하면 안 된다.
+* Action: `deploy/argocd/aods-root.yaml` app-of-apps 진입점과 `aods-system` child app 을 추가했다. Argo CD overlay 에서는 AODS service 를 `ClusterIP` 로 고정하고, MariaDB 는 `AODS_MARIADB_DSN` secret 으로 기존 DB 를 참조하도록 문서화했다.
+* References: `deploy/argocd/aods-root.yaml`, `deploy/argocd/apps/aods-system.yaml`, `deploy/aods-system/overlays/argocd`, `deploy/argocd/README.md`
+* Status: applied
+
+### 2026-05-12 - FB-040 - 외부 의존성 실패와 Git 동시 write 를 durable queue 로 흡수
+
+* Area: Backend / Deployment Reliability / GitOps Concurrency
+* User signal: `파이프라인 중간에 외부 종속성으로 인해 문제가 터지면 바로 플로우가 그대로 없어지는 거랑 git을 하나의 원천 소스를 보다보니깐 이거 관련 동시성 관리가 안되는거 같아서`
+* Interpreted intent: GitHub source of truth 는 유지하되, 배포 요청은 중간 실패에도 사라지지 않고 재시도 가능해야 하며, 동시에 들어온 배포는 Git write 순서가 꼬이지 않게 직렬화되어야 한다.
+* Action: MariaDB 기반 deployment operation queue 를 추가하고, worker claim 은 row lock, Git write 구간은 lease lock, 상태 전이는 version 기반 optimistic guard 로 분리했다. DB 미설정 환경은 기존 동기 경로를 유지한다.
+* References: `backend/internal/application/deployment_operations.go`, `backend/internal/application/deployment_operations_mariadb.go`, `backend/internal/application/service.go`, `docs/current-implementation-status.md`
+* Status: applied
+
 ### 2026-04-24 - FB-039 - Vault에 넣은 앱 환경 변수는 나중에 수정할 수 있어야 함
 
 * Area: Frontend / Backend / Vault-backed Application Secrets

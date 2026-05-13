@@ -59,7 +59,12 @@ func main() {
 		}
 	}
 
-	handler, applicationService, projectService := server.New(cfg)
+	handler, applicationService, projectService, cleanup, err := server.NewWithResources(cfg)
+	if err != nil {
+		slog.Error("failed to initialize backend dependencies", "error", err)
+		os.Exit(1)
+	}
+	defer cleanup()
 
 	slog.Info(
 		"starting AODS backend",
@@ -84,6 +89,10 @@ func main() {
 		"vaultStagingCleanupInterval", cfg.VaultStagingCleanupInterval,
 		"vaultStagingMaxAge", cfg.VaultStagingMaxAge,
 		"orphanFluxCleanupInterval", cfg.OrphanFluxCleanupInterval,
+		"mariadbOperationsEnabled", cfg.UseMariaDBOperations(),
+		"deploymentOperationInterval", cfg.DeploymentOperationInterval,
+		"deploymentOperationLease", cfg.DeploymentOperationLease,
+		"deploymentOperationMaxAttempts", cfg.DeploymentOperationMaxAttempts,
 		"devAuthFallback", cfg.AllowDevFallback,
 		"localVaultDir", cfg.LocalVaultDir,
 	)
@@ -94,6 +103,17 @@ func main() {
 		Interval: cfg.RepositoryPollInterval,
 	}
 	go poller.Start(context.Background())
+
+	if applicationService.DeploymentOperations != nil {
+		worker := &application.DeploymentOperationWorker{
+			Service:       applicationService,
+			Store:         applicationService.DeploymentOperations,
+			WorkerID:      hostnameWorkerID(),
+			Interval:      cfg.DeploymentOperationInterval,
+			LeaseDuration: cfg.DeploymentOperationLease,
+		}
+		go worker.Start(context.Background())
+	}
 
 	if cleaner, ok := applicationService.Secrets.(interface {
 		CleanupStale(context.Context, time.Time) (int, error)
@@ -120,6 +140,14 @@ func main() {
 		slog.Error("backend server stopped", "error", err)
 		os.Exit(1)
 	}
+}
+
+func hostnameWorkerID() string {
+	hostname, err := os.Hostname()
+	if err != nil || hostname == "" {
+		return "aods-backend"
+	}
+	return hostname
 }
 
 func redactRemote(value string) string {

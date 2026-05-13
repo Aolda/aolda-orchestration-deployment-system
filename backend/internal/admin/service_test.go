@@ -195,6 +195,133 @@ func TestGetFleetResourceOverviewBuildsServiceEfficiencySnapshot(t *testing.T) {
 	}
 }
 
+func TestResourceOverviewReadersReturnDisconnectedSnapshots(t *testing.T) {
+	t.Parallel()
+
+	localSnapshot, err := LocalResourceOverviewReader{}.Read(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("local reader: %v", err)
+	}
+	if localSnapshot.RuntimeConnected || localSnapshot.Message == "" || len(localSnapshot.Services) != 0 {
+		t.Fatalf("unexpected local snapshot: %#v", localSnapshot)
+	}
+
+	errorSnapshot, err := ErrorResourceOverviewReader{Err: errors.New("missing kubeconfig")}.Read(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("error reader: %v", err)
+	}
+	if errorSnapshot.RuntimeConnected || errorSnapshot.Message == "" || len(errorSnapshot.Services) != 0 {
+		t.Fatalf("unexpected error snapshot: %#v", errorSnapshot)
+	}
+}
+
+func TestClassifyServiceEfficiencyCases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name             string
+		runtimeConnected bool
+		runtime          RuntimeServiceSnapshot
+		want             ServiceEfficiencyStatus
+	}{
+		{
+			name:             "disconnected",
+			runtimeConnected: false,
+			runtime:          RuntimeServiceSnapshot{PodCount: 1},
+			want:             ServiceEfficiencyStatusUnknown,
+		},
+		{
+			name:             "no pods",
+			runtimeConnected: true,
+			runtime:          RuntimeServiceSnapshot{},
+			want:             ServiceEfficiencyStatusUnknown,
+		},
+		{
+			name:             "no metrics",
+			runtimeConnected: true,
+			runtime:          RuntimeServiceSnapshot{PodCount: 1},
+			want:             ServiceEfficiencyStatusNoMetrics,
+		},
+		{
+			name:             "no request utilization",
+			runtimeConnected: true,
+			runtime: RuntimeServiceSnapshot{
+				PodCount:      1,
+				CPUUsageCores: float64Ptr(0.1),
+			},
+			want: ServiceEfficiencyStatusUnknown,
+		},
+		{
+			name:             "overutilized",
+			runtimeConnected: true,
+			runtime: RuntimeServiceSnapshot{
+				PodCount:              1,
+				CPUUsageCores:         float64Ptr(1.1),
+				CPURequestUtilization: float64Ptr(110),
+			},
+			want: ServiceEfficiencyStatusOverutilized,
+		},
+		{
+			name:             "underutilized",
+			runtimeConnected: true,
+			runtime: RuntimeServiceSnapshot{
+				PodCount:                 1,
+				MemoryUsageMiB:           float64Ptr(50),
+				MemoryRequestUtilization: float64Ptr(20),
+			},
+			want: ServiceEfficiencyStatusUnderutilized,
+		},
+		{
+			name:             "balanced",
+			runtimeConnected: true,
+			runtime: RuntimeServiceSnapshot{
+				PodCount:              1,
+				CPUUsageCores:         float64Ptr(0.5),
+				CPURequestUtilization: float64Ptr(50),
+			},
+			want: ServiceEfficiencyStatusBalanced,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, summary := classifyServiceEfficiency(tt.runtimeConnected, tt.runtime)
+			if got != tt.want {
+				t.Fatalf("got %s want %s summary=%q", got, tt.want, summary)
+			}
+			if summary == "" {
+				t.Fatal("expected summary")
+			}
+		})
+	}
+}
+
+func TestAdminHelpers(t *testing.T) {
+	t.Parallel()
+
+	values := collectUtilizations(nil, float64Ptr(25), float64Ptr(75))
+	if len(values) != 2 || values[0] != 25 || values[1] != 75 {
+		t.Fatalf("unexpected utilizations: %#v", values)
+	}
+	if severity(ServiceEfficiencyStatusOverutilized) >= severity(ServiceEfficiencyStatusBalanced) {
+		t.Fatal("expected overutilized to sort before balanced")
+	}
+	if !isPlatformAdmin(core.User{Groups: []string{"aods:platform:admin"}}, nil) {
+		t.Fatal("expected default platform admin authority")
+	}
+	if isPlatformAdmin(core.User{Groups: []string{"aods:project-a:admin"}}, []string{"aods:platform:admin"}) {
+		t.Fatal("expected project admin not to match platform admin authority")
+	}
+	if got := environmentClusterMap([]project.Environment{{ID: " prod ", ClusterID: " default "}}); got["prod"] != "default" {
+		t.Fatalf("unexpected environment cluster map: %#v", got)
+	}
+	service := Service{PlatformAdminAuthorities: []string{" aods:platform:admin ", "", "aods:platform:admin", "aods:ops:admin"}}
+	if got := service.platformAdminAuthorities(); len(got) != 2 || got[0] != "aods:platform:admin" || got[1] != "aods:ops:admin" {
+		t.Fatalf("unexpected platform authorities: %#v", got)
+	}
+}
+
 func float64Ptr(value float64) *float64 {
 	return &value
 }

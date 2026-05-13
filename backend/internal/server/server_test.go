@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1243,6 +1244,248 @@ func TestCanaryApplicationCreatesRolloutArtifacts(t *testing.T) {
 	if deploymentsResponse.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200 from deployments, got %d", deploymentsResponse.StatusCode)
 	}
+	var deploymentsBody struct {
+		Items []struct {
+			DeploymentID string `json:"deploymentId"`
+		} `json:"items"`
+	}
+	decodeBody(t, deploymentsResponse, &deploymentsBody)
+	if len(deploymentsBody.Items) != 1 {
+		t.Fatalf("expected one deployment record, got %d", len(deploymentsBody.Items))
+	}
+	deploymentID := deploymentsBody.Items[0].DeploymentID
+
+	detailResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__canary-app/deployments/"+deploymentID, nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if detailResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from deployment detail, got %d", detailResponse.StatusCode)
+	}
+
+	promoteResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/applications/project-a__canary-app/deployments/"+deploymentID+"/promote", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if promoteResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from local promote integration, got %d", promoteResponse.StatusCode)
+	}
+
+	abortResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/applications/project-a__canary-app/deployments/"+deploymentID+"/abort", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if abortResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from local abort integration, got %d", abortResponse.StatusCode)
+	}
+}
+
+func TestApplicationOperationsRoutesCoverSecretsLogsAndManualSync(t *testing.T) {
+	env := newTestEnvironment(t)
+
+	createResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/projects/project-a/applications", map[string]any{
+		"name":               "ops-app",
+		"description":        "Operations route coverage",
+		"image":              "repo/ops-app:v1",
+		"servicePort":        8080,
+		"deploymentStrategy": "Standard",
+		"environment":        "dev",
+		"secrets": []map[string]string{
+			{"key": "DATABASE_URL", "value": "postgres://user:pass@example.internal/app"},
+			{"key": "REDIS_URL", "value": "redis://cache.internal:6379/0"},
+		},
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if createResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("expected 201, got %d", createResponse.StatusCode)
+	}
+
+	patchResponse := performJSONRequest(t, env, http.MethodPatch, "/api/v1/applications/project-a__ops-app", map[string]any{
+		"description": "Operations route coverage updated",
+		"replicas":    2,
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if patchResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from patch application, got %d", patchResponse.StatusCode)
+	}
+	var patchedBody struct {
+		Description string `json:"description"`
+		Replicas    int    `json:"replicas"`
+	}
+	decodeBody(t, patchResponse, &patchedBody)
+	if patchedBody.Description != "Operations route coverage updated" || patchedBody.Replicas != 2 {
+		t.Fatalf("unexpected patched application body: %#v", patchedBody)
+	}
+
+	getSecretsResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__ops-app/secrets", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if getSecretsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from get secrets, got %d", getSecretsResponse.StatusCode)
+	}
+	var secretsBody struct {
+		Configured bool `json:"configured"`
+		Items      []struct {
+			Key string `json:"key"`
+		} `json:"items"`
+	}
+	decodeBody(t, getSecretsResponse, &secretsBody)
+	if !secretsBody.Configured || len(secretsBody.Items) != 2 {
+		t.Fatalf("expected configured key-only secrets response, got %#v", secretsBody)
+	}
+
+	updateSecretsResponse := performJSONRequest(t, env, http.MethodPut, "/api/v1/applications/project-a__ops-app/secrets", map[string]any{
+		"set": []map[string]string{
+			{"key": "DATABASE_URL", "value": "postgres://user:pass@example.internal/app2"},
+			{"key": "FEATURE_FLAG", "value": "enabled"},
+		},
+		"delete": []string{"REDIS_URL"},
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if updateSecretsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from update secrets, got %d", updateSecretsResponse.StatusCode)
+	}
+	var updatedSecretsBody struct {
+		Items []struct {
+			Key string `json:"key"`
+		} `json:"items"`
+	}
+	decodeBody(t, updateSecretsResponse, &updatedSecretsBody)
+	if len(updatedSecretsBody.Items) != 2 {
+		t.Fatalf("expected two remaining secret keys, got %#v", updatedSecretsBody.Items)
+	}
+
+	versionsResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__ops-app/secrets/versions", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if versionsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from secret versions, got %d", versionsResponse.StatusCode)
+	}
+	var versionsBody struct {
+		Items []struct {
+			Version int `json:"version"`
+		} `json:"items"`
+	}
+	decodeBody(t, versionsResponse, &versionsBody)
+	if len(versionsBody.Items) < 2 {
+		t.Fatalf("expected version history after update, got %#v", versionsBody)
+	}
+
+	restoreResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/applications/project-a__ops-app/secrets/versions/1/restore", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if restoreResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from secret restore, got %d", restoreResponse.StatusCode)
+	}
+
+	logsResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__ops-app/logs?tailLines=20", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if logsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from logs empty state, got %d", logsResponse.StatusCode)
+	}
+
+	logTargetsResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__ops-app/logs/targets", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if logTargetsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from log targets empty state, got %d", logTargetsResponse.StatusCode)
+	}
+
+	getPolicyResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__ops-app/rollback-policies", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if getPolicyResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from get rollback policy, got %d", getPolicyResponse.StatusCode)
+	}
+
+	savePolicyResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/applications/project-a__ops-app/rollback-policies", map[string]any{
+		"enabled":         true,
+		"maxErrorRate":    2.5,
+		"maxLatencyP95Ms": 1200,
+		"minRequestRate":  5.0,
+	}, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if savePolicyResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from save rollback policy, got %d", savePolicyResponse.StatusCode)
+	}
+	var policyBody struct {
+		Enabled bool `json:"enabled"`
+	}
+	decodeBody(t, savePolicyResponse, &policyBody)
+	if !policyBody.Enabled {
+		t.Fatalf("expected enabled rollback policy, got %#v", policyBody)
+	}
+
+	eventsResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__ops-app/events", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if eventsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from application events, got %d", eventsResponse.StatusCode)
+	}
+	var eventsBody struct {
+		Items []struct {
+			Type string `json:"type"`
+		} `json:"items"`
+	}
+	decodeBody(t, eventsResponse, &eventsBody)
+	if len(eventsBody.Items) == 0 {
+		t.Fatal("expected application events to include recent operations")
+	}
+
+	streamResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/applications/project-a__ops-app/logs/stream", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if streamResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from log stream envelope, got %d", streamResponse.StatusCode)
+	}
+	streamBody, err := io.ReadAll(streamResponse.Body)
+	if err != nil {
+		t.Fatalf("read stream body: %v", err)
+	}
+	if !strings.Contains(string(streamBody), "container logs are unavailable") {
+		t.Fatalf("expected unavailable stream error event, got %s", string(streamBody))
+	}
+
+	syncResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/applications/project-a__ops-app/sync", nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if syncResponse.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 from manual sync on non-repository app, got %d", syncResponse.StatusCode)
+	}
 }
 
 func TestProjectPoliciesCanBeUpdatedByAdmin(t *testing.T) {
@@ -1360,6 +1603,15 @@ func TestChangeReviewFlowAppliesPRManagedMutation(t *testing.T) {
 		ID string `json:"id"`
 	}
 	decodeBody(t, changeResponse, &changeBody)
+
+	getChangeResponse := performJSONRequest(t, env, http.MethodGet, "/api/v1/changes/"+changeBody.ID, nil, map[string]string{
+		"X-AODS-User-Id":  "user-1",
+		"X-AODS-Username": "deployer",
+		"X-AODS-Groups":   "aods:project-a:deploy",
+	})
+	if getChangeResponse.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from get change, got %d", getChangeResponse.StatusCode)
+	}
 
 	submitResponse := performJSONRequest(t, env, http.MethodPost, "/api/v1/changes/"+changeBody.ID+"/submit", nil, map[string]string{
 		"X-AODS-User-Id":  "user-1",

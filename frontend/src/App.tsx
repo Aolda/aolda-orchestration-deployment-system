@@ -5991,8 +5991,12 @@ function deploymentStatusColor(status: string) {
     case 'Aborted':
     case 'Failed':
       return 'red'
+    case 'Queued':
+    case 'Retrying':
+      return 'blue'
     case 'Created':
     case 'Running':
+    case 'Syncing':
       return 'yellow'
     default:
       return 'gray'
@@ -6009,10 +6013,16 @@ function formatDeploymentStatusLabel(status?: string) {
       return '중단됨'
     case 'Failed':
       return '실패'
+    case 'Queued':
+      return '대기 중'
+    case 'Retrying':
+      return '재시도 대기'
     case 'Created':
       return '기록됨'
     case 'Running':
       return '진행 중'
+    case 'Syncing':
+      return '동기화 중'
     default:
       return status || '없음'
   }
@@ -6036,7 +6046,13 @@ function formatSyncStatusLabel(status?: SyncStatus) {
 function runtimeReadinessColor(syncStatus?: SyncStatus, deployment?: DeploymentRecord) {
   if (syncStatus === 'Degraded' || deployment?.status === 'Failed' || deployment?.status === 'Aborted') return 'red'
   if (syncStatus === 'Synced' && (deployment?.status === 'Completed' || deployment?.status === 'Promoted')) return 'green'
-  if (syncStatus === 'Syncing' || deployment?.status === 'Created' || deployment?.status === 'Running') return 'yellow'
+  if (
+    syncStatus === 'Syncing'
+    || deployment?.status === 'Created'
+    || deployment?.status === 'Running'
+    || deployment?.status === 'Queued'
+    || deployment?.status === 'Retrying'
+  ) return 'yellow'
   return 'gray'
 }
 
@@ -6046,6 +6062,12 @@ function describeRuntimeReadiness(syncStatus?: SyncStatus, deployment?: Deployme
   }
   if (syncStatus === 'Degraded' || deployment.status === 'Failed' || deployment.status === 'Aborted') {
     return deployment.message || 'GitOps 동기화 또는 최근 배포에 문제가 있습니다. 관측 탭의 이벤트와 로그를 확인하세요.'
+  }
+  if (deployment.status === 'Queued') {
+    return deployment.message || '배포 요청이 저장되었고 worker 실행을 기다리고 있습니다.'
+  }
+  if (deployment.status === 'Retrying') {
+    return deployment.message || '외부 의존성 또는 Git write 실패 후 재시도를 기다리고 있습니다.'
   }
   if (syncStatus === 'Synced' && (deployment.status === 'Completed' || deployment.status === 'Promoted')) {
     return 'GitOps 동기화와 최근 배포 완료 기록이 모두 정상입니다. 실제 트래픽과 로그는 관측 탭에서 이어서 확인하세요.'
@@ -6101,8 +6123,9 @@ function syncStageState(status?: SyncStatus) {
 function rolloutStageState(deployment?: DeploymentRecord) {
   if (!deployment) return 'pending'
   if (deployment.status === 'Aborted') return 'error'
+  if (deployment.status === 'Failed') return 'error'
   if (deployment.status === 'Completed' || deployment.status === 'Promoted') return 'complete'
-  if (deployment.status === 'Created') return 'active'
+  if (deployment.status === 'Created' || deployment.status === 'Queued' || deployment.status === 'Running' || deployment.status === 'Retrying') return 'active'
   return 'pending'
 }
 
@@ -6115,6 +6138,12 @@ function rolloutStageMessage(deployment?: DeploymentRecord) {
   }
   if (deployment.status === 'Aborted') {
     return '배포가 중단되었습니다.'
+  }
+  if (deployment.status === 'Queued') {
+    return '배포 요청이 큐에 저장되었습니다.'
+  }
+  if (deployment.status === 'Retrying') {
+    return '외부 의존성 복구 후 재시도합니다.'
   }
   return '추가 롤아웃 상태를 확인할 수 없습니다.'
 }

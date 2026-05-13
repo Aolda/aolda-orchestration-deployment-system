@@ -4,7 +4,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BACKEND_DIR="${ROOT_DIR}/backend"
-COVERAGE_MIN="${AODS_BACKEND_COVERAGE_MIN:-32}"
+COVERAGE_MIN="${AODS_BACKEND_COVERAGE_MIN:-70}"
 ENABLE_RACE="${AODS_BACKEND_ENABLE_RACE:-1}"
 PROFILE_PATH="$(mktemp "${TMPDIR:-/tmp}/aods-backend-cover.XXXXXX")"
 
@@ -20,10 +20,10 @@ printf 'Running backend vet...\n'
   go vet ./...
 )
 
-printf 'Running backend tests with coverage...\n'
+printf 'Running backend tests with cross-package coverage...\n'
 (
   cd "${BACKEND_DIR}"
-  go test ./... -covermode=atomic -coverprofile="${PROFILE_PATH}"
+  go test ./... -coverpkg=./... -covermode=atomic -coverprofile="${PROFILE_PATH}"
 )
 
 COVERAGE_LINE="$(
@@ -32,7 +32,7 @@ COVERAGE_LINE="$(
 )"
 COVERAGE_VALUE="$(printf '%s\n' "${COVERAGE_LINE}" | awk '{gsub("%", "", $3); print $3}')"
 
-printf 'Backend total coverage: %s%% (minimum %s%%)\n' "${COVERAGE_VALUE}" "${COVERAGE_MIN}"
+printf 'Backend total coverage: %s%% (minimum %s%%, cross-package)\n' "${COVERAGE_VALUE}" "${COVERAGE_MIN}"
 
 if ! awk -v actual="${COVERAGE_VALUE}" -v required="${COVERAGE_MIN}" 'BEGIN { exit((actual + 0) >= (required + 0) ? 0 : 1) }'; then
   printf 'Backend coverage gate failed.\n' >&2
@@ -42,7 +42,7 @@ fi
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
   {
     printf '## Backend Validation\n\n'
-    printf -- '- Total coverage: `%s%%`\n' "${COVERAGE_VALUE}"
+    printf -- '- Total coverage: `%s%%` (cross-package)\n' "${COVERAGE_VALUE}"
     printf -- '- Minimum required: `%s%%`\n' "${COVERAGE_MIN}"
     if [[ "${ENABLE_RACE}" == "0" ]]; then
       printf -- '- Race detector: skipped\n'

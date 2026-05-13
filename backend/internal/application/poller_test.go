@@ -309,6 +309,34 @@ func (s *autoRollbackStore) AppendEvent(ctx context.Context, applicationID strin
 	return nil
 }
 
+type repositoryReconcileStore struct {
+	stubStore
+	record Record
+	patch  UpdateApplicationRequest
+}
+
+func (s *repositoryReconcileStore) GetApplication(ctx context.Context, applicationID string) (Record, error) {
+	if s.record.ID == applicationID {
+		return s.record, nil
+	}
+	return Record{}, ErrNotFound
+}
+
+func (s *repositoryReconcileStore) PatchApplication(ctx context.Context, project ProjectContext, applicationID string, input UpdateApplicationRequest) (Record, error) {
+	s.patch = input
+	if input.ServicePort != nil {
+		s.record.ServicePort = *input.ServicePort
+	}
+	if input.Replicas != nil {
+		s.record.Replicas = *input.Replicas
+	}
+	if input.RepositoryServiceID != nil {
+		s.record.RepositoryServiceID = *input.RepositoryServiceID
+	}
+	s.record.UpdatedAt = timeNowUTC()
+	return s.record, nil
+}
+
 type rollbackMetricsReader struct {
 	metrics []MetricSeries
 }
@@ -662,6 +690,102 @@ func TestPollAutoRollbackDoesNotTriggerTwiceForSameDeployment(t *testing.T) {
 
 	if len(store.updatedImageTags) != 0 {
 		t.Fatalf("expected no duplicate auto rollback, got %#v", store.updatedImageTags)
+	}
+}
+
+func TestReconcileRepositoryStateAppliesDescriptorSettings(t *testing.T) {
+	t.Parallel()
+
+	store := &repositoryReconcileStore{
+		record: Record{
+			ID:                  "project-a__repo-app",
+			ProjectID:           "project-a",
+			Name:                "repo-app",
+			Image:               "ghcr.io/aolda/repo-app:v1",
+			ServicePort:         8080,
+			Replicas:            1,
+			RepositoryServiceID: "api",
+			DefaultEnvironment:  "shared",
+			DeploymentStrategy:  DeploymentStrategyRollout,
+		},
+	}
+	store.stubStore.records = []Record{store.record}
+	service := &Service{
+		Projects: authorizedProjectService(),
+		Store:    store,
+	}
+	poller := AutoUpdatePoller{Service: service}
+
+	updated, changed, err := poller.reconcileRepositoryState(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, store.record, desiredRepositoryState{
+		ServiceID: "worker",
+		Port:      9090,
+		Replicas:  3,
+	})
+	if err != nil {
+		t.Fatalf("reconcile repository state: %v", err)
+	}
+	if !changed {
+		t.Fatal("expected descriptor settings to produce a patch")
+	}
+	if updated.ServicePort != 9090 || updated.Replicas != 3 || updated.RepositoryServiceID != "worker" {
+		t.Fatalf("unexpected reconciled record: %#v", updated)
+	}
+	if store.patch.ServicePort == nil || *store.patch.ServicePort != 9090 {
+		t.Fatalf("expected service port patch, got %#v", store.patch)
+	}
+
+	unchanged, changed, err := poller.reconcileRepositoryState(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, updated, desiredRepositoryState{
+		ServiceID: "worker",
+		Port:      9090,
+		Replicas:  3,
+	})
+	if err != nil {
+		t.Fatalf("reconcile unchanged repository state: %v", err)
+	}
+	if changed {
+		t.Fatalf("expected unchanged descriptor to skip patch, got %#v", unchanged)
+	}
+}
+
+func TestPollerHelpersCoverIntervalsAndRepositorySelection(t *testing.T) {
+	t.Parallel()
+
+	if got := (&AutoUpdatePoller{Interval: 30 * time.Second}).tickInterval(); got != 30*time.Second {
+		t.Fatalf("expected short poll interval to be used directly, got %s", got)
+	}
+	if got := (&AutoUpdatePoller{Interval: 10 * time.Minute}).tickInterval(); got != time.Minute {
+		t.Fatalf("expected long poll interval to use minute tick, got %s", got)
+	}
+
+	poller := AutoUpdatePoller{}
+	inlineRepo, ok := poller.repositoryForApp(Record{
+		ID:               "project-a__inline",
+		Name:             "inline",
+		RepositoryID:     "inline-repo",
+		RepositoryURL:    "https://github.com/Aolda/inline.git",
+		RepositoryBranch: "release",
+		ConfigPath:       "deploy/aods.yaml",
+	}, nil)
+	if !ok || inlineRepo.URL != "https://github.com/Aolda/inline.git" || inlineRepo.ConfigFile != "deploy/aods.yaml" {
+		t.Fatalf("expected inline repository descriptor, got %#v", inlineRepo)
+	}
+
+	catalogRepo, ok := poller.repositoryForApp(Record{
+		ID:           "project-a__catalog",
+		RepositoryID: "catalog-repo",
+	}, map[string]project.Repository{
+		"catalog-repo": {ID: "catalog-repo", URL: "https://github.com/Aolda/catalog.git"},
+	})
+	if !ok || catalogRepo.ID != "catalog-repo" {
+		t.Fatalf("expected catalog repository descriptor, got %#v", catalogRepo)
+	}
+
+	if _, ok := poller.repositoryForApp(Record{ID: "project-a__none"}, nil); ok {
+		t.Fatal("expected app without repository metadata to be skipped")
 	}
 }
 

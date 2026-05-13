@@ -239,6 +239,10 @@ func (s Service) GetAuthorized(ctx context.Context, user core.User, projectID st
 	return AuthorizedProject{}, ErrNotFound
 }
 
+func (s Service) Get(ctx context.Context, projectID string) (CatalogProject, error) {
+	return s.getProject(ctx, projectID)
+}
+
 func (s Service) Create(ctx context.Context, user core.User, input CreateRequest) (Summary, error) {
 	if !isPlatformAdmin(user, s.PlatformAdminAuthoritiesOrDefault()) {
 		return Summary{}, ErrForbidden

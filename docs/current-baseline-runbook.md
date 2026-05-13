@@ -238,6 +238,23 @@ export AODS_PROMETHEUS_PORT_FORWARD_REMOTE_PORT="9090"
 * 요청 수/에러율/지연시간은 앱 또는 mesh 가 Prometheus-compatible metrics 를 실제로 노출해야 채워진다. 단순 nginx 처럼 `/metrics` 가 없으면 해당 series 는 `null` 로 유지될 수 있다.
 * `GET /api/v1/projects/{projectId}/health` 는 앱별 sync/metrics signals, metric series, 최신 deployment 요약을 한 번에 돌려주며, `GET /api/v1/applications/{applicationId}/metrics/diagnostics` 는 scrape target 과 series 값 유무를 진단한다.
 
+MariaDB 기반 deployment operation queue 를 붙일 때는 아래 env 를 추가한다.
+
+```bash
+export AODS_MARIADB_DSN='aods_user:password@tcp(mariadb.aods-system.svc.cluster.local:3306)/aods'
+export AODS_DEPLOYMENT_OPERATION_INTERVAL=2s
+export AODS_DEPLOYMENT_OPERATION_LEASE=5m
+export AODS_DEPLOYMENT_OPERATION_MAX_ATTEMPTS=5
+```
+
+주의:
+
+* `AODS_MARIADB_DSN` 이 비어 있으면 기존 동기 deployment 경로를 유지한다.
+* DSN 이 설정되면 `POST /api/v1/applications/{applicationId}/deployments` 는 MariaDB operation 을 먼저 만들고 `Queued` 로 응답한다.
+* worker 는 `SELECT ... FOR UPDATE SKIP LOCKED` 로 작업을 선점한다.
+* Git write 구간은 operation lock lease 로 repo/branch 단위 single-writer 처리를 한다.
+* MariaDB 는 durable queue / 상태 전이 / Git write 직렬화 coordinator 이며, desired state 의 source of truth 는 계속 GitHub 기본 브랜치다.
+
 모니터링 변경만 빠르게 검증할 때는 아래 명령을 쓴다.
 
 ```bash
