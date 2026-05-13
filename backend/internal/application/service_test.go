@@ -160,12 +160,83 @@ func (s failingLogsReader) Stream(ctx context.Context, record Record, podName st
 	return s.err
 }
 
+type failingImageVerifier struct {
+	err error
+}
+
+func (v failingImageVerifier) Verify(ctx context.Context, image string, credential *RegistryCredential) error {
+	return v.err
+}
+
 type staticStatusReader struct {
 	info SyncInfo
 }
 
 func (s staticStatusReader) Read(ctx context.Context, record Record) (SyncInfo, error) {
 	return s.info, nil
+}
+
+type serviceStaticMetricsReader struct {
+	metrics []MetricSeries
+	err     error
+}
+
+func (r serviceStaticMetricsReader) Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]MetricSeries(nil), r.metrics...), nil
+}
+
+type staticNetworkExposureReader struct {
+	info NetworkExposureInfo
+	err  error
+}
+
+func (r staticNetworkExposureReader) Read(ctx context.Context, record Record) (NetworkExposureInfo, error) {
+	if r.err != nil {
+		return NetworkExposureInfo{}, r.err
+	}
+	return r.info, nil
+}
+
+type staticLogsReader struct {
+	targets []ContainerLogTarget
+	streams []ContainerLogStream
+	events  []ContainerLogEvent
+}
+
+func (r staticLogsReader) ListTargets(ctx context.Context, record Record) ([]ContainerLogTarget, error) {
+	return append([]ContainerLogTarget(nil), r.targets...), nil
+}
+
+func (r staticLogsReader) Read(ctx context.Context, record Record, tailLines int) ([]ContainerLogStream, error) {
+	return append([]ContainerLogStream(nil), r.streams...), nil
+}
+
+func (r staticLogsReader) Stream(ctx context.Context, record Record, podName string, containerName string, tailLines int, emit func(ContainerLogEvent) error) error {
+	for _, event := range r.events {
+		if err := emit(event); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+type staticRolloutController struct {
+	info RolloutInfo
+}
+
+func (r staticRolloutController) GetRollout(ctx context.Context, record Record) (RolloutInfo, error) {
+	return r.info, nil
+}
+
+func (r staticRolloutController) Promote(ctx context.Context, record Record, full bool) (RolloutInfo, error) {
+	return r.info, nil
+}
+
+func (r staticRolloutController) Abort(ctx context.Context, record Record) (RolloutInfo, error) {
+	return r.info, nil
 }
 
 type deploymentStore struct {
@@ -186,6 +257,60 @@ func (s deploymentStore) GetDeployment(ctx context.Context, applicationID string
 	return DeploymentRecord{}, nil
 }
 
+type deploymentOperationStoreStub struct {
+	enqueued []DeploymentOperation
+	records  []DeploymentRecord
+}
+
+func (s *deploymentOperationStoreStub) EnqueueDeploymentOperation(ctx context.Context, operation DeploymentOperation) (DeploymentOperation, error) {
+	s.enqueued = append(s.enqueued, operation)
+	return operation, nil
+}
+
+func (s *deploymentOperationStoreStub) ListDeploymentOperationRecords(ctx context.Context, applicationID string) ([]DeploymentRecord, error) {
+	return append([]DeploymentRecord(nil), s.records...), nil
+}
+
+func (s *deploymentOperationStoreStub) GetDeploymentOperationRecord(ctx context.Context, applicationID string, deploymentID string) (DeploymentRecord, error) {
+	for _, record := range s.records {
+		if record.ApplicationID == applicationID && record.DeploymentID == deploymentID {
+			return record, nil
+		}
+	}
+	return DeploymentRecord{}, ErrDeploymentNotFound
+}
+
+func (s *deploymentOperationStoreStub) ClaimNextDeploymentOperation(ctx context.Context, workerID string, leaseDuration time.Duration) (DeploymentOperation, bool, error) {
+	return DeploymentOperation{}, false, nil
+}
+
+func (s *deploymentOperationStoreStub) MarkDeploymentOperationSucceeded(ctx context.Context, operation DeploymentOperation) error {
+	return nil
+}
+
+func (s *deploymentOperationStoreStub) MarkDeploymentOperationRetry(ctx context.Context, operation DeploymentOperation, message string, nextAttemptAt time.Time) error {
+	return nil
+}
+
+func (s *deploymentOperationStoreStub) MarkDeploymentOperationFailed(ctx context.Context, operation DeploymentOperation, message string) error {
+	return nil
+}
+
+type deploymentMutationStore struct {
+	stubStore
+	updateImageCalls int
+}
+
+func (s *deploymentMutationStore) UpdateApplicationImage(ctx context.Context, project ProjectContext, applicationID string, imageTag string, deploymentID string) (Record, error) {
+	s.updateImageCalls++
+	record, err := s.GetApplication(ctx, applicationID)
+	if err != nil {
+		return Record{}, err
+	}
+	record.Image = replaceImageTag(record.Image, imageTag)
+	return record, nil
+}
+
 type staticCatalogSource struct {
 	items []project.CatalogProject
 }
@@ -204,6 +329,13 @@ func authorizedProjectService() *project.Service {
 					Namespace: "project-a",
 					Access: project.Access{
 						DeployerGroups: []string{"aods:project-a:deploy"},
+					},
+					Environments: []project.Environment{
+						{ID: "shared", Name: "shared", ClusterID: "default", WriteMode: project.WriteModeDirect, Default: true},
+					},
+					Policies: project.PolicySet{
+						AllowedEnvironments:         []string{"shared"},
+						AllowedDeploymentStrategies: []string{"Rollout", "Canary"},
 					},
 				},
 			},
@@ -505,6 +637,301 @@ func TestGetSyncStatusReturnsUnknownWhenStatusReaderFails(t *testing.T) {
 	}
 }
 
+func TestGetProjectHealthAggregatesSyncMetricsAndDeploymentSignals(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Date(2026, 5, 13, 10, 15, 0, 0, time.UTC)
+	record := Record{
+		ID:                 "project-a__ops",
+		ProjectID:          "project-a",
+		Name:               "ops",
+		Namespace:          "project-a",
+		Image:              "ghcr.io/aolda/ops:v2",
+		DeploymentStrategy: DeploymentStrategyRollout,
+		MeshEnabled:        true,
+	}
+	service := Service{
+		Projects: authorizedProjectService(),
+		Store: deploymentStore{
+			stubStore: stubStore{records: []Record{record}},
+			deployments: []DeploymentRecord{
+				{
+					DeploymentID:       "dep_failed",
+					ApplicationID:      record.ID,
+					ProjectID:          record.ProjectID,
+					ApplicationName:    record.Name,
+					Image:              record.Image,
+					ImageTag:           "v2",
+					DeploymentStrategy: DeploymentStrategyRollout,
+					Status:             "Failed",
+					UpdatedAt:          observedAt,
+				},
+			},
+		},
+		StatusReader: staticStatusReader{info: SyncInfo{
+			Status:     SyncStatusSynced,
+			Message:    "Applied revision",
+			ObservedAt: observedAt,
+		}},
+		MetricsReader: serviceStaticMetricsReader{metrics: []MetricSeries{
+			singlePointMetric("request_rate", 12, observedAt),
+			{Key: "latency_p95", Label: "Latency P95", Unit: "ms", Points: []MetricPoint{}},
+		}},
+	}
+
+	response, err := service.GetProjectHealth(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, "project-a")
+	if err != nil {
+		t.Fatalf("get project health: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("expected one health snapshot, got %d", len(response.Items))
+	}
+	item := response.Items[0]
+	if item.Status != HealthStatusCritical {
+		t.Fatalf("expected critical health from failed deployment, got %s", item.Status)
+	}
+	if item.SyncStatus != SyncStatusSynced {
+		t.Fatalf("expected synced status, got %s", item.SyncStatus)
+	}
+	if item.LatestDeployment == nil || item.LatestDeployment.DeploymentID != "dep_failed" {
+		t.Fatalf("expected latest deployment in health snapshot, got %#v", item.LatestDeployment)
+	}
+	if len(item.Metrics) != 2 {
+		t.Fatalf("expected metrics to be included, got %#v", item.Metrics)
+	}
+	var hasEnvoyTarget bool
+	for _, signal := range item.Signals {
+		if signal.Key == "metrics" {
+			if series, _ := signal.Details["series"].(int); series != 2 {
+				t.Fatalf("expected metrics signal to report two series, got %#v", signal.Details)
+			}
+			if targets, _ := signal.Details["scrapeTargets"].(int); targets == 2 {
+				hasEnvoyTarget = true
+			}
+		}
+	}
+	if !hasEnvoyTarget {
+		t.Fatalf("expected mesh-enabled app to include envoy scrape target in signals: %#v", item.Signals)
+	}
+}
+
+func TestMetricsDiagnosticsCoversUnavailableAndWarningStates(t *testing.T) {
+	t.Parallel()
+
+	record := Record{ID: "project-a__metrics", ProjectID: "project-a", Name: "metrics"}
+	service := Service{
+		Projects: authorizedProjectService(),
+		Store:    stubStore{records: []Record{record}},
+	}
+
+	unavailable, err := service.GetMetricsDiagnostics(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID, 15*time.Minute, time.Minute)
+	if err != nil {
+		t.Fatalf("get unavailable metrics diagnostics: %v", err)
+	}
+	if unavailable.Status != HealthSignalUnavailable {
+		t.Fatalf("expected unavailable metrics diagnostics, got %s", unavailable.Status)
+	}
+
+	service.MetricsReader = serviceStaticMetricsReader{metrics: []MetricSeries{
+		{Key: "error_rate", Label: "Error Rate", Unit: "%", Points: []MetricPoint{{Timestamp: timeNowUTC()}}},
+	}}
+	warning, err := service.GetMetricsDiagnostics(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID, 15*time.Minute, time.Minute)
+	if err != nil {
+		t.Fatalf("get warning metrics diagnostics: %v", err)
+	}
+	if warning.Status != HealthSignalWarning || len(warning.Series) != 1 || warning.Series[0].ValueCount != 0 {
+		t.Fatalf("expected warning diagnostics for empty values, got %#v", warning)
+	}
+}
+
+func TestNetworkExposureAndContainerLogStreamingUseConfiguredReaders(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Date(2026, 5, 13, 11, 0, 0, 0, time.UTC)
+	record := Record{
+		ID:                  "project-a__runtime",
+		ProjectID:           "project-a",
+		Name:                "runtime",
+		LoadBalancerEnabled: true,
+	}
+	reader := staticLogsReader{
+		targets: []ContainerLogTarget{
+			{
+				PodName: "runtime-abc",
+				Containers: []ContainerLogTargetContainer{
+					{Name: "runtime", Ready: true, Default: true},
+				},
+			},
+		},
+		streams: []ContainerLogStream{
+			{PodName: "runtime-abc", ContainerName: "runtime", Ready: true, Content: "ready"},
+		},
+		events: []ContainerLogEvent{
+			{PodName: "runtime-abc", ContainerName: "runtime", Message: "started", RawLine: "started"},
+		},
+	}
+	service := Service{
+		Projects: authorizedProjectService(),
+		Store:    stubStore{records: []Record{record}},
+		NetworkExposureReader: staticNetworkExposureReader{info: NetworkExposureInfo{
+			Status:      NetworkExposureStatusReady,
+			Message:     "ingress is ready",
+			ServiceType: "LoadBalancer",
+			Addresses:   []string{"10.0.0.10"},
+			Ports:       []NetworkExposurePort{{Name: "http", Port: 80, TargetPort: "http"}},
+			LastEvent:   &NetworkExposureEvent{Type: "Normal", Message: "Provisioned", ObservedAt: observedAt},
+			ObservedAt:  observedAt,
+		}},
+		LogsReader: reader,
+	}
+
+	exposure, err := service.GetNetworkExposure(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID)
+	if err != nil {
+		t.Fatalf("get network exposure: %v", err)
+	}
+	if exposure.Status != NetworkExposureStatusReady || len(exposure.Addresses) != 1 || len(exposure.Ports) != 1 {
+		t.Fatalf("unexpected exposure response: %#v", exposure)
+	}
+
+	logs, err := service.GetContainerLogs(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID, 999)
+	if err != nil {
+		t.Fatalf("get container logs: %v", err)
+	}
+	if logs.TailLines != 500 || len(logs.Items) != 1 {
+		t.Fatalf("expected capped tail lines and one log stream, got %#v", logs)
+	}
+
+	var emitted []ContainerLogEvent
+	err = service.StreamContainerLogs(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID, "runtime-abc", "runtime", 0, func(event ContainerLogEvent) error {
+		emitted = append(emitted, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("stream container logs: %v", err)
+	}
+	if len(emitted) != 1 || emitted[0].Message != "started" {
+		t.Fatalf("expected one emitted log event, got %#v", emitted)
+	}
+}
+
+func TestCanaryDeploymentOperationsUseRolloutController(t *testing.T) {
+	t.Parallel()
+
+	step := 2
+	weight := 40
+	updatedAt := time.Date(2026, 5, 13, 11, 30, 0, 0, time.UTC)
+	record := Record{
+		ID:                 "project-a__canary",
+		ProjectID:          "project-a",
+		Name:               "canary",
+		Image:              "ghcr.io/aolda/canary:v2",
+		DeploymentStrategy: DeploymentStrategyCanary,
+	}
+	store := deploymentStore{
+		stubStore: stubStore{records: []Record{record}},
+		deployments: []DeploymentRecord{
+			{
+				DeploymentID:       "dep_canary",
+				ApplicationID:      record.ID,
+				ProjectID:          record.ProjectID,
+				ApplicationName:    record.Name,
+				Image:              record.Image,
+				ImageTag:           "v2",
+				DeploymentStrategy: DeploymentStrategyCanary,
+				Status:             "Syncing",
+				UpdatedAt:          updatedAt,
+			},
+		},
+	}
+	service := Service{
+		Projects:     authorizedProjectService(),
+		Store:        store,
+		StatusReader: staticStatusReader{info: SyncInfo{Status: SyncStatusSyncing, ObservedAt: updatedAt}},
+		Rollouts: staticRolloutController{info: RolloutInfo{
+			Phase:          "Progressing",
+			CurrentStep:    &step,
+			CanaryWeight:   &weight,
+			StableRevision: "stable",
+			CanaryRevision: "canary",
+			Message:        "rollout progressing",
+		}},
+	}
+	user := core.User{Groups: []string{"aods:project-a:deploy"}}
+
+	detail, err := service.GetDeployment(context.Background(), user, record.ID, "dep_canary")
+	if err != nil {
+		t.Fatalf("get canary deployment: %v", err)
+	}
+	if detail.RolloutPhase != "Progressing" || detail.CurrentStep == nil || *detail.CurrentStep != step {
+		t.Fatalf("expected rollout details on deployment, got %#v", detail)
+	}
+
+	promoted, err := service.PromoteDeployment(context.Background(), user, record.ID, "dep_canary")
+	if err != nil {
+		t.Fatalf("promote canary deployment: %v", err)
+	}
+	if promoted.Status != "Promoted" || promoted.CanaryWeight == nil || *promoted.CanaryWeight != weight {
+		t.Fatalf("expected promoted rollout details, got %#v", promoted)
+	}
+
+	aborted, err := service.AbortDeployment(context.Background(), user, record.ID, "dep_canary")
+	if err != nil {
+		t.Fatalf("abort canary deployment: %v", err)
+	}
+	if aborted.Status != "Aborted" || aborted.Message != "rollout progressing" {
+		t.Fatalf("expected aborted rollout details, got %#v", aborted)
+	}
+}
+
+func TestRollbackPolicyEventsAndManualSyncErrors(t *testing.T) {
+	t.Parallel()
+
+	record := Record{ID: "project-a__ops", ProjectID: "project-a", Name: "ops"}
+	service := Service{
+		Projects: authorizedProjectService(),
+		Store: stubStore{
+			records: []Record{record},
+		},
+	}
+	user := core.User{Groups: []string{"aods:project-a:deploy"}}
+
+	saved, err := service.SaveRollbackPolicy(context.Background(), user, record.ID, RollbackPolicy{
+		Enabled:      true,
+		MaxErrorRate: floatPointer(2.5),
+	})
+	if err != nil {
+		t.Fatalf("save rollback policy: %v", err)
+	}
+	if !saved.Enabled || saved.MaxErrorRate == nil || *saved.MaxErrorRate != 2.5 {
+		t.Fatalf("unexpected saved rollback policy: %#v", saved)
+	}
+
+	if _, err := service.GetRollbackPolicy(context.Background(), user, record.ID); err != nil {
+		t.Fatalf("get rollback policy: %v", err)
+	}
+	if events, err := service.GetEvents(context.Background(), user, record.ID); err != nil {
+		t.Fatalf("get events: %v", err)
+	} else if len(events.Items) != 0 {
+		t.Fatalf("stub store should return no events, got %#v", events.Items)
+	}
+
+	if _, err := service.SyncRepositoryNow(context.Background(), user, record.ID); err == nil {
+		t.Fatal("expected manual sync to reject non-repository application")
+	}
+}
+
 func TestListDeploymentsMarksRolloutCompleteWhenFluxSynced(t *testing.T) {
 	t.Parallel()
 
@@ -598,6 +1025,112 @@ func TestListDeploymentsDoesNotCompleteCanaryFromFluxSync(t *testing.T) {
 	}
 	if response.Items[0].SyncStatus != SyncStatusSynced {
 		t.Fatalf("expected synced status on deployment, got %s", response.Items[0].SyncStatus)
+	}
+}
+
+func TestCreateDeploymentEnqueuesOperationWhenStoreConfigured(t *testing.T) {
+	t.Parallel()
+
+	record := Record{
+		ID:                 "project-a__demo",
+		ProjectID:          "project-a",
+		Name:               "demo",
+		Image:              "ghcr.io/example/demo:v1",
+		DeploymentStrategy: DeploymentStrategyRollout,
+		DefaultEnvironment: "shared",
+	}
+	store := &deploymentMutationStore{
+		stubStore: stubStore{records: []Record{record}},
+	}
+	operations := &deploymentOperationStoreStub{}
+	service := Service{
+		Projects:                       authorizedProjectService(),
+		Store:                          store,
+		DeploymentOperations:           operations,
+		DeploymentOperationLockKey:     "git:unit",
+		DeploymentOperationMaxAttempts: 4,
+		StatusReader:                   staticStatusReader{info: SyncInfo{Status: SyncStatusUnknown}},
+		Images:                         failingImageVerifier{err: errors.New("registry unavailable")},
+	}
+
+	response, err := service.CreateDeployment(context.Background(), core.User{
+		Username: "deployer",
+		Groups:   []string{"aods:project-a:deploy"},
+	}, record.ID, "v2", "", "req_unit_deploy")
+	if err != nil {
+		t.Fatalf("create deployment should enqueue without touching registry: %v", err)
+	}
+	if response.Status != string(DeploymentOperationQueued) {
+		t.Fatalf("expected queued response, got %s", response.Status)
+	}
+	if store.updateImageCalls != 0 {
+		t.Fatalf("expected no immediate git mutation when operation store is configured, got %d", store.updateImageCalls)
+	}
+	if len(operations.enqueued) != 1 {
+		t.Fatalf("expected one queued operation, got %d", len(operations.enqueued))
+	}
+	queued := operations.enqueued[0]
+	if queued.ID != "dep_unit_deploy" || queued.LockKey != "git:unit" {
+		t.Fatalf("unexpected queued operation: %#v", queued)
+	}
+	if queued.DesiredImage != "ghcr.io/example/demo:v2" {
+		t.Fatalf("expected desired image tag v2, got %s", queued.DesiredImage)
+	}
+	if queued.MaxAttempts != 4 {
+		t.Fatalf("expected max attempts from service config, got %d", queued.MaxAttempts)
+	}
+}
+
+func TestListDeploymentsMergesQueuedOperationRecords(t *testing.T) {
+	t.Parallel()
+
+	record := Record{
+		ID:                 "project-a__demo",
+		ProjectID:          "project-a",
+		Name:               "demo",
+		Image:              "ghcr.io/example/demo:v1",
+		DeploymentStrategy: DeploymentStrategyRollout,
+		DefaultEnvironment: "shared",
+	}
+	createdAt := time.Date(2026, 5, 12, 12, 0, 0, 0, time.UTC)
+	operations := &deploymentOperationStoreStub{
+		records: []DeploymentRecord{
+			{
+				DeploymentID:       "dep_queued",
+				ApplicationID:      record.ID,
+				ProjectID:          record.ProjectID,
+				ApplicationName:    record.Name,
+				Environment:        "shared",
+				Image:              "ghcr.io/example/demo:v2",
+				ImageTag:           "v2",
+				DeploymentStrategy: DeploymentStrategyRollout,
+				Status:             string(DeploymentOperationQueued),
+				CreatedAt:          createdAt,
+				UpdatedAt:          createdAt,
+			},
+		},
+	}
+	service := Service{
+		Projects: authorizedProjectService(),
+		Store: deploymentStore{
+			stubStore:   stubStore{records: []Record{record}},
+			deployments: []DeploymentRecord{},
+		},
+		DeploymentOperations: operations,
+		StatusReader:         staticStatusReader{info: SyncInfo{Status: SyncStatusUnknown}},
+	}
+
+	response, err := service.ListDeployments(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, record.ID)
+	if err != nil {
+		t.Fatalf("list deployments: %v", err)
+	}
+	if len(response.Items) != 1 {
+		t.Fatalf("expected queued operation in deployment list, got %d", len(response.Items))
+	}
+	if response.Items[0].DeploymentID != "dep_queued" || response.Items[0].Status != string(DeploymentOperationQueued) {
+		t.Fatalf("unexpected merged deployment record: %#v", response.Items[0])
 	}
 }
 

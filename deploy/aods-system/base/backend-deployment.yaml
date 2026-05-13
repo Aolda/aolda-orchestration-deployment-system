@@ -117,6 +117,18 @@ spec:
               value: anonymous
             - name: AODS_IMAGE_CHECK_TIMEOUT
               value: 5s
+            - name: AODS_MARIADB_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_MARIADB_DSN
+                  optional: true
+            - name: AODS_DEPLOYMENT_OPERATION_INTERVAL
+              value: 2s
+            - name: AODS_DEPLOYMENT_OPERATION_LEASE
+              value: 5m
+            - name: AODS_DEPLOYMENT_OPERATION_MAX_ATTEMPTS
+              value: "5"
           readinessProbe:
             httpGet:
               path: /healthz

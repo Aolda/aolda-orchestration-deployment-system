@@ -31,6 +31,54 @@
 
 ## Recent Stability Work
 
+### 2026-05-12 - Argo CD app-of-apps 배포 진입점 추가
+
+이번 작업에서는 AODS 자체를 Argo CD root application 하나로 배포할 수 있는 app-of-apps scaffold 를 추가했다.
+
+무엇을 바꿨는가:
+
+* `deploy/argocd/aods-root.yaml` 이 `aods-root` root `Application` 으로 `deploy/argocd/apps` 아래 child app 을 관리한다.
+* `deploy/argocd/apps/aods-system.yaml` 은 AODS 런타임을 `deploy/aods-system/overlays/argocd` 에서 배포한다.
+* Argo CD overlay 는 backend/frontend `Service` 를 명시적으로 `ClusterIP` 로 고정해 NodePort/LoadBalancer 포트를 새로 점유하지 않는다.
+* MariaDB 는 기본 app-of-apps 에 포함하지 않고, 기존 DB 를 `aods-backend-secrets` 의 `AODS_MARIADB_DSN` 으로 주입하는 방식을 기준으로 둔다.
+
+주요 근거:
+
+* root app: [deploy/argocd/aods-root.yaml](/Users/ichanju/Desktop/aolda/AODS/deploy/argocd/aods-root.yaml:1)
+* child app: [deploy/argocd/apps/aods-system.yaml](/Users/ichanju/Desktop/aolda/AODS/deploy/argocd/apps/aods-system.yaml:1)
+* Argo CD overlay: [deploy/aods-system/overlays/argocd/kustomization.yaml](/Users/ichanju/Desktop/aolda/AODS/deploy/aods-system/overlays/argocd/kustomization.yaml:1)
+* 운영 안내: [deploy/argocd/README.md](/Users/ichanju/Desktop/aolda/AODS/deploy/argocd/README.md:1)
+
+주의:
+
+* `AODS_GIT_REMOTE`, `AODS_VAULT_TOKEN`, 선택 `AODS_MARIADB_DSN` 은 Secret 평문이므로 Git에 저장하지 않는다.
+* app-of-apps 는 MariaDB 를 새로 띄우지 않으므로, 이미 운영 중인 MariaDB 와 포트/서비스 충돌을 만들지 않는다.
+
+### 2026-05-12 - MariaDB 기반 배포 operation queue 기준선 추가
+
+이번 작업에서는 `POST /api/v1/applications/{applicationId}/deployments` 경로에 durable operation queue 를 추가했다.
+
+무엇을 바꿨는가:
+
+* `AODS_MARIADB_DSN` 이 설정된 경우 재배포 요청은 MariaDB `aods_deployment_operations` 에 먼저 저장된다.
+* deployment worker 는 `SELECT ... FOR UPDATE SKIP LOCKED` 로 due operation 을 선점한다.
+* Git desired state write 는 operation lock table 의 lease 로 repo/branch 단위 single-writer 처리를 한다.
+* operation 상태 전이는 `version`, `lease_owner`, `lease_until` 을 기준으로 보호한다.
+* DB 미설정 환경은 기존 동기 배포 경로를 유지한다.
+* deployment history 는 Git 기록과 아직 Git에 쓰이지 않은 `Queued / Running / Retrying / Failed` operation 을 병합해서 보여준다.
+
+주요 근거:
+
+* operation worker/types: [backend/internal/application/deployment_operations.go](/Users/ichanju/Desktop/aolda/AODS/backend/internal/application/deployment_operations.go:1)
+* MariaDB store: [backend/internal/application/deployment_operations_mariadb.go](/Users/ichanju/Desktop/aolda/AODS/backend/internal/application/deployment_operations_mariadb.go:1)
+* service enqueue/execute split: [backend/internal/application/service.go](/Users/ichanju/Desktop/aolda/AODS/backend/internal/application/service.go:417)
+* dependency wiring: [backend/internal/server/server.go](/Users/ichanju/Desktop/aolda/AODS/backend/internal/server/server.go:1)
+
+주의:
+
+* GitHub 기본 브랜치가 desired state 의 source of truth 라는 규칙은 유지된다.
+* MariaDB 는 source of truth 가 아니라 durable command log, retry queue, Git write 직렬화 coordinator 로만 사용한다.
+
 ### 2026-04-24 - 모니터링 알림/진단 API 기준선 추가
 
 이번 작업에서는 기존 `ServiceMonitor + metrics 조회 + UI polling` 구조에 운영 알림과 진단 기준선을 추가했다.

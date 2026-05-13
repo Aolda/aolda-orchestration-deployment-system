@@ -101,6 +101,13 @@
 * `deploy/aods-system/`
   - AODS 자체 배포 manifest 다.
   - 제품 API/포털 기능 개발과는 별도이므로 섞어서 수정하지 않는다.
+* `deploy/argocd/`
+  - Argo CD app-of-apps 진입점이다.
+  - `aods-root.yaml` 이 child `Application` 들을 관리하고, `apps/aods-system.yaml` 이 AODS 런타임 overlay 를 배포한다.
+  - MariaDB 는 기본 app-of-apps 에 포함하지 않고 `aods-backend-secrets.AODS_MARIADB_DSN` 으로 기존 DB 를 참조한다.
+* `deploy/aods-system/overlays/argocd/`
+  - Argo CD 배포용 AODS overlay 다.
+  - backend/frontend service 는 `ClusterIP` 로 고정해 NodePort/LoadBalancer 포트 충돌을 만들지 않는다.
 
 ## 백엔드 인덱스
 
@@ -167,6 +174,10 @@
 * `backend/internal/application/poller.go`
   - 자동 업데이트 폴러다.
   - legacy project repository 연결과, 앱 메타데이터에 직접 저장된 `repositoryUrl`/`repositoryTokenPath` 기반 sync 둘 다 여기서 처리한다.
+* `backend/internal/application/deployment_operations.go`
+* `backend/internal/application/deployment_operations_mariadb.go`
+  - MariaDB 기반 durable deployment operation queue 와 worker/lease lock 구현이다.
+  - GitHub 기본 브랜치 source of truth 는 유지하고, DB 는 재시도 가능한 command log 와 repo/branch 단위 Git write 직렬화 coordinator 로만 사용한다.
 * `backend/internal/application/image_verifier.go`
   - 이미지 검증 경로다.
 

@@ -4,12 +4,20 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DEFAULT_SELF_HOSTED_KUBECONFIG="${HOME}/.kube/aods-self-hosted.yaml"
+ENV_AODS_K8S_KUBECONFIG="${AODS_K8S_KUBECONFIG:-}"
+ENV_AODS_K8S_CONTEXT="${AODS_K8S_CONTEXT:-}"
 
 if [[ -f "${ROOT_DIR}/.envrc" ]]; then
   set -a
   # shellcheck disable=SC1091
   source "${ROOT_DIR}/.envrc"
   set +a
+fi
+if [[ -n "${ENV_AODS_K8S_KUBECONFIG}" ]]; then
+  AODS_K8S_KUBECONFIG="${ENV_AODS_K8S_KUBECONFIG}"
+fi
+if [[ -n "${ENV_AODS_K8S_CONTEXT}" ]]; then
+  AODS_K8S_CONTEXT="${ENV_AODS_K8S_CONTEXT}"
 fi
 
 KUBECONFIG_PATH="${AODS_K8S_KUBECONFIG:-${DEFAULT_SELF_HOSTED_KUBECONFIG}}"
@@ -74,9 +82,15 @@ docker push "${FRONTEND_IMAGE}"
 
 kubectl "${kubectl_args[@]}" create namespace aods-system --dry-run=client -o yaml | kubectl "${kubectl_args[@]}" apply -f -
 
+backend_secret_args=(
+  --from-literal=AODS_GIT_REMOTE="${AODS_GIT_REMOTE}"
+  --from-literal=AODS_VAULT_TOKEN="${AODS_VAULT_TOKEN}"
+)
+if [[ -n "${AODS_MARIADB_DSN:-}" ]]; then
+  backend_secret_args+=(--from-literal=AODS_MARIADB_DSN="${AODS_MARIADB_DSN}")
+fi
 kubectl "${kubectl_args[@]}" -n aods-system create secret generic aods-backend-secrets \
-  --from-literal=AODS_GIT_REMOTE="${AODS_GIT_REMOTE}" \
-  --from-literal=AODS_VAULT_TOKEN="${AODS_VAULT_TOKEN}" \
+  "${backend_secret_args[@]}" \
   --dry-run=client -o yaml | kubectl "${kubectl_args[@]}" apply -f -
 
 if [[ "${REQUIRES_GHCR_AUTH}" == "true" ]]; then

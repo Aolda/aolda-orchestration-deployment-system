@@ -2068,7 +2068,12 @@ components:
           type: string
           enum:
             - Pending
+            - Queued
+            - Running
+            - Retrying
             - Syncing
+            - Completed
+            - Failed
             - Promoted
             - Aborted
       example:

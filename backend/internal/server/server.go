@@ -1,8 +1,13 @@
 package server
 
 import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/aolda/aods-backend/internal/admin"
@@ -14,10 +19,20 @@ import (
 	"github.com/aolda/aods-backend/internal/kubernetes"
 	"github.com/aolda/aods-backend/internal/project"
 	"github.com/aolda/aods-backend/internal/vault"
+	_ "github.com/go-sql-driver/mysql"
 )
 
 func New(cfg core.Config) (http.Handler, *application.Service, *project.Service) {
+	handler, applicationService, projectService, _, err := NewWithResources(cfg)
+	if err != nil {
+		panic(err)
+	}
+	return handler, applicationService, projectService
+}
+
+func NewWithResources(cfg core.Config) (http.Handler, *application.Service, *project.Service, func(), error) {
 	userProvider := core.NewUserProvider(cfg)
+	cleanup := func() {}
 
 	projectSource := project.CatalogSource(project.LocalCatalogSource{
 		Path:                       filepath.Join(cfg.RepoRoot, "platform", "projects.yaml"),
@@ -149,6 +164,33 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 		Images:                imageVerifier,
 		PollTracker:           application.NewRepositoryPollTracker(cfg.RepositoryPollInterval),
 	}
+	if cfg.UseMariaDBOperations() {
+		db, err := sql.Open("mysql", mariaDBDSN(cfg.MariaDBDSN))
+		if err != nil {
+			return nil, nil, nil, nil, err
+		}
+		db.SetMaxOpenConns(10)
+		db.SetMaxIdleConns(5)
+		db.SetConnMaxLifetime(30 * time.Minute)
+		if err := db.Ping(); err != nil {
+			_ = db.Close()
+			return nil, nil, nil, nil, err
+		}
+		operationStore := application.MariaDBDeploymentOperationStore{DB: db}
+		ensureCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := operationStore.Ensure(ensureCtx); err != nil {
+			cancel()
+			_ = db.Close()
+			return nil, nil, nil, nil, err
+		}
+		cancel()
+		applicationService.DeploymentOperations = operationStore
+		applicationService.DeploymentOperationLockKey = deploymentOperationLockKey(cfg)
+		applicationService.DeploymentOperationMaxAttempts = cfg.DeploymentOperationMaxAttempts
+		cleanup = func() {
+			_ = db.Close()
+		}
+	}
 	resourceOverviewReader := admin.ResourceOverviewReader(admin.LocalResourceOverviewReader{})
 	if cfg.UseKubernetesAPI() {
 		reader, err := kubernetes.NewFleetResourceReader(cfg)
@@ -252,11 +294,32 @@ func New(cfg core.Config) (http.Handler, *application.Service, *project.Service)
 		)
 	})
 
-	return core.WithRequestID(core.WithCORS(mux, cfg.AllowedOrigin, cfg.AllowDevFallback)), applicationService, projectService
+	return core.WithRequestID(core.WithCORS(mux, cfg.AllowedOrigin, cfg.AllowDevFallback)), applicationService, projectService, cleanup, nil
 }
 
 func healthHandler(w http.ResponseWriter, _ *http.Request) {
 	core.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+func deploymentOperationLockKey(cfg core.Config) string {
+	keyMaterial := strings.TrimSpace(cfg.GitRemote)
+	if keyMaterial == "" {
+		keyMaterial = strings.TrimSpace(cfg.GitRepoDir)
+	}
+	keyMaterial += "|" + strings.TrimSpace(cfg.GitBranch)
+	sum := sha256.Sum256([]byte(keyMaterial))
+	return "git:" + hex.EncodeToString(sum[:8])
+}
+
+func mariaDBDSN(value string) string {
+	if strings.Contains(value, "parseTime=") {
+		return value
+	}
+	separator := "?"
+	if strings.Contains(value, "?") {
+		separator = "&"
+	}
+	return value + separator + "parseTime=true&loc=UTC"
 }
 
 func maxDuration(value time.Duration, fallback time.Duration) time.Duration {

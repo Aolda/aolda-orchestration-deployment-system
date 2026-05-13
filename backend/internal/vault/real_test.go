@@ -238,3 +238,141 @@ func TestRealStoreCleanupStaleDeletesExpiredPendingCommitSecrets(t *testing.T) {
 		t.Fatalf("unexpected delete paths: %#v", deletePaths)
 	}
 }
+
+func TestRealStoreReadsVersionHistoryAndDeletesMetadata(t *testing.T) {
+	t.Helper()
+
+	createdAt := time.Date(2026, 5, 13, 9, 0, 0, 0, time.UTC)
+	var deletePath string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Vault-Token"); got != "test-token" {
+			t.Fatalf("expected vault token header, got %q", got)
+		}
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/secret/data/aods/apps/project-a/my-app/prod" && r.URL.Query().Get("version") == "":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"data": map[string]string{
+						"DATABASE_URL": "postgres://current",
+						"API_KEY":      "current-key",
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/secret/data/aods/apps/project-a/my-app/prod" && r.URL.Query().Get("version") == "1":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"data": map[string]string{
+						"DATABASE_URL": "postgres://v1",
+					},
+					"metadata": map[string]any{
+						"version":      1,
+						"created_time": createdAt.Format(time.RFC3339Nano),
+					},
+				},
+			})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/secret/metadata/aods/apps/project-a/my-app/prod":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{
+					"current_version": 2,
+					"custom_metadata": map[string]string{
+						"createdBy": "creator",
+						"updatedBy": "deployer",
+					},
+					"versions": map[string]any{
+						"1": map[string]any{
+							"version":      1,
+							"created_time": createdAt.Format(time.RFC3339Nano),
+						},
+						"2": map[string]any{
+							"version":      2,
+							"created_time": createdAt.Add(time.Hour).Format(time.RFC3339Nano),
+						},
+					},
+				},
+			})
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/secret/metadata/aods/apps/project-a/my-app/prod":
+			deletePath = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Fatalf("unexpected vault request: %s %s?%s", r.Method, r.URL.Path, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	store := RealStore{
+		Address: server.URL,
+		Token:   "test-token",
+		Client:  server.Client(),
+	}
+	logicalPath := "secret/aods/apps/project-a/my-app/prod"
+
+	current, err := store.Get(context.Background(), logicalPath)
+	if err != nil {
+		t.Fatalf("get current secret: %v", err)
+	}
+	if current["DATABASE_URL"] != "postgres://current" || current["API_KEY"] != "current-key" {
+		t.Fatalf("unexpected current secret data: %#v", current)
+	}
+
+	versionData, summary, err := store.GetVersion(context.Background(), logicalPath, 1)
+	if err != nil {
+		t.Fatalf("get versioned secret: %v", err)
+	}
+	if versionData["DATABASE_URL"] != "postgres://v1" {
+		t.Fatalf("unexpected version data: %#v", versionData)
+	}
+	if summary.Version != 1 || summary.KeyCount != 1 || summary.CreatedAt == nil || !summary.CreatedAt.Equal(createdAt) {
+		t.Fatalf("unexpected version summary: %#v", summary)
+	}
+
+	versions, err := store.ListVersions(context.Background(), logicalPath)
+	if err != nil {
+		t.Fatalf("list versions: %v", err)
+	}
+	if versions.CurrentVersion != 2 || len(versions.Items) != 2 {
+		t.Fatalf("unexpected versions response: %#v", versions)
+	}
+	if versions.Items[0].Version != 2 || !versions.Items[0].Current || versions.Items[0].UpdatedBy != "deployer" {
+		t.Fatalf("unexpected current version summary: %#v", versions.Items[0])
+	}
+
+	if err := store.Delete(context.Background(), logicalPath); err != nil {
+		t.Fatalf("delete secret metadata: %v", err)
+	}
+	if deletePath != "/v1/secret/metadata/aods/apps/project-a/my-app/prod" {
+		t.Fatalf("unexpected delete path: %q", deletePath)
+	}
+}
+
+func TestRealStoreReadMissingSecretReturnsEmptyState(t *testing.T) {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	}))
+	defer server.Close()
+
+	store := RealStore{
+		Address: server.URL,
+		Token:   "test-token",
+		Client:  server.Client(),
+	}
+
+	current, err := store.Get(context.Background(), "secret/aods/apps/project-a/missing/prod")
+	if err != nil {
+		t.Fatalf("missing current secret should not fail: %v", err)
+	}
+	if current != nil {
+		t.Fatalf("expected nil current secret for 404, got %#v", current)
+	}
+
+	versions, err := store.ListVersions(context.Background(), "secret/aods/apps/project-a/missing/prod")
+	if err != nil {
+		t.Fatalf("missing metadata should not fail: %v", err)
+	}
+	if versions.CurrentVersion != 0 || len(versions.Items) != 0 {
+		t.Fatalf("expected empty version response for 404, got %#v", versions)
+	}
+}

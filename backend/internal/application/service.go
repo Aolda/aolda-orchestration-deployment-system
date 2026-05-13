@@ -100,17 +100,20 @@ type VersionedSecretStore interface {
 }
 
 type Service struct {
-	Projects              *project.Service
-	Store                 Store
-	StatusReader          StatusReader
-	MetricsReader         MetricsReader
-	NetworkExposureReader NetworkExposureReader
-	LogsReader            LogsReader
-	Secrets               SecretStore
-	Rollouts              RolloutController
-	Images                ImageVerifier
-	HTTPClient            *http.Client
-	PollTracker           *RepositoryPollTracker
+	Projects                       *project.Service
+	Store                          Store
+	DeploymentOperations           DeploymentOperationStore
+	DeploymentOperationLockKey     string
+	DeploymentOperationMaxAttempts int
+	StatusReader                   StatusReader
+	MetricsReader                  MetricsReader
+	NetworkExposureReader          NetworkExposureReader
+	LogsReader                     LogsReader
+	Secrets                        SecretStore
+	Rollouts                       RolloutController
+	Images                         ImageVerifier
+	HTTPClient                     *http.Client
+	PollTracker                    *RepositoryPollTracker
 }
 
 func (s Service) ListApplications(ctx context.Context, user core.User, projectID string) ([]Summary, error) {
@@ -422,17 +425,45 @@ func (s Service) CreateDeployment(
 	environment string,
 	requestID string,
 ) (DeploymentResponse, error) {
-	record, err := s.requireApplication(ctx, user, applicationID, true)
+	operation, err := s.prepareDeploymentOperation(ctx, user, applicationID, imageTag, environment, requestID)
 	if err != nil {
 		return DeploymentResponse{}, err
+	}
+	if s.DeploymentOperations != nil {
+		queued, err := s.DeploymentOperations.EnqueueDeploymentOperation(ctx, operation)
+		if err != nil {
+			return DeploymentResponse{}, err
+		}
+		return DeploymentResponse{
+			DeploymentID:  queued.ID,
+			ApplicationID: queued.ApplicationID,
+			ImageTag:      queued.ImageTag,
+			Environment:   queued.Environment,
+			Status:        string(DeploymentOperationQueued),
+		}, nil
+	}
+	return s.executeDeploymentOperation(ctx, operation)
+}
+
+func (s Service) prepareDeploymentOperation(
+	ctx context.Context,
+	user core.User,
+	applicationID string,
+	imageTag string,
+	environment string,
+	requestID string,
+) (DeploymentOperation, error) {
+	record, err := s.requireApplication(ctx, user, applicationID, true)
+	if err != nil {
+		return DeploymentOperation{}, err
 	}
 	projectInfo, err := s.Projects.GetAuthorized(ctx, user, record.ProjectID)
 	if err != nil {
-		return DeploymentResponse{}, err
+		return DeploymentOperation{}, err
 	}
 
 	if strings.TrimSpace(imageTag) == "" {
-		return DeploymentResponse{}, ValidationError{
+		return DeploymentOperation{}, ValidationError{
 			Message: "imageTag is required",
 			Details: map[string]any{"field": "imageTag"},
 		}
@@ -443,18 +474,65 @@ func (s Service) CreateDeployment(
 		targetEnvironment = resolveEnvironment(projectInfo.Project, environment)
 	}
 	if err := validateProjectPolicies(projectInfo.Project, targetEnvironment, record.DeploymentStrategy); err != nil {
-		return DeploymentResponse{}, err
+		return DeploymentOperation{}, err
 	}
 	if !changeGuardBypassed(ctx) && requiresChangeFlow(projectInfo.Project, targetEnvironment) {
-		return DeploymentResponse{}, ErrChangeRequired
+		return DeploymentOperation{}, ErrChangeRequired
 	}
 	nextImage := replaceImageTag(record.Image, imageTag)
-	if err := s.verifyDeploymentImage(ctx, record, nextImage, imageTag, targetEnvironment); err != nil {
+	deploymentID := strings.Replace(requestID, "req_", "dep_", 1)
+	lockKey := strings.TrimSpace(s.DeploymentOperationLockKey)
+	if lockKey == "" {
+		lockKey = "application:" + record.ID + ":" + targetEnvironment
+	}
+	maxAttempts := s.DeploymentOperationMaxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = 5
+	}
+	now := timeNowUTC()
+	return DeploymentOperation{
+		ID:                 deploymentID,
+		ApplicationID:      record.ID,
+		ProjectID:          record.ProjectID,
+		ApplicationName:    record.Name,
+		Environment:        targetEnvironment,
+		ImageTag:           imageTag,
+		DesiredImage:       nextImage,
+		DeploymentStrategy: record.DeploymentStrategy,
+		RequestedBy:        user.Username,
+		RequestID:          requestID,
+		LockKey:            lockKey,
+		Status:             DeploymentOperationQueued,
+		Message:            "배포 요청이 durable queue에 저장되었고 worker 실행을 기다리고 있습니다.",
+		MaxAttempts:        maxAttempts,
+		NextAttemptAt:      now,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+	}, nil
+}
+
+func (s Service) executeDeploymentOperation(ctx context.Context, operation DeploymentOperation) (DeploymentResponse, error) {
+	record, err := s.Store.GetApplication(ctx, operation.ApplicationID)
+	if err != nil {
 		return DeploymentResponse{}, err
 	}
-
+	projectInfo, err := s.Projects.Get(ctx, operation.ProjectID)
+	if err != nil {
+		return DeploymentResponse{}, err
+	}
+	targetEnvironment := operation.Environment
+	if strings.TrimSpace(targetEnvironment) == "" {
+		targetEnvironment = record.DefaultEnvironment
+	}
+	if err := validateProjectPolicies(projectInfo, targetEnvironment, record.DeploymentStrategy); err != nil {
+		return DeploymentResponse{}, err
+	}
+	nextImage := replaceImageTag(record.Image, operation.ImageTag)
+	if err := s.verifyDeploymentImage(ctx, record, nextImage, operation.ImageTag, targetEnvironment); err != nil {
+		return DeploymentResponse{}, err
+	}
 	if targetEnvironment != record.DefaultEnvironment {
-		updatedRecord, err := s.Store.PatchApplication(ctx, buildProjectContext(projectInfo.Project), record.ID, UpdateApplicationRequest{
+		updatedRecord, err := s.Store.PatchApplication(ctx, buildProjectContext(projectInfo), record.ID, UpdateApplicationRequest{
 			Environment: &targetEnvironment,
 		})
 		if err != nil {
@@ -463,8 +541,7 @@ func (s Service) CreateDeployment(
 		record = updatedRecord
 	}
 
-	deploymentID := strings.Replace(requestID, "req_", "dep_", 1)
-	updatedRecord, err := s.Store.UpdateApplicationImage(ctx, buildProjectContext(projectInfo.Project), record.ID, imageTag, deploymentID)
+	updatedRecord, err := s.Store.UpdateApplicationImage(ctx, buildProjectContext(projectInfo), record.ID, operation.ImageTag, operation.ID)
 	if err != nil {
 		return DeploymentResponse{}, err
 	}
@@ -472,15 +549,15 @@ func (s Service) CreateDeployment(
 		"environment": updatedRecord.DefaultEnvironment,
 		"image":       nextImage,
 	})
-	_ = s.appendEvent(ctx, record.ID, "DeploymentTriggered", fmt.Sprintf("새 이미지 태그 %s 재배포", imageTag), map[string]any{
+	_ = s.appendEvent(ctx, record.ID, "DeploymentTriggered", fmt.Sprintf("새 이미지 태그 %s 재배포", operation.ImageTag), map[string]any{
 		"environment": updatedRecord.DefaultEnvironment,
-		"imageTag":    imageTag,
+		"imageTag":    operation.ImageTag,
 	})
 
 	return DeploymentResponse{
-		DeploymentID:  deploymentID,
+		DeploymentID:  operation.ID,
 		ApplicationID: updatedRecord.ID,
-		ImageTag:      imageTag,
+		ImageTag:      operation.ImageTag,
 		Environment:   targetEnvironment,
 		Status:        "Syncing",
 	}, nil
@@ -1507,6 +1584,13 @@ func (s Service) ListDeployments(ctx context.Context, user core.User, applicatio
 	if err != nil {
 		return DeploymentListResponse{}, err
 	}
+	if s.DeploymentOperations != nil {
+		operationItems, err := s.DeploymentOperations.ListDeploymentOperationRecords(ctx, applicationID)
+		if err != nil {
+			return DeploymentListResponse{}, err
+		}
+		items = mergeDeploymentRecords(items, operationItems)
+	}
 	return DeploymentListResponse{
 		ApplicationID: record.ID,
 		Items:         s.decorateDeploymentStatuses(ctx, record, items),
@@ -1520,6 +1604,9 @@ func (s Service) GetDeployment(ctx context.Context, user core.User, applicationI
 	}
 
 	deployment, err := s.Store.GetDeployment(ctx, applicationID, deploymentID)
+	if errors.Is(err, ErrDeploymentNotFound) && s.DeploymentOperations != nil {
+		deployment, err = s.DeploymentOperations.GetDeploymentOperationRecord(ctx, applicationID, deploymentID)
+	}
 	if err != nil {
 		return DeploymentRecord{}, err
 	}

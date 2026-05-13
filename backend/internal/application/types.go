@@ -277,6 +277,42 @@ type DeploymentResponse struct {
 	CommitSHA     string `json:"commitSha,omitempty"`
 }
 
+type DeploymentOperationStatus string
+
+const (
+	DeploymentOperationQueued    DeploymentOperationStatus = "Queued"
+	DeploymentOperationRunning   DeploymentOperationStatus = "Running"
+	DeploymentOperationRetrying  DeploymentOperationStatus = "Retrying"
+	DeploymentOperationCompleted DeploymentOperationStatus = "Completed"
+	DeploymentOperationFailed    DeploymentOperationStatus = "Failed"
+)
+
+type DeploymentOperation struct {
+	ID                 string
+	ApplicationID      string
+	ProjectID          string
+	ApplicationName    string
+	Environment        string
+	ImageTag           string
+	DesiredImage       string
+	DeploymentStrategy DeploymentStrategy
+	RequestedBy        string
+	RequestID          string
+	LockKey            string
+	Status             DeploymentOperationStatus
+	Message            string
+	AttemptCount       int
+	MaxAttempts        int
+	LastError          string
+	NextAttemptAt      time.Time
+	LeaseOwner         string
+	LeaseUntil         time.Time
+	Version            int64
+	CreatedAt          time.Time
+	UpdatedAt          time.Time
+	CompletedAt        *time.Time
+}
+
 type DeploymentRecord struct {
 	DeploymentID       string             `json:"deploymentId"`
 	ApplicationID      string             `json:"applicationId"`
