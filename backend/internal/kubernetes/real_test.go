@@ -84,6 +84,83 @@ func TestFluxSyncStatusReaderTokenMode(t *testing.T) {
 	}
 }
 
+func TestFluxSyncStatusReaderCachesAndUsesStaleKustomizationList(t *testing.T) {
+	now := time.Date(2026, 5, 15, 1, 0, 0, 0, time.UTC)
+	calls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls > 1 {
+			http.Error(w, "api server timeout", http.StatusGatewayTimeout)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"items": [
+				{
+					"metadata": {"name": "project-a-my-app", "namespace": "flux-system"},
+					"spec": {"path": "./apps/project-a/my-app/overlays/shared", "targetNamespace": "project-a"},
+					"status": {
+						"conditions": [
+							{
+								"type": "Ready",
+								"status": "True",
+								"reason": "ReconciliationSucceeded",
+								"message": "Applied revision: main@sha1:abc123",
+								"lastTransitionTime": "2026-04-02T01:00:00Z"
+							}
+						]
+					}
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	reader, err := NewFluxSyncStatusReader(core.Config{
+		KubernetesMode:             "token",
+		KubernetesAPIURL:           server.URL,
+		KubernetesBearerToken:      "test-token",
+		KubernetesRequestTimeout:   2 * time.Second,
+		FluxKustomizationNamespace: "flux-system",
+		FluxStatusCacheTTL:         time.Second,
+	})
+	if err != nil {
+		t.Fatalf("new reader: %v", err)
+	}
+	reader.Now = func() time.Time {
+		return now
+	}
+
+	record := application.Record{
+		ProjectID:          "project-a",
+		Name:               "my-app",
+		Namespace:          "project-a",
+		DefaultEnvironment: "shared",
+	}
+	if _, err := reader.Read(context.Background(), record); err != nil {
+		t.Fatalf("first read sync status: %v", err)
+	}
+	if _, err := reader.Read(context.Background(), record); err != nil {
+		t.Fatalf("cached read sync status: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("expected cache hit to avoid second API call, got %d calls", calls)
+	}
+
+	now = now.Add(2 * time.Second)
+	info, err := reader.Read(context.Background(), record)
+	if err != nil {
+		t.Fatalf("expected stale cache on refresh failure, got %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("expected expired cache to attempt one refresh, got %d calls", calls)
+	}
+	if info.Status != application.SyncStatusSynced {
+		t.Fatalf("expected stale Synced status, got %s", info.Status)
+	}
+}
+
 func TestFluxSyncStatusReaderKubeconfigExecMode(t *testing.T) {
 	t.Parallel()
 

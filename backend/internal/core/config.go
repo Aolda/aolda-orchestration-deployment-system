@@ -44,6 +44,7 @@ type Config struct {
 	ImageVerificationTimeout       time.Duration
 	FluxKustomizationNamespace     string
 	FluxSourceName                 string
+	FluxStatusCacheTTL             time.Duration
 	PrometheusMode                 string
 	PrometheusURL                  string
 	PrometheusRequestTimeout       time.Duration
@@ -108,6 +109,11 @@ func LoadConfig() (Config, error) {
 	}
 
 	gitSyncTTL, err := envDuration("AODS_GIT_SYNC_TTL", 3*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
+	fluxStatusCacheTTL, err := envDuration("AODS_FLUX_STATUS_CACHE_TTL", 10*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
@@ -202,6 +208,7 @@ func LoadConfig() (Config, error) {
 		ImageVerificationTimeout:       imageVerificationTimeout,
 		FluxKustomizationNamespace:     envOrDefault("AODS_FLUX_KUSTOMIZATION_NAMESPACE", "flux-system"),
 		FluxSourceName:                 envOrDefault("AODS_FLUX_SOURCE_NAME", "aods-manifest"),
+		FluxStatusCacheTTL:             fluxStatusCacheTTL,
 		PrometheusMode:                 envOrDefault("AODS_PROMETHEUS_MODE", "local"),
 		PrometheusURL:                  envOrDefault("AODS_PROMETHEUS_URL", ""),
 		PrometheusRequestTimeout:       prometheusRequestTimeout,

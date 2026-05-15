@@ -1073,6 +1073,11 @@ func (s Service) GetProjectHealth(ctx context.Context, user core.User, projectID
 	items := make([]ApplicationHealthSnapshot, 0, len(records))
 	for _, record := range records {
 		signals := make([]HealthSignal, 0, 3)
+		syncInfo := SyncInfo{
+			Status:     SyncStatusUnknown,
+			Message:    "sync 상태를 읽지 못했습니다.",
+			ObservedAt: observedAt,
+		}
 
 		if syncErr != nil {
 			signals = append(signals, HealthSignal{
@@ -1082,7 +1087,8 @@ func (s Service) GetProjectHealth(ctx context.Context, user core.User, projectID
 				ObservedAt: observedAt,
 			})
 		} else {
-			syncInfo, ok := syncInfos[record.ID]
+			var ok bool
+			syncInfo, ok = syncInfos[record.ID]
 			if !ok {
 				syncInfo = SyncInfo{
 					Status:     SyncStatusUnknown,
@@ -1105,7 +1111,7 @@ func (s Service) GetProjectHealth(ctx context.Context, user core.User, projectID
 			},
 		})
 
-		latestDeployment, deploymentSignal := s.latestDeploymentHealthSignal(ctx, record, observedAt)
+		latestDeployment, deploymentSignal := s.latestDeploymentHealthSignal(ctx, record, observedAt, syncInfo)
 		signals = append(signals, deploymentSignal)
 
 		syncStatus := SyncStatusUnknown
@@ -1241,7 +1247,7 @@ func (s Service) readMetricsDiagnostics(ctx context.Context, record Record, dura
 	return response, metrics
 }
 
-func (s Service) latestDeploymentHealthSignal(ctx context.Context, record Record, observedAt time.Time) (*DeploymentRecord, HealthSignal) {
+func (s Service) latestDeploymentHealthSignal(ctx context.Context, record Record, observedAt time.Time, syncInfo SyncInfo) (*DeploymentRecord, HealthSignal) {
 	deployments, err := s.Store.ListDeployments(ctx, record.ID)
 	if err != nil {
 		return nil, HealthSignal{
@@ -1260,7 +1266,7 @@ func (s Service) latestDeploymentHealthSignal(ctx context.Context, record Record
 		}
 	}
 
-	deployments = s.decorateDeploymentStatuses(ctx, record, deployments)
+	deployments = decorateDeploymentStatuses(record, deployments, syncInfo)
 	latest := deployments[0]
 	status := HealthSignalOK
 	message := "최근 배포 이력을 읽었습니다."
@@ -1634,6 +1640,10 @@ func (s Service) decorateDeploymentStatuses(ctx context.Context, record Record, 
 		return deployments
 	}
 	syncInfo := s.readSyncInfoOrUnknown(ctx, record)
+	return decorateDeploymentStatuses(record, deployments, syncInfo)
+}
+
+func decorateDeploymentStatuses(record Record, deployments []DeploymentRecord, syncInfo SyncInfo) []DeploymentRecord {
 	items := make([]DeploymentRecord, len(deployments))
 	for i, deployment := range deployments {
 		items[i] = decorateDeploymentStatus(record, deployment, syncInfo)

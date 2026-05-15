@@ -20,6 +20,7 @@ func TestLoadConfigReadsDeploymentOperationSettings(t *testing.T) {
 	t.Setenv("AODS_DEPLOYMENT_OPERATION_LEASE", "7m")
 	t.Setenv("AODS_DEPLOYMENT_OPERATION_MAX_ATTEMPTS", "9")
 	t.Setenv("AODS_REPOSITORY_POLL_INTERVAL", "11m")
+	t.Setenv("AODS_FLUX_STATUS_CACHE_TTL", "17s")
 	t.Setenv("AODS_DEV_GROUPS", "aods:shared:deploy,aods:platform:admin")
 
 	cfg, err := LoadConfig()
@@ -50,6 +51,9 @@ func TestLoadConfigReadsDeploymentOperationSettings(t *testing.T) {
 	if cfg.RepositoryPollInterval != 11*time.Minute {
 		t.Fatalf("unexpected repository poll interval: %s", cfg.RepositoryPollInterval)
 	}
+	if cfg.FluxStatusCacheTTL != 17*time.Second {
+		t.Fatalf("unexpected Flux status cache TTL: %s", cfg.FluxStatusCacheTTL)
+	}
 	if got := strings.Join(cfg.PlatformAdminAuthorities, ","); got != "aods:platform:admin,aods:ops:admin" {
 		t.Fatalf("expected deduped admin authorities, got %q", got)
 	}
@@ -67,6 +71,7 @@ func TestLoadConfigRejectsInvalidDeploymentOperationSettings(t *testing.T) {
 		{name: "interval", key: "AODS_DEPLOYMENT_OPERATION_INTERVAL", val: "not-a-duration"},
 		{name: "lease", key: "AODS_DEPLOYMENT_OPERATION_LEASE", val: "not-a-duration"},
 		{name: "attempts", key: "AODS_DEPLOYMENT_OPERATION_MAX_ATTEMPTS", val: "not-an-int"},
+		{name: "flux status cache TTL", key: "AODS_FLUX_STATUS_CACHE_TTL", val: "not-a-duration"},
 		{name: "dev fallback", key: "AODS_ALLOW_DEV_FALLBACK", val: "maybe"},
 	}
 
