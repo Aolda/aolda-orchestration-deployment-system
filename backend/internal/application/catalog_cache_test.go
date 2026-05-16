@@ -318,6 +318,39 @@ func TestApplicationCatalogProjectorRefreshesAllProjects(t *testing.T) {
 	}
 }
 
+func TestApplicationCatalogProjectorStartNoopsWhenUnconfigured(t *testing.T) {
+	var nilProjector *ApplicationCatalogProjector
+	nilProjector.Start(context.Background())
+
+	emptyProjector := ApplicationCatalogProjector{}
+	emptyProjector.Start(context.Background())
+
+	projector := ApplicationCatalogProjector{
+		Store:    CachedManifestStore{Source: stubStore{}},
+		Projects: &catalogProjectSourceStub{items: []project.CatalogProject{{ID: "shared"}}},
+	}
+	projector.Start(context.Background())
+}
+
+func TestApplicationCatalogProjectorStartRefreshesAndStops(t *testing.T) {
+	source := &catalogSourceSpy{
+		stubStore: stubStore{records: []Record{{ID: "shared__api", ProjectID: "shared", Name: "api"}}},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	projector := ApplicationCatalogProjector{
+		Store:    CachedManifestStore{Source: source},
+		Projects: &catalogProjectSourceStub{items: []project.CatalogProject{{ID: "shared"}}},
+		Interval: time.Hour,
+	}
+	projector.Start(ctx)
+
+	if source.listCalls != 1 {
+		t.Fatalf("expected startup refresh before stop, got %d", source.listCalls)
+	}
+}
+
 func TestMariaDBApplicationCatalogCacheNilDatabaseErrors(t *testing.T) {
 	store := MariaDBApplicationCatalogCache{}
 	ctx := context.Background()
