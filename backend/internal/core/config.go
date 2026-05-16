@@ -44,6 +44,7 @@ type Config struct {
 	ImageVerificationTimeout       time.Duration
 	FluxKustomizationNamespace     string
 	FluxSourceName                 string
+	FluxStatusCacheTTL             time.Duration
 	PrometheusMode                 string
 	PrometheusURL                  string
 	PrometheusRequestTimeout       time.Duration
@@ -58,6 +59,10 @@ type Config struct {
 	VaultStagingMaxAge             time.Duration
 	OrphanFluxCleanupInterval      time.Duration
 	MariaDBDSN                     string
+	ApplicationCatalogDBDriver     string
+	ApplicationCatalogDSN          string
+	ApplicationCatalogCacheTTL     time.Duration
+	ApplicationCatalogSyncInterval time.Duration
 	DeploymentOperationInterval    time.Duration
 	DeploymentOperationLease       time.Duration
 	DeploymentOperationMaxAttempts int
@@ -107,7 +112,12 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
-	gitSyncTTL, err := envDuration("AODS_GIT_SYNC_TTL", 3*time.Second)
+	gitSyncTTL, err := envDuration("AODS_GIT_SYNC_TTL", 60*time.Second)
+	if err != nil {
+		return Config{}, err
+	}
+
+	fluxStatusCacheTTL, err := envDuration("AODS_FLUX_STATUS_CACHE_TTL", 10*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
@@ -148,6 +158,16 @@ func LoadConfig() (Config, error) {
 	}
 
 	orphanFluxCleanupInterval, err := envDuration("AODS_ORPHAN_FLUX_CLEANUP_INTERVAL", time.Hour)
+	if err != nil {
+		return Config{}, err
+	}
+
+	applicationCatalogCacheTTL, err := envDuration("AODS_APPLICATION_CATALOG_CACHE_TTL", 10*time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+
+	applicationCatalogSyncInterval, err := envDuration("AODS_APPLICATION_CATALOG_SYNC_INTERVAL", time.Minute)
 	if err != nil {
 		return Config{}, err
 	}
@@ -202,6 +222,7 @@ func LoadConfig() (Config, error) {
 		ImageVerificationTimeout:       imageVerificationTimeout,
 		FluxKustomizationNamespace:     envOrDefault("AODS_FLUX_KUSTOMIZATION_NAMESPACE", "flux-system"),
 		FluxSourceName:                 envOrDefault("AODS_FLUX_SOURCE_NAME", "aods-manifest"),
+		FluxStatusCacheTTL:             fluxStatusCacheTTL,
 		PrometheusMode:                 envOrDefault("AODS_PROMETHEUS_MODE", "local"),
 		PrometheusURL:                  envOrDefault("AODS_PROMETHEUS_URL", ""),
 		PrometheusRequestTimeout:       prometheusRequestTimeout,
@@ -216,6 +237,10 @@ func LoadConfig() (Config, error) {
 		VaultStagingMaxAge:             vaultStagingMaxAge,
 		OrphanFluxCleanupInterval:      orphanFluxCleanupInterval,
 		MariaDBDSN:                     envOrDefault("AODS_MARIADB_DSN", ""),
+		ApplicationCatalogDBDriver:     envOrDefault("AODS_APPLICATION_CATALOG_DB_DRIVER", ""),
+		ApplicationCatalogDSN:          envOrDefault("AODS_APPLICATION_CATALOG_DSN", ""),
+		ApplicationCatalogCacheTTL:     applicationCatalogCacheTTL,
+		ApplicationCatalogSyncInterval: applicationCatalogSyncInterval,
 		DeploymentOperationInterval:    deploymentOperationInterval,
 		DeploymentOperationLease:       deploymentOperationLease,
 		DeploymentOperationMaxAttempts: deploymentOperationMaxAttempts,
@@ -263,6 +288,43 @@ func (c Config) UseVaultAPI() bool {
 
 func (c Config) UseMariaDBOperations() bool {
 	return strings.TrimSpace(c.MariaDBDSN) != ""
+}
+
+func (c Config) UseApplicationCatalogCache() bool {
+	return c.ApplicationCatalogCacheTTL > 0 && c.ResolvedApplicationCatalogDSN() != ""
+}
+
+func (c Config) ResolvedApplicationCatalogDSN() string {
+	if dsn := strings.TrimSpace(c.ApplicationCatalogDSN); dsn != "" {
+		return dsn
+	}
+	return strings.TrimSpace(c.MariaDBDSN)
+}
+
+func (c Config) ResolvedApplicationCatalogDBDriver() string {
+	if driver := normalizeSQLDriverName(c.ApplicationCatalogDBDriver); driver != "" {
+		return driver
+	}
+	dsn := strings.ToLower(c.ResolvedApplicationCatalogDSN())
+	switch {
+	case strings.HasPrefix(dsn, "postgres://"), strings.HasPrefix(dsn, "postgresql://"):
+		return "postgres"
+	case dsn != "":
+		return "mysql"
+	default:
+		return ""
+	}
+}
+
+func normalizeSQLDriverName(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "postgres", "postgresql", "pg":
+		return "postgres"
+	case "mysql", "mariadb":
+		return "mysql"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
 }
 
 func envOrDefault(key string, fallback string) string {

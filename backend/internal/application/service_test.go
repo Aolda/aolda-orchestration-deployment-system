@@ -650,6 +650,7 @@ func TestGetProjectHealthAggregatesSyncMetricsAndDeploymentSignals(t *testing.T)
 		DeploymentStrategy: DeploymentStrategyRollout,
 		MeshEnabled:        true,
 	}
+	statusReader := &batchStatusReaderStub{}
 	service := Service{
 		Projects: authorizedProjectService(),
 		Store: deploymentStore{
@@ -668,11 +669,7 @@ func TestGetProjectHealthAggregatesSyncMetricsAndDeploymentSignals(t *testing.T)
 				},
 			},
 		},
-		StatusReader: staticStatusReader{info: SyncInfo{
-			Status:     SyncStatusSynced,
-			Message:    "Applied revision",
-			ObservedAt: observedAt,
-		}},
+		StatusReader: statusReader,
 		MetricsReader: serviceStaticMetricsReader{metrics: []MetricSeries{
 			singlePointMetric("request_rate", 12, observedAt),
 			{Key: "latency_p95", Label: "Latency P95", Unit: "ms", Points: []MetricPoint{}},
@@ -694,6 +691,12 @@ func TestGetProjectHealthAggregatesSyncMetricsAndDeploymentSignals(t *testing.T)
 	}
 	if item.SyncStatus != SyncStatusSynced {
 		t.Fatalf("expected synced status, got %s", item.SyncStatus)
+	}
+	if statusReader.readManyCalls != 1 {
+		t.Fatalf("expected project health to batch-read sync once, got %d", statusReader.readManyCalls)
+	}
+	if statusReader.readCalls != 0 {
+		t.Fatalf("expected project health not to re-read sync per deployment, got %d", statusReader.readCalls)
 	}
 	if item.LatestDeployment == nil || item.LatestDeployment.DeploymentID != "dep_failed" {
 		t.Fatalf("expected latest deployment in health snapshot, got %#v", item.LatestDeployment)

@@ -23,7 +23,6 @@ import {
   Text,
   Textarea,
   TextInput,
-  Tooltip,
 } from '@mantine/core'
 import { notifications } from '@mantine/notifications'
 import {
@@ -46,11 +45,25 @@ import {
   IconBolt,
   IconExternalLink,
   IconTrash,
-  IconUser,
 } from '@tabler/icons-react'
 import { ApiError, api } from './api/client'
 import classes from './App.module.css'
+import {
+  applicationDetailsRefreshIntervalMs,
+  cpuLimitPresetOptions,
+  externalInternetConnectionURL,
+  memoryLimitPresetOptions,
+  projectRefreshIntervalMs,
+  repositoryPollIntervalOptions,
+  showApplicationLifecycleControls,
+  showEmergencyActionControls,
+  showProjectComposer,
+  showRollbackPolicyControls,
+  showServiceMeshControls,
+  supportedDeploymentStrategies,
+} from './app/appConfig'
 import { ApplicationWizard, type CreateFormState } from './components/ApplicationWizard'
+import { LoginForm } from './components/auth/LoginForm'
 import {
   clearEmergencyAuthSession,
   clearOIDCSession,
@@ -96,36 +109,13 @@ import type {
 import { AppShell as PortalShell } from './app/layout/AppShell'
 import type { GlobalSection } from './app/layout/navigation'
 import { ProjectsWorkspace, type ProjectTab } from './pages/projects/ProjectsWorkspace'
+import { ProjectSettingsPanel } from './pages/projects/ProjectSettingsPanel'
 import { ChangesWorkspace } from './pages/changes/ChangesWorkspace'
 import { ClustersPage } from './pages/clusters/ClustersPage'
 import { MePage } from './pages/me/MePage'
 import { StatePanel } from './components/ui/StatePanel'
 
 const platformAdminAuthorities = new Set(parseAuthorityList(import.meta.env.VITE_AODS_PLATFORM_ADMIN_AUTHORITIES ?? 'aods:platform:admin'))
-const localLoginUsername = 'admin'
-const localLoginPassword = 'qwe1356@'
-const supportedDeploymentStrategies = ['Rollout'] as const
-const repositoryPollIntervalOptions = [
-  { value: '60', label: '1분' },
-  { value: '300', label: '5분' },
-  { value: '600', label: '10분' },
-]
-const projectRefreshIntervalMs = 15000
-const applicationDetailsRefreshIntervalMs = 15000
-const externalInternetConnectionURL = 'https://itda.aoldacloud.com/login'
-const showProjectComposer = false
-const showRollbackPolicyControls = false
-const showServiceMeshControls = false
-const showEmergencyActionControls = false
-const showApplicationLifecycleControls = true
-const cpuLimitPresetOptions = [
-  { value: '500m', label: '기본 상한 500m' },
-  { value: '1000m', label: '확장 상한 1000m' },
-]
-const memoryLimitPresetOptions = [
-  { value: '512Mi', label: '기본 상한 512Mi' },
-  { value: '1Gi', label: '확장 상한 1Gi' },
-]
 
 function translateCreateApplicationError(message: string) {
   if (message === 'repositoryServiceId is required when the descriptor defines multiple services') {
@@ -346,8 +336,8 @@ const MetricCard = ({
   onClick?: () => void
   description?: string
 }) => (
-  <div 
-    className={`${classes.metricCard} ${active ? classes.activeMetricCard : ''}`} 
+  <div
+    className={`${classes.metricCard} ${active ? classes.activeMetricCard : ''}`}
     onClick={onClick}
     style={{ cursor: onClick ? 'pointer' : 'default' }}
   >
@@ -367,42 +357,57 @@ const MetricCard = ({
   </div>
 )
 
-const HelpTooltipLabel = ({ label, description }: { label: string; description: string }) => (
-  <Group gap={6} align="center" wrap="nowrap">
-    <Text size="xs" c="dimmed" fw={700}>{label}</Text>
-    <Tooltip label={description} multiline w={280} withArrow position="top-start">
-      <Text
-        component="span"
-        size="xs"
-        fw={800}
-        c="lagoon.6"
-        style={{
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: '18px',
-          height: '18px',
-          borderRadius: '999px',
-          border: '1px solid #bfdbfe',
-          background: '#eff6ff',
-          cursor: 'help',
-          flexShrink: 0,
-        }}
-      >
-        ?
-      </Text>
-    </Tooltip>
-  </Group>
-)
+function OperationProgress({
+  steps,
+  compact = false,
+}: {
+  steps: OperationStep[]
+  compact?: boolean
+}) {
+  return (
+    <div className={`${classes.progressList} ${compact ? classes.progressListCompact : ''}`}>
+      {steps.map((step) => (
+        <div
+          key={step.title}
+          className={`${classes.progressItem} ${compact ? classes.progressItemCompact : ''} ${deploymentStageClass(step.state, classes)}`}
+        >
+          <div className={classes.progressMarker}>{step.icon}</div>
+          <div className={classes.progressCopy}>
+            <Group gap="xs" align="center">
+              <Text className={classes.progressTitle}>{step.title}</Text>
+              {step.owner ? (
+                <Badge size="xs" color="gray" variant="light" radius="sm">
+                  {step.owner}
+                </Badge>
+              ) : null}
+            </Group>
+            <div className={classes.progressDetail}>{step.detail}</div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 type ApplicationCatalogSignalState = 'available' | 'empty' | 'failed'
 type LoadBalancerExposureStepState = 'done' | 'active' | 'pending' | 'error'
+type OperationStepState = 'complete' | 'active' | 'pending' | 'error'
+type ApplicationCreationStage = 'idle' | 'submitting' | 'refreshing' | 'error'
+type ProjectCreationStage = 'idle' | 'writing' | 'refreshing' | 'error'
 
 type LoadBalancerExposureStep = {
   title: string
   owner: 'AODS' | 'Flux' | '클러스터' | '네트워크'
   detail: ReactNode
   state: LoadBalancerExposureStepState
+}
+
+type OperationStep = {
+  title: string
+  owner?: string
+  detail: ReactNode
+  state: OperationStepState
+  icon: ReactNode
 }
 
 type ApplicationCatalogSignal = {
@@ -487,411 +492,8 @@ function resolveApplicationNetworkDraft(application?: {
   }
 }
 
-// --- Login Form Component ---
-
-const LoginForm = ({
-  oidcEnabled,
-  allowEmergencyLogin,
-  onLogin,
-  onEmergencyLogin,
-}: {
-  oidcEnabled: boolean
-  allowEmergencyLogin: boolean
-  onLogin: () => Promise<void>
-  onEmergencyLogin: (username: string, password: string) => Promise<void>
-}) => {
-  const [username, setUsername] = useState('')
-  const [password, setPassword] = useState('')
-  const [error, setError] = useState('')
-  const [submitting, setSubmitting] = useState<'oidc' | 'emergency' | 'password' | null>(null)
-
-  const runLogin = async (mode: 'oidc' | 'emergency' | 'password') => {
-    setSubmitting(mode)
-    setError('')
-    try {
-      if (mode === 'emergency') {
-        await onEmergencyLogin(username, password)
-      } else {
-        await onLogin()
-      }
-    } catch (loginError) {
-      setSubmitting(null)
-      setError(loginError instanceof Error ? loginError.message : '로그인을 시작하지 못했습니다.')
-    }
-  }
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (oidcEnabled) {
-      void runLogin('emergency')
-      return
-    }
-
-    if (username === localLoginUsername && password === localLoginPassword) {
-      void runLogin('password')
-      return
-    }
-
-    setError('아이디 또는 비밀번호가 올바르지 않습니다.')
-  }
-
-  return (
-    <div className={classes.authShell}>
-      <div className={classes.loginCard}>
-        <Stack gap="xl">
-          <div style={{ textAlign: 'center' }}>
-            <Text
-              fw={900}
-              style={{
-                fontSize: '3rem',
-                letterSpacing: '-0.06em',
-                lineHeight: 1,
-              }}
-            >
-              AODS
-            </Text>
-            <Text size="sm" c="dimmed" mt={8}>
-              내부 배포 관리 플랫폼
-            </Text>
-          </div>
-
-          {oidcEnabled && allowEmergencyLogin ? (
-            <Stack gap="lg">
-              <form onSubmit={handleSubmit} autoComplete="off">
-                <Stack gap="md">
-                  {error ? <Alert color="red">{error}</Alert> : null}
-                  <TextInput
-                    label="아이디"
-                    value={username}
-                    onChange={(e) => setUsername(e.target.value)}
-                    required
-                    leftSection={<IconUser size={16} />}
-                    name="aods-login-username"
-                    autoComplete="off"
-                    autoCapitalize="none"
-                    spellCheck={false}
-                  />
-                  <PasswordInput
-                    label="비밀번호"
-                    value={password}
-                    onChange={(e) => setPassword(e.target.value)}
-                    required
-                    leftSection={<IconLock size={16} />}
-                    name="aods-login-password"
-                    autoComplete="new-password"
-                  />
-                  <Button fullWidth size="md" color="lagoon.6" type="submit" mt="xs" loading={submitting === 'emergency'}>
-                    로그인
-                  </Button>
-                </Stack>
-              </form>
-
-              <Divider label="또는" labelPosition="center" />
-
-              <Stack gap="xs">
-                <Button fullWidth size="md" variant="default" onClick={() => void runLogin('oidc')} loading={submitting === 'oidc'}>
-                  Keycloak으로 로그인
-                </Button>
-              </Stack>
-            </Stack>
-          ) : oidcEnabled ? (
-            <Stack gap="md">
-              <Alert color="blue" variant="light">
-                사내 SSO(Keycloak)로 로그인한 뒤 `aods` 클라이언트 권한을 기준으로 포털 접근 범위를 결정합니다.
-              </Alert>
-              {error ? <Alert color="red">{error}</Alert> : null}
-              <Button fullWidth size="md" color="lagoon.6" onClick={() => void runLogin('oidc')} loading={submitting === 'oidc'}>
-                Keycloak로 로그인
-              </Button>
-            </Stack>
-          ) : (
-            <form onSubmit={handleSubmit} autoComplete="off">
-              <Stack gap="md">
-                <TextInput
-                  label="아이디"
-                  value={username}
-                  onChange={(e) => setUsername(e.target.value)}
-                  required
-                  leftSection={<IconUser size={16} />}
-                  name="aods-login-username"
-                  autoComplete="off"
-                  autoCapitalize="none"
-                  spellCheck={false}
-                />
-                <PasswordInput
-                  label="비밀번호"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  leftSection={<IconLock size={16} />}
-                  name="aods-login-password"
-                  autoComplete="new-password"
-                />
-                {error ? <Alert color="red">{error}</Alert> : null}
-                <Button fullWidth size="md" color="lagoon.6" type="submit" mt="md" loading={submitting === 'password'}>
-                  로그인
-                </Button>
-              </Stack>
-            </form>
-          )}
-        </Stack>
-      </div>
-    </div>
-  )
-}
-
-type ProjectSettingsPanelProps = {
-  project: ProjectSummary | undefined
-  environments: EnvironmentSummary[]
-  projectPolicy: ProjectPolicy | null
-  canEditPolicies: boolean
-  savingPolicies: boolean
-  onSavePolicies: (policy: ProjectPolicy) => void
-  applicationCount: number
-  canDeleteProject: boolean
-  isProtectedProject: boolean
-  deletingProject: boolean
-  pendingProjectDelete: boolean
-  onRequestProjectDelete: () => void
-  onCancelProjectDelete: () => void
-  onConfirmProjectDelete: () => void
-}
-
 type ChangeActionKind = 'submit' | 'approve' | 'merge'
 type LifecycleActionKind = 'archive' | 'delete'
-
-const ProjectSettingsPanel = ({
-  project,
-  environments,
-  projectPolicy,
-  canEditPolicies,
-  savingPolicies,
-  onSavePolicies,
-  applicationCount,
-  canDeleteProject,
-  isProtectedProject,
-  deletingProject,
-  pendingProjectDelete,
-  onRequestProjectDelete,
-  onCancelProjectDelete,
-  onConfirmProjectDelete,
-}: ProjectSettingsPanelProps) => {
-  const [policyDraft, setPolicyDraft] = useState<ProjectPolicy | null>(() => cloneProjectPolicy(projectPolicy))
-
-  return (
-  <Stack gap="xl" className={classes.projectSettingsPanel}>
-    <div className={classes.surfaceCard}>
-      <Text className={classes.sectionEyebrow} mb="md">기본 정보</Text>
-      <Alert color="gray" variant="light" radius="md" mb="md">
-        프로젝트 이름은 영문 소문자 slug 규칙으로 생성되며, 프로젝트 ID와 Kubernetes namespace도 같은 값을 사용합니다. 이 식별자는 생성 후 변경할 수 없습니다.
-      </Alert>
-      <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-        <div>
-          <HelpTooltipLabel label="프로젝트 이름" description="프로젝트 식별에 사용하는 영문 slug이며, 내부 ID와 동일하게 동작합니다." />
-          <Text size="sm" fw={800}>{project?.name || '-'}</Text>
-        </div>
-        <div>
-          <HelpTooltipLabel label="네임스페이스" description="배포 리소스와 애플리케이션을 논리적으로 묶는 기본 공간입니다." />
-          <Text size="sm" fw={800}>{project?.namespace || '-'}</Text>
-        </div>
-      </SimpleGrid>
-    </div>
-
-    <div className={classes.surfaceCard}>
-      <Text className={classes.sectionEyebrow} mb="md">운영 환경</Text>
-      {environments.length > 0 ? (
-        <ScrollArea className={classes.projectSettingsTableScroll} offsetScrollbars>
-          <Table striped highlightOnHover className={classes.projectSettingsTable} miw={640}>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>
-                  <HelpTooltipLabel label="이름" description="배포와 운영에서 구분하는 환경 이름입니다. 예: dev, staging, prod" />
-                </Table.Th>
-                <Table.Th>
-                  <HelpTooltipLabel label="클러스터" description="이 운영 환경이 실제로 반영되는 대상 클러스터입니다." />
-                </Table.Th>
-                <Table.Th>
-                  <HelpTooltipLabel label="반영 방식" description="직접 반영이면 바로 적용되고, 변경 요청이면 승인 흐름을 거쳐 반영됩니다." />
-                </Table.Th>
-                <Table.Th>
-                  <HelpTooltipLabel label="기본" description="새 애플리케이션 생성이나 배포 시 기본 선택으로 잡히는 환경인지 표시합니다." />
-                </Table.Th>
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
-              {environments.map((environment) => (
-                <Table.Tr key={environment.id}>
-                  <Table.Td>{environment.name}</Table.Td>
-                  <Table.Td>{environment.clusterId}</Table.Td>
-                  <Table.Td>{environment.writeMode === 'pull_request' ? '변경 요청' : '직접 반영'}</Table.Td>
-                  <Table.Td>
-                    <Badge color={environment.default ? 'lagoon.6' : 'gray'} variant="light">
-                      {environment.default ? '기본' : '일반'}
-                    </Badge>
-                  </Table.Td>
-                </Table.Tr>
-              ))}
-            </Table.Tbody>
-          </Table>
-        </ScrollArea>
-      ) : (
-        <Text size="sm" c="dimmed">운영 환경 정보를 아직 불러오지 못했습니다.</Text>
-      )}
-    </div>
-
-    <div className={classes.surfaceCard}>
-      <Text className={classes.sectionEyebrow} mb="md">배포 정책</Text>
-      {policyDraft ? (
-        <Stack gap="md">
-          <Text size="sm" c="dimmed">
-            아래 정책 값은 이 화면에서 바로 수정할 수 있습니다. 저장하면 현재 프로젝트의 운영 가드레일에 즉시 반영됩니다.
-          </Text>
-          <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="md">
-          <div>
-            <HelpTooltipLabel label="최소 복제본 수" description="서비스가 유지해야 하는 최소 replica 기준값입니다." />
-            <NumberInput
-              min={0}
-              value={policyDraft.minReplicas}
-              onChange={(value) => {
-                const nextValue = typeof value === 'number' ? value : Number(value || 0)
-                setPolicyDraft((current) => (current ? { ...current, minReplicas: Number.isFinite(nextValue) ? nextValue : 0 } : current))
-              }}
-              disabled={!canEditPolicies}
-            />
-          </div>
-          <div>
-            <HelpTooltipLabel label="프로브 필수" description="liveness, readiness 같은 헬스체크 설정을 필수로 요구하는지 나타냅니다." />
-            <Switch
-              checked={policyDraft.requiredProbes}
-              onChange={(event) => {
-                const checked = event.currentTarget.checked
-                setPolicyDraft((current) => (current ? { ...current, requiredProbes: checked } : current))
-              }}
-              disabled={!canEditPolicies}
-            />
-          </div>
-          <div>
-            <HelpTooltipLabel label="운영 환경 변경 요청 필수" description="운영 성격 환경에는 직접 반영 대신 승인 기반 변경 요청이 필요한지 보여줍니다." />
-            <Switch
-              checked={policyDraft.prodPRRequired}
-              onChange={(event) => {
-                const checked = event.currentTarget.checked
-                setPolicyDraft((current) => (current ? { ...current, prodPRRequired: checked } : current))
-              }}
-              disabled={!canEditPolicies}
-            />
-          </div>
-          {showRollbackPolicyControls ? (
-            <div>
-              <HelpTooltipLabel label="자동 롤백" description="배포 이상 징후가 생기면 이전 안정 버전으로 자동 복구할지 나타냅니다." />
-              <Switch
-                checked={policyDraft.autoRollbackEnabled}
-                onChange={(event) => {
-                  const checked = event.currentTarget.checked
-                  setPolicyDraft((current) => (current ? { ...current, autoRollbackEnabled: checked } : current))
-                }}
-                disabled={!canEditPolicies}
-              />
-            </div>
-          ) : null}
-          <div>
-            <HelpTooltipLabel label="허용 환경" description="이 프로젝트가 배포 대상으로 사용할 수 있는 운영 환경 목록입니다." />
-            <Text size="sm" fw={800}>{policyDraft.allowedEnvironments.join(', ') || '-'}</Text>
-            <Text size="xs" c="dimmed">현재 플랫폼 기본값으로 고정되어 있으며 이 화면에서 수정하지 않습니다.</Text>
-          </div>
-          <div>
-            <HelpTooltipLabel label="허용 배포 전략" description="이 프로젝트에서 선택 가능한 배포 방식 목록입니다." />
-            <Text size="sm" fw={800}>{supportedDeploymentStrategies.join(', ')}</Text>
-            <Text size="xs" c="dimmed">현재 프론트에서는 Rollout만 지원하도록 고정되어 있습니다.</Text>
-          </div>
-          <div style={{ gridColumn: '1 / -1' }}>
-            <HelpTooltipLabel label="허용 클러스터 대상" description="이 프로젝트가 배포될 수 있는 클러스터 범위를 정의합니다." />
-            <Text size="sm" fw={800}>{policyDraft.allowedClusterTargets.join(', ') || '-'}</Text>
-            <Text size="xs" c="dimmed">현재 플랫폼 기본값으로 고정되어 있으며 이 화면에서 수정하지 않습니다.</Text>
-          </div>
-          </SimpleGrid>
-
-          <Group justify="space-between" align="center">
-            {!canEditPolicies ? (
-              <Text size="sm" c="dimmed">admin 역할만 정책 변경을 저장할 수 있습니다.</Text>
-            ) : (
-              <Text size="sm" c="dimmed">허용 환경, 배포 전략, 클러스터 대상은 현재 플랫폼 기본값으로 고정됩니다.</Text>
-            )}
-            <Group>
-              <Button
-                variant="default"
-                disabled={!canEditPolicies}
-                onClick={() => {
-                  setPolicyDraft(cloneProjectPolicy(projectPolicy))
-                }}
-              >
-                되돌리기
-              </Button>
-              <Button
-                color="lagoon.6"
-                loading={savingPolicies}
-                disabled={!canEditPolicies || !policyDraft}
-                onClick={() => {
-                  if (policyDraft) {
-                    onSavePolicies(policyDraft)
-                  }
-                }}
-              >
-                정책 저장
-              </Button>
-            </Group>
-          </Group>
-        </Stack>
-      ) : (
-        <Text size="sm" c="dimmed">프로젝트 정책 정보를 아직 불러오지 못했습니다.</Text>
-      )}
-    </div>
-
-    <div className={classes.surfaceCard}>
-      <Group justify="space-between" align="start" mb="md">
-        <div>
-          <Text className={classes.sectionEyebrow}>위험 구역</Text>
-          <Text fw={800}>프로젝트 삭제</Text>
-          <Text size="sm" c="dimmed" mt={6}>
-            프로젝트 카탈로그 엔트리와 애플리케이션 {applicationCount}개, 연결된 앱 시크릿을 함께 정리합니다.
-          </Text>
-        </div>
-        <Badge color={isProtectedProject ? 'gray' : canDeleteProject ? 'red' : 'gray'} variant="light">
-          {isProtectedProject ? '보호됨' : canDeleteProject ? '삭제 가능' : '권한 필요'}
-        </Badge>
-      </Group>
-
-      {isProtectedProject ? (
-        <Alert color="gray" radius="md" icon={<IconLock size={16} />}>
-          공용 프로젝트는 보호 대상이라 삭제할 수 없습니다.
-        </Alert>
-      ) : pendingProjectDelete ? (
-        <Alert color="red" radius="md" icon={<IconAlertTriangle size={16} />}>
-          <Text size="sm">
-            이 작업은 되돌릴 수 없습니다. 프로젝트 자체와 하위 애플리케이션 운영 흔적이 함께 정리됩니다.
-          </Text>
-          <Group mt="md">
-            <Button color="red" loading={deletingProject} onClick={onConfirmProjectDelete}>
-              프로젝트 삭제 확인
-            </Button>
-            <Button variant="default" onClick={onCancelProjectDelete}>
-              취소
-            </Button>
-          </Group>
-        </Alert>
-      ) : (
-        <Stack gap="xs">
-          <Button color="red" variant="light" disabled={!canDeleteProject} onClick={onRequestProjectDelete}>
-            프로젝트 삭제
-          </Button>
-          {!canDeleteProject ? (
-            <Text size="sm" c="dimmed">platform admin만 프로젝트 삭제를 실행할 수 있습니다.</Text>
-          ) : null}
-        </Stack>
-      )}
-    </div>
-  </Stack>
-)}
 
 // --- Main App Component ---
 
@@ -915,6 +517,7 @@ export default function App() {
   const [environments, setEnvironments] = useState<EnvironmentSummary[]>([])
   const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(null)
   const [projectDataLoaded, setProjectDataLoaded] = useState(false)
+  const [applicationListLoaded, setApplicationListLoaded] = useState(false)
   const [projectDataWarnings, setProjectDataWarnings] = useState<string[]>([])
   const [trackedChanges, setTrackedChanges] = useState<ChangeRecord[]>([])
   const [selectedChangeId, setSelectedChangeId] = useState<string | null>(null)
@@ -948,6 +551,8 @@ export default function App() {
   const [projectSettingsOpened, setProjectSettingsOpened] = useState(false)
   const [creatingApplication, setCreatingApplication] = useState(false)
   const [creatingProject, setCreatingProject] = useState(false)
+  const [applicationCreationStage, setApplicationCreationStage] = useState<ApplicationCreationStage>('idle')
+  const [projectCreationStage, setProjectCreationStage] = useState<ProjectCreationStage>('idle')
   const [deletingProject, setDeletingProject] = useState(false)
   const [creatingCluster, setCreatingCluster] = useState(false)
   const [creatingChange, setCreatingChange] = useState(false)
@@ -1043,6 +648,7 @@ export default function App() {
     setEnvironments([])
     setProjectPolicy(null)
     setProjectDataLoaded(false)
+    setApplicationListLoaded(false)
     setProjectDataWarnings([])
     setTrackedChanges([])
     setSelectedChangeId(null)
@@ -1099,6 +705,8 @@ export default function App() {
     setPendingLifecycleAction(null)
     setCreatingApplication(false)
     setCreatingProject(false)
+    setApplicationCreationStage('idle')
+    setProjectCreationStage('idle')
     setDeletingProject(false)
     setCreatingCluster(false)
     setCreatingChange(false)
@@ -1230,12 +838,40 @@ export default function App() {
     const requestSeq = ++projectRefreshSeq.current
     try {
       const warnings: string[] = []
-      const [appRes, healthRes, envRes, policyRes] = await Promise.allSettled([
-        api.getApplications(projectId),
-        api.getProjectHealth(projectId),
-        api.getProjectEnvironments(projectId),
-        api.getProjectPolicies(projectId),
-      ])
+      const appRequest = api.getApplications(projectId).then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason) => ({ status: 'rejected' as const, reason }),
+      )
+      const healthRequest = api.getProjectHealth(projectId).then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason) => ({ status: 'rejected' as const, reason }),
+      )
+      const envRequest = api.getProjectEnvironments(projectId).then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason) => ({ status: 'rejected' as const, reason }),
+      )
+      const policyRequest = api.getProjectPolicies(projectId).then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (reason) => ({ status: 'rejected' as const, reason }),
+      )
+
+      const appRes = await appRequest
+      if (requestSeq !== projectRefreshSeq.current) {
+        return
+      }
+
+      if (appRes.status === 'fulfilled') {
+        setApplications(appRes.value.items)
+        setApplicationListLoaded(true)
+      } else {
+        setApplicationCatalogSignals({})
+        setProjectInsightMetrics([])
+        setApplicationListLoaded(true)
+        warnings.push('애플리케이션 목록을 불러오지 못했습니다.')
+        console.error('Failed to refresh applications', appRes.reason)
+      }
+
+      const [healthRes, envRes, policyRes] = await Promise.all([healthRequest, envRequest, policyRequest])
       if (requestSeq !== projectRefreshSeq.current) {
         return
       }
@@ -1323,8 +959,6 @@ export default function App() {
       } else {
         setApplicationCatalogSignals({})
         setProjectInsightMetrics([])
-        warnings.push('애플리케이션 목록을 불러오지 못했습니다.')
-        console.error('Failed to refresh applications', appRes.reason)
       }
 
       if (envRes.status === 'fulfilled') {
@@ -1354,6 +988,7 @@ export default function App() {
     } catch (err) {
       console.error('Failed to refresh project data', err)
       setProjectDataWarnings(['프로젝트 작업 공간 데이터를 새로고침하지 못했습니다.'])
+      setApplicationListLoaded(true)
       setProjectDataLoaded(true)
     }
   }, [])
@@ -1418,6 +1053,7 @@ export default function App() {
   useEffect(() => {
     if (!selectedProjectId) return
     setProjectDataLoaded(false)
+    setApplicationListLoaded(false)
     setProjectDataWarnings([])
     refreshProjectData(selectedProjectId)
     const ival = setInterval(() => refreshProjectData(selectedProjectId), projectRefreshIntervalMs)
@@ -2053,6 +1689,7 @@ export default function App() {
     }
 
     setCreatingApplication(true)
+    setApplicationCreationStage('submitting')
     try {
       const created = await api.createApplication(selectedProjectId, {
         name: form.name.trim() || undefined,
@@ -2078,6 +1715,10 @@ export default function App() {
         registryUsername: form.registryUsername.trim() || undefined,
         registryToken: form.registryToken.trim() || undefined,
       })
+      setApplicationCreationStage('refreshing')
+      await refreshProjectData(selectedProjectId)
+      setProjectTab('applications')
+      setSelectedAppId(created.id)
       notifications.show({
         title: '애플리케이션 생성 완료',
         message:
@@ -2087,10 +1728,9 @@ export default function App() {
         color: 'green',
       })
       setWizardOpened(false)
-      await refreshProjectData(selectedProjectId)
-      setProjectTab('applications')
-      setSelectedAppId(created.id)
+      setApplicationCreationStage('idle')
     } catch (error) {
+      setApplicationCreationStage('error')
       let message = '요청이 거부되었습니다.'
       if (error instanceof ApiError) {
         if (error.code === 'CHANGE_REVIEW_REQUIRED') {
@@ -2184,23 +1824,27 @@ export default function App() {
     }
 
     setCreatingProject(true)
+    setProjectCreationStage('writing')
     try {
       const created = await api.createProject({
         id: projectDraft.id.trim(),
         name: projectDraft.name.trim(),
         description: projectDraft.description?.trim() || undefined,
       })
+      setProjectCreationStage('refreshing')
       const projectRes = await api.getProjects()
       setProjects(filterVisibleProjects(projectRes.items))
       setSelectedProjectId(created.id)
       setProjectDraft({ id: '', name: '', description: '' })
       setProjectComposerOpen(false)
+      setProjectCreationStage('idle')
       notifications.show({
         title: '프로젝트 생성 완료',
         message: `${created.name} 프로젝트를 생성했습니다.`,
         color: 'green',
       })
     } catch {
+      setProjectCreationStage('error')
       notifications.show({
         title: '프로젝트 생성 실패',
         message: '프로젝트를 생성하지 못했습니다.',
@@ -2273,6 +1917,7 @@ export default function App() {
       setProjectInsightMetrics([])
       setApplicationCatalogSignals({})
       setProjectDataLoaded(false)
+      setApplicationListLoaded(false)
       setTrackedChanges([])
       setSelectedChangeId(null)
       setSelectedAppId(null)
@@ -3129,14 +2774,17 @@ export default function App() {
           leftSection={<IconPlus size={16} />}
           color="lagoon.6"
           radius="md"
-          onClick={() => setWizardOpened(true)}
+          onClick={() => {
+            setApplicationCreationStage('idle')
+            setWizardOpened(true)
+          }}
           disabled={!canDeployInProject}
         >
           새 애플리케이션
         </Button>
       </Group>
 
-      {projectDataLoaded ? (
+      {applicationListLoaded ? (
         <SimpleGrid cols={{ base: 1, sm: 2, xl: 5 }} spacing="sm">
           <div className={classes.statBadge}>
             <Text className={classes.statLabel}>전체 애플리케이션</Text>
@@ -3161,7 +2809,7 @@ export default function App() {
         </SimpleGrid>
       ) : null}
 
-      {!projectDataLoaded ? (
+      {!applicationListLoaded ? (
         <StatePanel
           kind="loading"
           title="애플리케이션 목록을 불러오는 중"
@@ -3204,6 +2852,19 @@ export default function App() {
                   <Text size="sm" c="dimmed" className={classes.applicationCatalogSummary}>
                     {buildApplicationCatalogSummary(app, selectedProject?.namespace || 'default', signal)}
                   </Text>
+
+                  <div className={classes.applicationSyncWorkflow}>
+                    <Group justify="space-between" align="center" mb="xs">
+                      <Text size="sm" fw={800}>반영 단계</Text>
+                      <Badge color={operationSummaryColor(app, signal)} variant="light" radius="sm">
+                        {operationSummaryLabel(app, signal)}
+                      </Badge>
+                    </Group>
+                    <OperationProgress
+                      steps={buildApplicationSyncWorkflow(app, selectedProject?.namespace || 'default', signal)}
+                      compact
+                    />
+                  </div>
 
                   {syncIssue ? (
                     <Alert color={applicationSyncIssueColor(app.syncStatus)} variant="light" icon={<IconAlertTriangle size={16} />}>
@@ -3680,6 +3341,7 @@ export default function App() {
         onCreateProject={() => {
           setActiveSection('projects')
           setProjectTab(defaultProjectTab())
+          setProjectCreationStage('idle')
           setProjectComposerOpen(true)
         }}
       >
@@ -5293,7 +4955,11 @@ export default function App() {
 
       <Drawer
         opened={showProjectComposer && projectComposerOpen}
-        onClose={() => setProjectComposerOpen(false)}
+        onClose={() => {
+          if (creatingProject) return
+          setProjectComposerOpen(false)
+          setProjectCreationStage('idle')
+        }}
         position="right"
         size="min(720px, calc(100vw - 24px))"
         title={<Text fw={900} size="lg">새 프로젝트 생성</Text>}
@@ -5309,6 +4975,21 @@ export default function App() {
           <Alert color="lagoon.6" radius="md" icon={<IconPlus size={16} />}>
             기본 환경과 정책은 서버 기본값으로 초기화됩니다. 프로젝트를 만든 뒤 설정 화면에서 운영 규칙은 바로 수정할 수 있지만, 이름과 namespace는 생성 후 고정됩니다.
           </Alert>
+
+          <div className={classes.operationProgressSection}>
+            <Group justify="space-between" align="center" mb="sm">
+              <div>
+                <Text fw={800}>프로젝트 생성 반영 단계</Text>
+                <Text size="sm" c="dimmed">
+                  카탈로그 쓰기와 Flux scaffold 준비, 화면 새로고침 순서로 진행됩니다.
+                </Text>
+              </div>
+              <Badge color={projectCreationStage === 'error' ? 'red' : creatingProject ? 'lagoon.6' : 'gray'} variant="light" radius="sm">
+                {creatingProject ? '진행 중' : projectCreationStage === 'error' ? '확인 필요' : '대기'}
+              </Badge>
+            </Group>
+            <OperationProgress steps={buildProjectCreationWorkflow(projectCreationStage, projectDraft.name)} compact />
+          </div>
 
           <TextInput
             label="프로젝트 이름"
@@ -5337,7 +5018,14 @@ export default function App() {
           />
 
           <Group grow>
-            <Button variant="default" onClick={() => setProjectComposerOpen(false)}>
+            <Button
+              variant="default"
+              disabled={creatingProject}
+              onClick={() => {
+                setProjectComposerOpen(false)
+                setProjectCreationStage('idle')
+              }}
+            >
               닫기
             </Button>
             <Button color="lagoon.6" loading={creatingProject} onClick={handleCreateProject}>
@@ -5350,30 +5038,57 @@ export default function App() {
       {/* New Application Wizard Drawer */}
       <Drawer
         opened={wizardOpened}
-        onClose={() => setWizardOpened(false)}
+        onClose={() => {
+          if (creatingApplication) return
+          setWizardOpened(false)
+          setApplicationCreationStage('idle')
+        }}
         position="right"
         size="min(860px, calc(100vw - 24px))"
         title={<Text fw={900} size="lg">새 애플리케이션 생성</Text>}
       >
-        <ApplicationWizard
-          key={[
-            selectedProjectId || 'no-project',
-            wizardOpened ? 'open' : 'closed',
-            wizardInitialState.sourceMode,
-            wizardInitialState.repositoryUrl || 'no-repo',
-            wizardInitialState.environment || 'no-env',
-          ].join(':')}
-          projectId={selectedProjectId || undefined}
-          projectName={selectedProject?.name}
-          environments={environments}
-          allowedStrategies={supportedDeploymentStrategies}
-          initialState={wizardInitialState}
-          onPreviewSource={handlePreviewAppSource}
-          onVerifyImageAccess={handleVerifyAppImageAccess}
-          onSubmit={handleCreateApp}
-          onCancel={() => setWizardOpened(false)}
-          submitting={creatingApplication}
-        />
+        <Stack gap="lg">
+          {applicationCreationStage !== 'idle' ? (
+            <div className={classes.operationProgressSection}>
+              <Group justify="space-between" align="center" mb="sm">
+                <div>
+                  <Text fw={800}>애플리케이션 생성 반영 단계</Text>
+                  <Text size="sm" c="dimmed">
+                    생성 요청 처리 뒤 목록 카드에서 Flux와 Kubernetes 반영 상태를 이어서 추적합니다.
+                  </Text>
+                </div>
+                <Badge color={applicationCreationStage === 'error' ? 'red' : 'lagoon.6'} variant="light" radius="sm">
+                  {applicationCreationStage === 'error' ? '확인 필요' : '진행 중'}
+                </Badge>
+              </Group>
+              <OperationProgress steps={buildApplicationCreationWorkflow(applicationCreationStage)} compact />
+            </div>
+          ) : null}
+
+          <ApplicationWizard
+            key={[
+              selectedProjectId || 'no-project',
+              wizardOpened ? 'open' : 'closed',
+              wizardInitialState.sourceMode,
+              wizardInitialState.repositoryUrl || 'no-repo',
+              wizardInitialState.environment || 'no-env',
+            ].join(':')}
+            projectId={selectedProjectId || undefined}
+            projectName={selectedProject?.name}
+            environments={environments}
+            allowedStrategies={supportedDeploymentStrategies}
+            initialState={wizardInitialState}
+            onPreviewSource={handlePreviewAppSource}
+            onVerifyImageAccess={handleVerifyAppImageAccess}
+            onSubmit={handleCreateApp}
+            onCancel={() => {
+              if (creatingApplication) return
+              setWizardOpened(false)
+              setApplicationCreationStage('idle')
+            }}
+            submitting={creatingApplication}
+          />
+        </Stack>
       </Drawer>
 
       <Drawer
@@ -5480,6 +5195,265 @@ function findHealthSignal(health: ApplicationHealthSnapshot, key: string): Healt
 
 function findCatalogHealthSignal(signal: ApplicationCatalogSignal | undefined, key: string): HealthSignal | undefined {
   return signal?.healthSignals.find((item) => item.key === key)
+}
+
+function buildApplicationSyncWorkflow(
+  app: ApplicationSummary,
+  namespace: string,
+  signal?: ApplicationCatalogSignal,
+): OperationStep[] {
+  const syncSignal = findCatalogHealthSignal(signal, 'sync')
+  const syncIssue = applicationSyncIssue(app, signal)
+  const latestDeploymentLabel = signal?.latestDeployment
+    ? compactLongToken(signal.latestDeployment.imageTag, 18)
+    : '배포 이력 대기'
+
+  return [
+    {
+      title: 'Desired state',
+      owner: 'GitHub',
+      detail: `${namespace} 프로젝트 카탈로그에서 앱 metadata와 manifest 경로를 읽었습니다.`,
+      state: 'complete',
+      icon: <IconGitBranch size={16} />,
+    },
+    {
+      title: 'Flux reconcile',
+      owner: 'Flux',
+      detail: syncSignal?.message || syncIssue || syncStatusStageMessage(app.syncStatus),
+      state: syncOperationState(app, signal),
+      icon: <IconRefresh size={16} />,
+    },
+    {
+      title: 'Runtime',
+      owner: 'Kubernetes',
+      detail: runtimeStageMessage(app, signal, latestDeploymentLabel),
+      state: runtimeOperationState(app, signal),
+      icon: <IconBox size={16} />,
+    },
+    {
+      title: 'Observability',
+      owner: 'Prometheus',
+      detail: observabilityStageMessage(app, signal),
+      state: observabilityOperationState(app, signal),
+      icon: <IconActivity size={16} />,
+    },
+  ]
+}
+
+function buildApplicationCreationWorkflow(stage: ApplicationCreationStage): OperationStep[] {
+  const requestDone = stage === 'submitting' || stage === 'refreshing'
+  const backendDone = stage === 'refreshing'
+  const errored = stage === 'error'
+
+  return [
+    {
+      title: '입력 검증',
+      owner: 'AODS',
+      detail: '위저드에서 선택한 저장소, 이미지, 환경, Secret 입력을 생성 요청으로 묶었습니다.',
+      state: errored ? 'complete' : requestDone ? 'complete' : 'pending',
+      icon: <IconShieldCheck size={16} />,
+    },
+    {
+      title: 'Secret / GitOps 처리',
+      owner: 'Backend',
+      detail: 'Vault staging/finalize와 GitOps manifest 커밋을 같은 생성 요청 안에서 처리합니다.',
+      state: errored ? 'error' : backendDone ? 'complete' : 'active',
+      icon: <IconGitBranch size={16} />,
+    },
+    {
+      title: '프로젝트 카탈로그 갱신',
+      owner: 'AODS',
+      detail: '생성된 앱을 프로젝트 목록에 다시 읽어 카드와 운영 센터를 갱신합니다.',
+      state: errored ? 'pending' : stage === 'refreshing' ? 'active' : 'pending',
+      icon: <IconRefresh size={16} />,
+    },
+    {
+      title: 'Flux / Kubernetes 추적',
+      owner: 'UI',
+      detail: '생성 후 앱 카드의 반영 단계에서 Flux reconcile과 runtime 상태를 이어서 보여줍니다.',
+      state: 'pending',
+      icon: <IconCloudCheck size={16} />,
+    },
+  ]
+}
+
+function buildProjectCreationWorkflow(stage: ProjectCreationStage, projectName: string): OperationStep[] {
+  const hasName = projectName.trim() !== ''
+  const writing = stage === 'writing'
+  const refreshing = stage === 'refreshing'
+  const errored = stage === 'error'
+  const projectLabel = hasName ? projectName.trim() : '새 프로젝트'
+
+  return [
+    {
+      title: '입력 확인',
+      owner: 'UI',
+      detail: `${projectLabel} 이름과 namespace 값을 생성 요청으로 준비합니다.`,
+      state: hasName || writing || refreshing || errored ? 'complete' : 'active',
+      icon: <IconShieldCheck size={16} />,
+    },
+    {
+      title: '프로젝트 카탈로그 쓰기',
+      owner: 'GitHub',
+      detail: 'platform/projects.yaml에 프로젝트 metadata와 기본 권한/정책을 기록합니다.',
+      state: errored ? 'error' : refreshing ? 'complete' : writing ? 'active' : 'pending',
+      icon: <IconGitBranch size={16} />,
+    },
+    {
+      title: 'Flux scaffold 준비',
+      owner: 'AODS',
+      detail: '기본 cluster 대상의 bootstrap/child Kustomization scaffold를 보장합니다.',
+      state: errored ? 'error' : refreshing ? 'complete' : writing ? 'active' : 'pending',
+      icon: <IconBox size={16} />,
+    },
+    {
+      title: '작업 공간 새로고침',
+      owner: 'UI',
+      detail: '생성된 프로젝트를 다시 읽고 프로젝트 탭으로 이동합니다.',
+      state: errored ? 'pending' : refreshing ? 'active' : 'pending',
+      icon: <IconRefresh size={16} />,
+    },
+  ]
+}
+
+function syncStatusStageMessage(status: SyncStatus) {
+  switch (status) {
+    case 'Synced':
+      return 'Flux가 Git 기준 상태를 클러스터에 반영 완료했습니다.'
+    case 'Syncing':
+      return 'Flux가 Git 기준 상태를 클러스터에 반영하는 중입니다.'
+    case 'Degraded':
+      return 'Flux가 reconcile 실패를 보고했습니다.'
+    default:
+      return 'Flux sync 상태를 조회하는 중이거나 아직 reconcile 결과가 없습니다.'
+  }
+}
+
+function isBlockingHealthSignal(signal?: HealthSignal) {
+  return signal?.status === 'Unavailable' || signal?.status === 'Critical'
+}
+
+function isInitialSyncMessage(message: string) {
+  const normalized = message.toLowerCase()
+  return [
+    'not found',
+    'does not expose usable',
+    'not ready',
+    'no matches for kind',
+    '아직',
+    '대기',
+  ].some((fragment) => normalized.includes(fragment))
+}
+
+function syncOperationState(app: ApplicationSummary, signal?: ApplicationCatalogSignal): OperationStepState {
+  const syncSignal = findCatalogHealthSignal(signal, 'sync')
+
+  if (app.syncStatus === 'Synced') return 'complete'
+  if (app.syncStatus === 'Degraded') return 'error'
+  if (!signal) return app.syncStatus === 'Unknown' ? 'pending' : 'active'
+  if (isBlockingHealthSignal(syncSignal)) {
+    return isInitialSyncMessage(syncSignal?.message ?? '') ? 'active' : 'error'
+  }
+  if (app.syncStatus === 'Syncing' || app.syncStatus === 'Unknown') return 'active'
+  return 'pending'
+}
+
+function runtimeOperationState(app: ApplicationSummary, signal?: ApplicationCatalogSignal): OperationStepState {
+  const syncState = syncOperationState(app, signal)
+  const deployment = signal?.latestDeployment
+  const deploymentSignal = findCatalogHealthSignal(signal, 'deployment')
+
+  if (syncState === 'error') return 'pending'
+  if (!signal) return 'pending'
+  if (deployment?.status === 'Failed' || deployment?.status === 'Aborted') return 'error'
+  if (signal.deploymentState === 'failed' || isBlockingHealthSignal(deploymentSignal)) {
+    return syncState === 'complete' ? 'error' : 'pending'
+  }
+  if (deployment?.status === 'Completed' || deployment?.status === 'Promoted') return 'complete'
+  if (
+    deployment?.status === 'Created'
+    || deployment?.status === 'Queued'
+    || deployment?.status === 'Running'
+    || deployment?.status === 'Retrying'
+    || deployment?.status === 'Syncing'
+  ) {
+    return 'active'
+  }
+  if (syncState === 'complete') return 'active'
+  return 'pending'
+}
+
+function runtimeStageMessage(
+  app: ApplicationSummary,
+  signal: ApplicationCatalogSignal | undefined,
+  latestDeploymentLabel: string,
+) {
+  const syncState = syncOperationState(app, signal)
+  const deploymentSignal = findCatalogHealthSignal(signal, 'deployment')
+  const deployment = signal?.latestDeployment
+
+  if (syncState === 'error') {
+    return 'Flux reconcile 확인이 먼저 복구되어야 Kubernetes runtime 반영 여부를 판단할 수 있습니다.'
+  }
+  if (!signal) {
+    return 'Project health snapshot을 불러오면 pod와 rollout 단계를 표시합니다.'
+  }
+  if (deployment?.status === 'Failed' || deployment?.status === 'Aborted') {
+    return deployment.message || `${latestDeploymentLabel} 배포가 ${formatDeploymentStatusLabel(deployment.status)} 상태입니다.`
+  }
+  if (signal.deploymentState === 'failed' || isBlockingHealthSignal(deploymentSignal)) {
+    return deploymentSignal?.message || '최근 배포 이력 또는 rollout 상태를 읽지 못했습니다.'
+  }
+  if (deployment) {
+    return deployment.message || `${latestDeploymentLabel} 배포 이력이 ${formatDeploymentStatusLabel(deployment.status)} 상태입니다.`
+  }
+  if (app.syncStatus === 'Synced') {
+    return 'Flux는 synced지만 아직 기록된 배포 이력이 없습니다.'
+  }
+  return 'Flux reconcile 완료 후 Kubernetes runtime 반영 여부를 확인합니다.'
+}
+
+function observabilityOperationState(app: ApplicationSummary, signal?: ApplicationCatalogSignal): OperationStepState {
+  const syncState = syncOperationState(app, signal)
+  if (!signal || syncState !== 'complete') return 'pending'
+  if (signal.metricsState === 'failed') return 'error'
+  if (signal.metricsState === 'available') return 'complete'
+  return 'active'
+}
+
+function observabilityStageMessage(app: ApplicationSummary, signal?: ApplicationCatalogSignal) {
+  const syncState = syncOperationState(app, signal)
+  const metricsSignal = findCatalogHealthSignal(signal, 'metrics')
+
+  if (!signal) {
+    return 'Project health snapshot을 불러오면 metrics 수집 단계를 표시합니다.'
+  }
+  if (syncState !== 'complete') {
+    return 'Flux와 runtime 반영 이후 Prometheus 수집 여부를 확인합니다.'
+  }
+  if (signal.metricsState === 'failed') {
+    return metricsSignal?.message || '이 애플리케이션의 메트릭 요약을 불러오지 못했습니다.'
+  }
+  if (signal.metricsState === 'available') {
+    return metricsSignal?.message || 'Prometheus 실측 메트릭이 수집되고 있습니다.'
+  }
+  return metricsSignal?.message || 'Prometheus metric series가 들어오기를 기다리는 중입니다.'
+}
+
+function operationSummaryColor(app: ApplicationSummary, signal?: ApplicationCatalogSignal) {
+  const steps = buildApplicationSyncWorkflow(app, 'default', signal)
+  if (steps.some((step) => step.state === 'error')) return 'red'
+  if (steps.every((step) => step.state === 'complete')) return 'green'
+  if (!signal || app.syncStatus === 'Unknown') return 'gray'
+  return 'yellow'
+}
+
+function operationSummaryLabel(app: ApplicationSummary, signal?: ApplicationCatalogSignal) {
+  const steps = buildApplicationSyncWorkflow(app, 'default', signal)
+  if (steps.some((step) => step.state === 'error')) return '막힌 단계 있음'
+  if (steps.every((step) => step.state === 'complete')) return '반영 완료'
+  if (!signal || app.syncStatus === 'Unknown') return '조회 중'
+  return '진행 중'
 }
 
 function applicationSyncIssue(app: ApplicationSummary, signal?: ApplicationCatalogSignal) {
@@ -5908,16 +5882,6 @@ function parseAuthorityList(raw: string) {
       seen.add(value)
       return true
     })
-}
-
-function cloneProjectPolicy(policy: ProjectPolicy | null) {
-  if (!policy) return null
-  return {
-    ...policy,
-    allowedEnvironments: [...policy.allowedEnvironments],
-    allowedDeploymentStrategies: [...supportedDeploymentStrategies],
-    allowedClusterTargets: [...policy.allowedClusterTargets],
-  }
 }
 
 function normalizeProjectSlugInput(raw: string) {

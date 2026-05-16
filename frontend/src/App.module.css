@@ -201,6 +201,10 @@
   gap: 12px;
 }
 
+.progressListCompact {
+  gap: 8px;
+}
+
 .progressItem {
   display: flex;
   align-items: flex-start;
@@ -209,6 +213,12 @@
   border-radius: 14px;
   background: #ffffff;
   border: 1px solid #e2e8f0;
+}
+
+.progressItemCompact {
+  gap: 10px;
+  padding: 10px 12px;
+  border-radius: 10px;
 }
 
 .progressMarker {
@@ -221,6 +231,11 @@
   background: #f1f5f9;
   color: #64748b;
   flex-shrink: 0;
+}
+
+.progressItemCompact .progressMarker {
+  width: 26px;
+  height: 26px;
 }
 
 .progressActive .progressMarker {
@@ -244,10 +259,19 @@
   color: #64748b;
 }
 
+.progressCopy {
+  min-width: 0;
+  flex: 1;
+}
+
 .progressTitle {
   font-size: 0.95rem;
   font-weight: 700;
   color: #1e293b;
+}
+
+.progressItemCompact .progressTitle {
+  font-size: 0.82rem;
 }
 
 .progressDetail {
@@ -255,6 +279,12 @@
   font-size: 0.85rem;
   color: #64748b;
   line-height: 1.6;
+}
+
+.progressItemCompact .progressDetail {
+  font-size: 0.76rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
 }
 
 .progressHighlight {
@@ -392,6 +422,11 @@
   overflow-wrap: anywhere;
 }
 
+.applicationSyncWorkflow {
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
 .applicationCatalogStat {
   padding: 12px;
   border-radius: 12px;
@@ -418,6 +453,13 @@
 .applicationCatalogFooter {
   padding-top: 4px;
   border-top: 1px solid #e2e8f0;
+}
+
+.operationProgressSection {
+  padding: 14px;
+  border-radius: 14px;
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
 }
 
 .metricProgress {

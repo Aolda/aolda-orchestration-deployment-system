@@ -90,6 +90,10 @@ func main() {
 		"vaultStagingMaxAge", cfg.VaultStagingMaxAge,
 		"orphanFluxCleanupInterval", cfg.OrphanFluxCleanupInterval,
 		"mariadbOperationsEnabled", cfg.UseMariaDBOperations(),
+		"applicationCatalogCacheEnabled", cfg.UseApplicationCatalogCache(),
+		"applicationCatalogDBDriver", cfg.ResolvedApplicationCatalogDBDriver(),
+		"applicationCatalogCacheTTL", cfg.ApplicationCatalogCacheTTL,
+		"applicationCatalogSyncInterval", cfg.ApplicationCatalogSyncInterval,
 		"deploymentOperationInterval", cfg.DeploymentOperationInterval,
 		"deploymentOperationLease", cfg.DeploymentOperationLease,
 		"deploymentOperationMaxAttempts", cfg.DeploymentOperationMaxAttempts,
@@ -103,6 +107,15 @@ func main() {
 		Interval: cfg.RepositoryPollInterval,
 	}
 	go poller.Start(context.Background())
+
+	if refresher, ok := applicationService.Store.(application.ApplicationCatalogRefreshStore); ok && cfg.ApplicationCatalogSyncInterval > 0 {
+		projector := &application.ApplicationCatalogProjector{
+			Store:    refresher,
+			Projects: projectService.Source,
+			Interval: cfg.ApplicationCatalogSyncInterval,
+		}
+		go projector.Start(context.Background())
+	}
 
 	if applicationService.DeploymentOperations != nil {
 		worker := &application.DeploymentOperationWorker{

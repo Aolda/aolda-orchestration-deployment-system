@@ -16,10 +16,14 @@ func TestLoadConfigReadsDeploymentOperationSettings(t *testing.T) {
 	t.Setenv("AODS_ALLOW_DEV_FALLBACK", "false")
 	t.Setenv("AODS_PLATFORM_ADMIN_AUTHORITIES", "aods:platform:admin, aods:ops:admin, aods:platform:admin")
 	t.Setenv("AODS_MARIADB_DSN", "user:pass@tcp(db:3306)/aods")
+	t.Setenv("AODS_APPLICATION_CATALOG_DSN", "postgres://aods:secret@postgres:5432/aolda?sslmode=disable")
 	t.Setenv("AODS_DEPLOYMENT_OPERATION_INTERVAL", "3s")
 	t.Setenv("AODS_DEPLOYMENT_OPERATION_LEASE", "7m")
 	t.Setenv("AODS_DEPLOYMENT_OPERATION_MAX_ATTEMPTS", "9")
 	t.Setenv("AODS_REPOSITORY_POLL_INTERVAL", "11m")
+	t.Setenv("AODS_FLUX_STATUS_CACHE_TTL", "17s")
+	t.Setenv("AODS_APPLICATION_CATALOG_CACHE_TTL", "13m")
+	t.Setenv("AODS_APPLICATION_CATALOG_SYNC_INTERVAL", "19s")
 	t.Setenv("AODS_DEV_GROUPS", "aods:shared:deploy,aods:platform:admin")
 
 	cfg, err := LoadConfig()
@@ -38,6 +42,12 @@ func TestLoadConfigReadsDeploymentOperationSettings(t *testing.T) {
 	if !cfg.UseMariaDBOperations() {
 		t.Fatal("expected MariaDB operations to be enabled")
 	}
+	if !cfg.UseApplicationCatalogCache() {
+		t.Fatal("expected application catalog cache to be enabled")
+	}
+	if cfg.ResolvedApplicationCatalogDBDriver() != "postgres" {
+		t.Fatalf("expected postgres catalog driver, got %q", cfg.ResolvedApplicationCatalogDBDriver())
+	}
 	if cfg.DeploymentOperationInterval != 3*time.Second {
 		t.Fatalf("unexpected operation interval: %s", cfg.DeploymentOperationInterval)
 	}
@@ -49,6 +59,15 @@ func TestLoadConfigReadsDeploymentOperationSettings(t *testing.T) {
 	}
 	if cfg.RepositoryPollInterval != 11*time.Minute {
 		t.Fatalf("unexpected repository poll interval: %s", cfg.RepositoryPollInterval)
+	}
+	if cfg.FluxStatusCacheTTL != 17*time.Second {
+		t.Fatalf("unexpected Flux status cache TTL: %s", cfg.FluxStatusCacheTTL)
+	}
+	if cfg.ApplicationCatalogCacheTTL != 13*time.Minute {
+		t.Fatalf("unexpected application catalog cache TTL: %s", cfg.ApplicationCatalogCacheTTL)
+	}
+	if cfg.ApplicationCatalogSyncInterval != 19*time.Second {
+		t.Fatalf("unexpected application catalog sync interval: %s", cfg.ApplicationCatalogSyncInterval)
 	}
 	if got := strings.Join(cfg.PlatformAdminAuthorities, ","); got != "aods:platform:admin,aods:ops:admin" {
 		t.Fatalf("expected deduped admin authorities, got %q", got)
@@ -67,6 +86,9 @@ func TestLoadConfigRejectsInvalidDeploymentOperationSettings(t *testing.T) {
 		{name: "interval", key: "AODS_DEPLOYMENT_OPERATION_INTERVAL", val: "not-a-duration"},
 		{name: "lease", key: "AODS_DEPLOYMENT_OPERATION_LEASE", val: "not-a-duration"},
 		{name: "attempts", key: "AODS_DEPLOYMENT_OPERATION_MAX_ATTEMPTS", val: "not-an-int"},
+		{name: "flux status cache TTL", key: "AODS_FLUX_STATUS_CACHE_TTL", val: "not-a-duration"},
+		{name: "application catalog cache TTL", key: "AODS_APPLICATION_CATALOG_CACHE_TTL", val: "not-a-duration"},
+		{name: "application catalog sync interval", key: "AODS_APPLICATION_CATALOG_SYNC_INTERVAL", val: "not-a-duration"},
 		{name: "dev fallback", key: "AODS_ALLOW_DEV_FALLBACK", val: "maybe"},
 	}
 
@@ -87,15 +109,16 @@ func TestLoadConfigRejectsInvalidDeploymentOperationSettings(t *testing.T) {
 
 func TestConfigModeHelpersAndEnvParsing(t *testing.T) {
 	cfg := Config{
-		GitMode:               "git",
-		AuthMode:              " oidc ",
-		KubernetesMode:        "kubeconfig",
-		ImageVerificationMode: "anonymous",
-		PrometheusMode:        "prometheus",
-		VaultMode:             "token",
-		MariaDBDSN:            "dsn",
+		GitMode:                    "git",
+		AuthMode:                   " oidc ",
+		KubernetesMode:             "kubeconfig",
+		ImageVerificationMode:      "anonymous",
+		PrometheusMode:             "prometheus",
+		VaultMode:                  "token",
+		MariaDBDSN:                 "dsn",
+		ApplicationCatalogCacheTTL: time.Minute,
 	}
-	if !cfg.UseGitRepo() || !cfg.UseOIDCAuth() || !cfg.UseKubernetesAPI() || !cfg.UseImageVerification() || !cfg.UsePrometheusAPI() || !cfg.UseVaultAPI() || !cfg.UseMariaDBOperations() {
+	if !cfg.UseGitRepo() || !cfg.UseOIDCAuth() || !cfg.UseKubernetesAPI() || !cfg.UseImageVerification() || !cfg.UsePrometheusAPI() || !cfg.UseVaultAPI() || !cfg.UseMariaDBOperations() || !cfg.UseApplicationCatalogCache() {
 		t.Fatalf("expected all configured mode helpers to be true: %#v", cfg)
 	}
 
@@ -105,8 +128,27 @@ func TestConfigModeHelpersAndEnvParsing(t *testing.T) {
 		PrometheusMode:        "local",
 		VaultMode:             "local",
 	}
-	if cfg.UseGitRepo() || cfg.UseOIDCAuth() || cfg.UseKubernetesAPI() || cfg.UseImageVerification() || cfg.UsePrometheusAPI() || cfg.UseVaultAPI() || cfg.UseMariaDBOperations() {
+	if cfg.UseGitRepo() || cfg.UseOIDCAuth() || cfg.UseKubernetesAPI() || cfg.UseImageVerification() || cfg.UsePrometheusAPI() || cfg.UseVaultAPI() || cfg.UseMariaDBOperations() || cfg.UseApplicationCatalogCache() {
 		t.Fatalf("expected local/default mode helpers to be false: %#v", cfg)
+	}
+
+	cfg = Config{
+		ApplicationCatalogDSN:      "postgres://aods:secret@localhost:5432/aolda?sslmode=disable",
+		ApplicationCatalogCacheTTL: time.Minute,
+	}
+	if !cfg.UseApplicationCatalogCache() {
+		t.Fatal("expected postgres application catalog cache to be enabled")
+	}
+	if cfg.UseMariaDBOperations() {
+		t.Fatal("expected postgres application catalog cache not to enable MariaDB operations")
+	}
+	if cfg.ResolvedApplicationCatalogDBDriver() != "postgres" {
+		t.Fatalf("expected postgres driver, got %q", cfg.ResolvedApplicationCatalogDBDriver())
+	}
+
+	cfg.ApplicationCatalogDBDriver = "pg"
+	if cfg.ResolvedApplicationCatalogDBDriver() != "postgres" {
+		t.Fatalf("expected pg alias to resolve to postgres, got %q", cfg.ResolvedApplicationCatalogDBDriver())
 	}
 
 	t.Setenv("AODS_TEST_STRING", "value")

@@ -123,6 +123,30 @@ spec:
                   name: aods-backend-secrets
                   key: AODS_MARIADB_DSN
                   optional: true
+            - name: AODS_APPLICATION_CATALOG_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_APPLICATION_CATALOG_DSN
+                  optional: true
+            - name: AODS_APPLICATION_CATALOG_DB_DRIVER
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_APPLICATION_CATALOG_DB_DRIVER
+                  optional: true
+            - name: AODS_APPLICATION_CATALOG_CACHE_TTL
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_APPLICATION_CATALOG_CACHE_TTL
+                  optional: true
+            - name: AODS_APPLICATION_CATALOG_SYNC_INTERVAL
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_APPLICATION_CATALOG_SYNC_INTERVAL
+                  optional: true
             - name: AODS_DEPLOYMENT_OPERATION_INTERVAL
               value: 2s
             - name: AODS_DEPLOYMENT_OPERATION_LEASE

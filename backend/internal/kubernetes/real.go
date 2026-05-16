@@ -20,6 +20,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/aolda/aods-backend/internal/application"
@@ -30,6 +31,7 @@ import (
 const fluxKustomizationResourcePath = "/apis/kustomize.toolkit.fluxcd.io/v1"
 const argoRolloutResourcePath = "/apis/argoproj.io/v1alpha1"
 const kubernetesPodMetricsResourcePath = "/apis/metrics.k8s.io/v1beta1"
+const maxStaleFluxStatusCacheAge = time.Minute
 
 type ErrorSyncStatusReader struct {
 	Err error
@@ -116,6 +118,12 @@ func (r ErrorRolloutController) Abort(ctx context.Context, record application.Re
 type FluxSyncStatusReader struct {
 	Client                 *apiClient
 	KustomizationNamespace string
+	CacheTTL               time.Duration
+	Now                    func() time.Time
+
+	mu       sync.Mutex
+	cached   kustomizationListResponse
+	cachedAt time.Time
 }
 
 type ServiceNetworkExposureReader struct {
@@ -151,15 +159,16 @@ func NewSyncStatusReader(cfg core.Config) application.StatusReader {
 	return reader
 }
 
-func NewFluxSyncStatusReader(cfg core.Config) (FluxSyncStatusReader, error) {
+func NewFluxSyncStatusReader(cfg core.Config) (*FluxSyncStatusReader, error) {
 	client, err := newAPIClient(cfg)
 	if err != nil {
-		return FluxSyncStatusReader{}, err
+		return nil, err
 	}
 
-	return FluxSyncStatusReader{
+	return &FluxSyncStatusReader{
 		Client:                 client,
 		KustomizationNamespace: strings.TrimSpace(cfg.FluxKustomizationNamespace),
+		CacheTTL:               cfg.FluxStatusCacheTTL,
 	}, nil
 }
 
@@ -202,11 +211,11 @@ func NewServiceNetworkExposureReader(cfg core.Config) (ServiceNetworkExposureRea
 	return ServiceNetworkExposureReader{Client: client}, nil
 }
 
-func (r FluxSyncStatusReader) Read(ctx context.Context, record application.Record) (application.SyncInfo, error) {
+func (r *FluxSyncStatusReader) Read(ctx context.Context, record application.Record) (application.SyncInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return application.SyncInfo{}, err
 	}
-	if r.Client == nil {
+	if r == nil || r.Client == nil {
 		return application.SyncInfo{}, fmt.Errorf("kubernetes api client is not configured")
 	}
 
@@ -228,14 +237,14 @@ func (r FluxSyncStatusReader) Read(ctx context.Context, record application.Recor
 	return mapSyncInfo(item), nil
 }
 
-func (r FluxSyncStatusReader) ReadMany(ctx context.Context, records []application.Record) (map[string]application.SyncInfo, error) {
+func (r *FluxSyncStatusReader) ReadMany(ctx context.Context, records []application.Record) (map[string]application.SyncInfo, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	if len(records) == 0 {
 		return map[string]application.SyncInfo{}, nil
 	}
-	if r.Client == nil {
+	if r == nil || r.Client == nil {
 		return nil, fmt.Errorf("kubernetes api client is not configured")
 	}
 
@@ -262,19 +271,62 @@ func (r FluxSyncStatusReader) ReadMany(ctx context.Context, records []applicatio
 	return items, nil
 }
 
-func (r FluxSyncStatusReader) listKustomizations(ctx context.Context) (kustomizationListResponse, error) {
+func (r *FluxSyncStatusReader) listKustomizations(ctx context.Context) (kustomizationListResponse, error) {
+	if r == nil || r.Client == nil {
+		return kustomizationListResponse{}, fmt.Errorf("kubernetes api client is not configured")
+	}
+
 	resourcePath := fluxKustomizationResourcePath + "/kustomizations"
 	namespace := strings.TrimSpace(r.KustomizationNamespace)
 	if namespace != "" {
 		resourcePath = fluxKustomizationResourcePath + "/namespaces/" + url.PathEscape(namespace) + "/kustomizations"
 	}
 
+	if cached, ok := r.cachedKustomizations(r.now(), r.CacheTTL); ok {
+		return cached, nil
+	}
+
 	var response kustomizationListResponse
 	if err := r.Client.GetJSON(ctx, resourcePath, &response); err != nil {
+		if cached, ok := r.cachedKustomizations(r.now(), maxStaleFluxStatusCacheAge); ok {
+			return cached, nil
+		}
 		return kustomizationListResponse{}, err
 	}
 
+	r.storeKustomizations(response)
 	return response, nil
+}
+
+func (r *FluxSyncStatusReader) cachedKustomizations(now time.Time, maxAge time.Duration) (kustomizationListResponse, bool) {
+	if r == nil || maxAge <= 0 {
+		return kustomizationListResponse{}, false
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.cachedAt.IsZero() || now.Sub(r.cachedAt) > maxAge {
+		return kustomizationListResponse{}, false
+	}
+	return r.cached, true
+}
+
+func (r *FluxSyncStatusReader) storeKustomizations(response kustomizationListResponse) {
+	if r == nil || r.CacheTTL <= 0 {
+		return
+	}
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cached = response
+	r.cachedAt = r.now()
+}
+
+func (r *FluxSyncStatusReader) now() time.Time {
+	if r != nil && r.Now != nil {
+		return r.Now().UTC()
+	}
+	return time.Now().UTC()
 }
 
 func (r PodMetricsReader) Read(ctx context.Context, record application.Record, duration time.Duration, step time.Duration) ([]application.MetricSeries, error) {
