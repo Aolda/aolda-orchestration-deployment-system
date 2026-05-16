@@ -6,7 +6,7 @@ info:
     Phase 1 through Phase 4 API specification for the internal app deployment
     platform. This contract covers GitHub-backed catalog discovery, standard and
     canary deployment workflows, change management, environment and policy
-    controls, GitOps sync visibility, Vault-backed secret submission, and
+    controls, GitOps sync visibility, IIV-backed secret submission, and
     platform-scale guardrails.
 servers:
   - url: http://localhost:8080
@@ -556,8 +556,8 @@ paths:
     get:
       tags: [Applications]
       operationId: getApplicationSecrets
-      summary: List Vault-backed application environment variable keys
-      description: Returns key names and Vault path metadata only. Secret values are never returned.
+      summary: List IIV-backed application environment variable keys
+      description: Returns key names and IIV path metadata only. Secret values are never returned.
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
       responses:
@@ -578,8 +578,8 @@ paths:
     put:
       tags: [Applications]
       operationId: updateApplicationSecrets
-      summary: Update Vault-backed application environment variables
-      description: Applies a set/delete patch to the final Vault KV v2 path. The response returns key names only.
+      summary: Update IIV-backed application environment variables
+      description: Applies a set/delete patch to the final IIV KV v2 compatible path. The response returns key names only.
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
       requestBody:
@@ -612,8 +612,8 @@ paths:
     get:
       tags: [Applications]
       operationId: listApplicationSecretVersions
-      summary: List Vault KV v2 versions for application environment variables
-      description: Returns Vault KV v2 version metadata only. Secret values are never returned.
+      summary: List IIV KV v2 compatible versions for application environment variables
+      description: Returns IIV KV v2 compatible version metadata only. Secret values are never returned.
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
       responses:
@@ -636,8 +636,8 @@ paths:
     post:
       tags: [Applications]
       operationId: restoreApplicationSecretVersion
-      summary: Restore application environment variables from a Vault KV v2 version
-      description: Reads the selected Vault KV v2 version and writes it as a new final version. Secret values are never returned.
+      summary: Restore application environment variables from an IIV KV v2 compatible version
+      description: Reads the selected IIV KV v2 compatible version and writes it as a new final version. Secret values are never returned.
       parameters:
         - $ref: '#/components/parameters/ApplicationId'
         - $ref: '#/components/parameters/SecretVersion'
@@ -1200,7 +1200,7 @@ components:
       name: version
       in: path
       required: true
-      description: Positive Vault KV v2 version number.
+      description: Positive IIV KV v2 compatible version number.
       schema:
         type: integer
         minimum: 1
@@ -1466,18 +1466,18 @@ components:
         createdAt:
           type: string
           format: date-time
-          description: Vault-reported creation timestamp for this version.
+          description: IIV-reported creation timestamp for this version.
         updatedBy:
           type: string
-          description: User recorded in Vault custom metadata, when available.
+          description: User recorded in IIV custom metadata, when available.
         current:
           type: boolean
         deleted:
           type: boolean
-          description: Whether the Vault version is soft-deleted.
+          description: Whether the IIV version is soft-deleted.
         destroyed:
           type: boolean
-          description: Whether the Vault version has been permanently destroyed.
+          description: Whether the IIV version has been permanently destroyed.
         keyCount:
           type: integer
           minimum: 0
@@ -1496,20 +1496,20 @@ components:
           type: string
         secretPath:
           type: string
-          description: Vault logical path for the application environment secret.
+          description: IIV logical path for the application environment secret.
         configured:
           type: boolean
-          description: Whether GitOps desired state currently references this Vault path through ExternalSecret.
+          description: Whether GitOps desired state currently references this IIV path through ExternalSecret.
         versioningEnabled:
           type: boolean
-          description: Whether Vault KV v2 version metadata is available for this secret.
+          description: Whether IIV KV v2 compatible version metadata is available for this secret.
         currentVersion:
           type: integer
           minimum: 1
         updatedAt:
           type: string
           format: date-time
-          description: Creation timestamp of the current Vault KV v2 version, when available.
+          description: Creation timestamp of the current IIV KV v2 compatible version, when available.
         items:
           type: array
           items:
@@ -1526,7 +1526,7 @@ components:
           type: string
         secretPath:
           type: string
-          description: Vault logical path for the application environment secret.
+          description: IIV logical path for the application environment secret.
         currentVersion:
           type: integer
           minimum: 1
@@ -1598,7 +1598,7 @@ components:
           type: string
         repositoryToken:
           type: string
-          description: 선택 입력. private 저장소 접근 또는 GitHub API rate limit 완화를 위한 fine-grained PAT. 저장 시 애플리케이션 환경변수 Vault 경로와 분리된 별도 경로에 저장된다.
+          description: 선택 입력. private 저장소 접근 또는 GitHub API rate limit 완화를 위한 fine-grained PAT. 저장 시 애플리케이션 환경변수 IIV 경로와 분리된 별도 경로에 저장된다.
         repositoryServiceId:
           type: string
           description: descriptor 내 서비스 식별자. 비우면 앱 이름 또는 단일 서비스 기준으로 추론한다.
@@ -1617,10 +1617,10 @@ components:
           description: private registry 접근 계정명. 예: GHCR이면 GitHub username.
         registryToken:
           type: string
-          description: private registry image pull 토큰. 저장 시 별도 registry credential Vault 경로에 dockerconfigjson 형식으로 저장된다.
+          description: private registry image pull 토큰. 저장 시 별도 registry credential IIV 경로에 dockerconfigjson 형식으로 저장된다.
         secrets:
           type: array
-          description: Secrets are submitted directly to the backend and stored in Vault KV v2.
+          description: Secrets are submitted directly to the backend and stored in IIV KV v2 compatible storage.
           items:
             $ref: '#/components/schemas/SecretEntry'
       example:

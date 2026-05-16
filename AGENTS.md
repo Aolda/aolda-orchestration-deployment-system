@@ -44,7 +44,7 @@ Phase 표기는 historical planning bucket 으로 남겨두되, 이미 노출된
 - 프로젝트 목록은 `platform/projects.yaml`에서 읽습니다.
 - 앱 ID는 deterministic 규칙 `{projectId}__{appName}`를 따릅니다.
 - Phase 1의 Git write 모델은 direct push입니다. PR workflow는 Phase 3에서 확장합니다.
-- Vault는 KV v2 기준이며, `staging -> git commit -> final -> cleanup` 흐름을 따릅니다.
+- IIV는 KV v2 호환 API 기준이며, `staging -> git commit -> final -> cleanup` 흐름을 따릅니다. prod 배포는 `10.16.254.243` IIV endpoint 를 사용합니다.
 - Flux 상태는 UI에서 `Unknown`, `Syncing`, `Synced`, `Degraded` 네 개만 노출합니다.
 - 권한 최소 모델은 `viewer`, `deployer`, `admin` 입니다.
 
@@ -59,7 +59,7 @@ Phase 표기는 historical planning bucket 으로 남겨두되, 이미 노출된
 - `make check`: 백엔드 `make check-backend`, 프론트 `npm run lint` + `npm run build`를 순서대로 수행합니다.
 
 `make backend-run`은 이제 mock/local 어댑터 기준이 아니라 self-hosted dev cluster 기준 실행 경로입니다.
-기본 kubeconfig 경로는 `~/.kube/aods-self-hosted.yaml`이며, localhost Prometheus/Vault URL이 잡혀 있으면 `scripts/backend-run.sh`가 필요한 `kubectl port-forward`를 자동으로 엽니다.
+기본 kubeconfig 경로는 `~/.kube/aods-self-hosted.yaml`이며, localhost Prometheus/IIV URL이 잡혀 있으면 `scripts/backend-run.sh`가 필요한 `kubectl port-forward`를 자동으로 엽니다.
 
 ## Implementation Bias
 - 새로운 기능을 추가할 때는 먼저 `openapi.yaml` 계약과 `acceptance-criteria.md` 시나리오를 맞추세요.

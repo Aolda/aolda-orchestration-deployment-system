@@ -100,18 +100,31 @@ spec:
               value: 1h
             - name: AODS_PROMETHEUS_STEP
               value: 5m
-            - name: AODS_VAULT_MODE
-              value: token
-            - name: AODS_VAULT_ADDR
-              value: http://vault.vault.svc.cluster.local:8200
-            - name: AODS_VAULT_TOKEN
+            - name: AODS_SECRET_STORE_MODE
               valueFrom:
                 secretKeyRef:
                   name: aods-backend-secrets
-                  key: AODS_VAULT_TOKEN
-            - name: AODS_VAULT_NAMESPACE
-              value: ""
-            - name: AODS_VAULT_REQUEST_TIMEOUT
+                  key: AODS_SECRET_STORE_MODE
+                  optional: true
+            - name: AODS_IIV_ADDR
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_IIV_ADDR
+                  optional: true
+            - name: AODS_IIV_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_IIV_TOKEN
+                  optional: true
+            - name: AODS_IIV_NAMESPACE
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_IIV_NAMESPACE
+                  optional: true
+            - name: AODS_IIV_REQUEST_TIMEOUT
               value: 5s
             - name: AODS_IMAGE_CHECK_MODE
               value: anonymous

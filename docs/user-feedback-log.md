@@ -674,6 +674,15 @@
 * References: `backend/internal/core/config.go`, `backend/internal/application/catalog_cache.go`, `backend/internal/application/catalog_cache_mariadb.go`, `backend/internal/application/catalog_cache_postgres.go`, `backend/internal/application/catalog_projector.go`, `frontend/src/App.tsx`, `.envrc.example`, `docs/current-baseline-runbook.md`
 * Status: applied
 
+### 2026-05-16 - FB-067 - 운영 Secret 저장소는 Vault가 아니라 IIV 주소 기준이어야 함
+
+* Area: Deployment / Secret Store / Environment Separation
+* User signal: `dev던 prod던 vault는 쓰지 않고 iiv라고 줬던 주소를 기반으로 운영까지 진행할꺼야 ... prod 배포할 때 10.16.254.243`
+* Interpreted intent: AODS runtime 설정 표면에서 Vault를 운영 저장소로 가정하면 안 된다. dev/prod 모두 IIV endpoint를 기준으로 설정하고, prod는 사용자가 지정한 `10.16.254.243` 주소로 고정해야 한다.
+* Action: backend config가 `AODS_IIV_*`와 `AODS_SECRET_STORE_MODE=iiv`를 우선 읽도록 바꾸고, prod overlay에서 backend `AODS_IIV_ADDR`와 `aods-iiv` ClusterSecretStore server 를 `http://10.16.254.243:8200`으로 명시했다. Argo CD overlay는 prod overlay를 배포하도록 연결했고, testbed 배포 스크립트와 runbook은 `AODS_IIV_TOKEN`/`AODS_IIV_ADDR` 기준으로 갱신했다.
+* References: `backend/internal/core/config.go`, `deploy/aods-system/overlays/prod`, `deploy/aods-system/overlays/argocd/kustomization.yaml`, `scripts/deploy-testbed.sh`, `scripts/backend-run.sh`, `.envrc.example`
+* Status: applied
+
 ## 운영 메모
 
 앞으로 에이전트는 아래 순서를 기본으로 따른다.

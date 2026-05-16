@@ -12,6 +12,26 @@ if [[ -f "${ROOT_DIR}/.envrc" ]]; then
   set +a
 fi
 
+export AODS_IIV_ADDR="${AODS_IIV_ADDR:-${AODS_VAULT_ADDR:-}}"
+export AODS_IIV_TOKEN="${AODS_IIV_TOKEN:-${AODS_VAULT_TOKEN:-}}"
+export AODS_IIV_NAMESPACE="${AODS_IIV_NAMESPACE:-${AODS_VAULT_NAMESPACE:-}}"
+normalize_iiv_addr() {
+  local value="$1"
+  if [[ "${value}" == *://* ]]; then
+    printf '%s' "${value}"
+  elif [[ "${value}" == *:* ]]; then
+    printf 'http://%s' "${value}"
+  else
+    printf 'http://%s:8200' "${value}"
+  fi
+}
+if [[ -n "${AODS_IIV_ADDR:-}" ]]; then
+  export AODS_IIV_ADDR="$(normalize_iiv_addr "${AODS_IIV_ADDR}")"
+fi
+if [[ -z "${AODS_SECRET_STORE_MODE:-}" && -n "${AODS_IIV_ADDR:-}${AODS_IIV_TOKEN:-}" ]]; then
+  export AODS_SECRET_STORE_MODE=iiv
+fi
+
 # The orphan Flux cleanup worker can monopolize the managed Git repo lock during
 # local dogfooding and block the initial /projects bootstrap. Keep it opt-in for
 # local runs; deployed environments can still enable it explicitly via env.
@@ -35,8 +55,8 @@ is_local_prometheus_url() {
   [[ "${AODS_PROMETHEUS_URL:-}" =~ ^http://(127\.0\.0\.1|localhost):[0-9]+$ ]]
 }
 
-is_local_vault_url() {
-  [[ "${AODS_VAULT_ADDR:-}" =~ ^http://(127\.0\.0\.1|localhost):[0-9]+$ ]]
+is_local_iiv_url() {
+  [[ "${AODS_IIV_ADDR:-}" =~ ^http://(127\.0\.0\.1|localhost):[0-9]+$ ]]
 }
 
 ensure_prometheus_port_forward() {
@@ -84,58 +104,63 @@ ensure_prometheus_port_forward() {
   exit 1
 }
 
-ensure_vault_port_forward() {
-  if [[ "${AODS_VAULT_MODE:-local}" != "token" ]]; then
+ensure_iiv_port_forward() {
+  if [[ "${AODS_SECRET_STORE_MODE:-local}" == "local" ]]; then
     return
   fi
 
-  if [[ -z "${AODS_VAULT_ADDR:-}" ]]; then
-    echo "AODS_VAULT_ADDR is required when AODS_VAULT_MODE=token." >&2
+  if [[ -z "${AODS_IIV_ADDR:-}" ]]; then
+    echo "AODS_IIV_ADDR is required when AODS_SECRET_STORE_MODE=iiv." >&2
     exit 1
   fi
 
-  if [[ -z "${AODS_VAULT_TOKEN:-}" ]]; then
-    echo "AODS_VAULT_TOKEN is required when AODS_VAULT_MODE=token." >&2
+  if [[ -z "${AODS_IIV_TOKEN:-}" ]]; then
+    echo "AODS_IIV_TOKEN is required when AODS_SECRET_STORE_MODE=iiv." >&2
     exit 1
   fi
 
-  if curl -fsS -H "X-Vault-Token: ${AODS_VAULT_TOKEN}" "${AODS_VAULT_ADDR}/v1/sys/health" >/dev/null 2>&1; then
+  if curl -fsS -H "X-Vault-Token: ${AODS_IIV_TOKEN}" "${AODS_IIV_ADDR%/}/v1/sys/health" >/dev/null 2>&1; then
     return
   fi
 
-  if ! is_local_vault_url; then
-    echo "Vault health check failed for ${AODS_VAULT_ADDR}. Configure a reachable URL or use a localhost URL for auto port-forward." >&2
+  if [[ "${AODS_IIV_SKIP_HEALTH_CHECK:-${AODS_VAULT_SKIP_HEALTH_CHECK:-0}}" == "1" ]]; then
+    echo "IIV health check skipped for ${AODS_IIV_ADDR}."
+    return
+  fi
+
+  if ! is_local_iiv_url; then
+    echo "IIV health check failed for ${AODS_IIV_ADDR}. Configure a reachable URL or use a localhost URL for auto port-forward." >&2
     exit 1
   fi
 
   if [[ ${#kubectl_args[@]} -eq 0 ]]; then
-    echo "AODS_K8S_KUBECONFIG must be set to auto-start the Vault port-forward." >&2
+    echo "AODS_K8S_KUBECONFIG must be set to auto-start the IIV port-forward." >&2
     exit 1
   fi
 
-  local namespace="${AODS_VAULT_PORT_FORWARD_NAMESPACE:-vault}"
-  local service="${AODS_VAULT_PORT_FORWARD_SERVICE:-vault}"
-  local local_port="${AODS_VAULT_PORT_FORWARD_LOCAL_PORT:-18200}"
-  local remote_port="${AODS_VAULT_PORT_FORWARD_REMOTE_PORT:-8200}"
-  local logfile="${AODS_VAULT_PORT_FORWARD_LOG:-/tmp/aods-vault-port-forward.log}"
+  local namespace="${AODS_IIV_PORT_FORWARD_NAMESPACE:-${AODS_VAULT_PORT_FORWARD_NAMESPACE:-vault}}"
+  local service="${AODS_IIV_PORT_FORWARD_SERVICE:-${AODS_VAULT_PORT_FORWARD_SERVICE:-vault}}"
+  local local_port="${AODS_IIV_PORT_FORWARD_LOCAL_PORT:-${AODS_VAULT_PORT_FORWARD_LOCAL_PORT:-18200}}"
+  local remote_port="${AODS_IIV_PORT_FORWARD_REMOTE_PORT:-${AODS_VAULT_PORT_FORWARD_REMOTE_PORT:-8200}}"
+  local logfile="${AODS_IIV_PORT_FORWARD_LOG:-/tmp/aods-iiv-port-forward.log}"
 
   kubectl "${kubectl_args[@]}" -n "${namespace}" port-forward "svc/${service}" "${local_port}:${remote_port}" >"${logfile}" 2>&1 &
   local port_forward_pid=$!
 
   for _ in $(seq 1 20); do
-    if curl -fsS -H "X-Vault-Token: ${AODS_VAULT_TOKEN}" "${AODS_VAULT_ADDR}/v1/sys/health" >/dev/null 2>&1; then
-      echo "Vault port-forward ready on ${AODS_VAULT_ADDR} (pid=${port_forward_pid})"
+    if curl -fsS -H "X-Vault-Token: ${AODS_IIV_TOKEN}" "${AODS_IIV_ADDR%/}/v1/sys/health" >/dev/null 2>&1; then
+      echo "IIV port-forward ready on ${AODS_IIV_ADDR} (pid=${port_forward_pid})"
       return
     fi
     sleep 0.5
   done
 
-  echo "Failed to establish Vault port-forward. Check ${logfile}." >&2
+  echo "Failed to establish IIV port-forward. Check ${logfile}." >&2
   exit 1
 }
 
 ensure_prometheus_port_forward
-ensure_vault_port_forward
+ensure_iiv_port_forward
 
 cd "${ROOT_DIR}/backend"
 exec go run cmd/server/main.go

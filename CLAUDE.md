@@ -47,7 +47,7 @@ Phase 1의 핵심은 아래다.
 * GitHub 기본 브랜치가 desired state의 source of truth다.
 * 프로젝트 목록은 `platform/projects.yaml`에서 읽는다.
 * Secret 평문은 Git에 저장하지 않는다.
-* Vault는 KV v2를 사용하고 staging/final 경로를 분리한다.
+* IIV는 KV v2 호환 API를 사용하고 staging/final 경로를 분리한다.
 * Backend는 Go `net/http` 표준 라이브러리만 사용한다.
 * Frontend는 Mantine + CSS Modules 기준이다.
 * Flux 상태는 `Unknown`, `Syncing`, `Synced`, `Degraded` 네 개만 UI에 노출한다.

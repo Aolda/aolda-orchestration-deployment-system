@@ -38,8 +38,8 @@
 * 앱 ID 는 `{projectId}__{appName}` 규칙을 유지한다.
 * Secret 평문을 Git에 저장하지 않는다.
 * Kubernetes 기본 `Secret` 리소스로 우회하지 않는다.
-* Vault 는 KV v2 와 `staging -> git commit -> final -> cleanup` 흐름을 유지한다.
-* GitHub 접근 토큰은 앱 `.env` 시크릿과 같은 Vault 경로에 저장하지 않는다. 저장소 접근용 토큰은 별도 경로에 분리 저장한다.
+* IIV 는 KV v2 호환 API 와 `staging -> git commit -> final -> cleanup` 흐름을 유지한다.
+* GitHub 접근 토큰은 앱 `.env` 시크릿과 같은 IIV 경로에 저장하지 않는다. 저장소 접근용 토큰은 별도 경로에 분리 저장한다.
 * Flux 상태는 UI에 `Unknown`, `Syncing`, `Synced`, `Degraded` 네 개만 노출한다.
 * 백엔드는 Go `net/http` 표준 라이브러리 기준이다.
 * 프론트엔드는 Mantine + CSS Modules 기준이다.
@@ -58,7 +58,7 @@
 * `docs/phase1-decisions.md`
   - 구현 중 애매한 판단의 기본 결론을 담고 있다.
 * `docs/domain-rules.md`
-  - 절대 제약 사항이다. GitOps 구조, Vault 모델, 권한 모델, 프론트/백엔드 컨벤션이 여기에 묶여 있다.
+  - 절대 제약 사항이다. GitOps 구조, IIV 모델, 권한 모델, 프론트/백엔드 컨벤션이 여기에 묶여 있다.
 * `docs/keycloak-group-auth-model.md`
   - 현재 저장소에서 권장하는 Keycloak role 기반 연동 모델이다.
   - auth 작업에서는 platform admin 을 group path 로 되돌리기 전에 이 문서를 먼저 확인한다.
@@ -124,7 +124,7 @@
 
 * `backend/internal/core/config.go`
   - 런타임 환경변수와 모드 전환 규칙이 있다.
-  - Git, Vault, Kubernetes, Prometheus, OIDC 설정을 건드릴 때 먼저 본다.
+  - Git, IIV, Kubernetes, Prometheus, OIDC 설정을 건드릴 때 먼저 본다.
 * `backend/internal/core/auth.go`
 * `backend/internal/core/auth_oidc.go`
 * `backend/internal/core/identity.go`
@@ -132,7 +132,7 @@
 * `backend/internal/core/http.go`
   - 공통 JSON 응답, 에러 응답, request id, CORS 쪽을 본다.
 * `backend/internal/core/secrets.go`
-  - Vault staging/final 경로 규칙이 있다.
+  - IIV staging/final logical path 규칙이 있다.
 
 ### 프로젝트 카탈로그와 정책
 
@@ -211,7 +211,7 @@
   - sync status, rollout 제어, pod metrics 의 local/real 구현이다.
 * `backend/internal/vault/local.go`
 * `backend/internal/vault/real.go`
-  - Secret staging/finalize/delete 저장 구현이다.
+  - IIV KV v2 호환 Secret staging/finalize/delete 저장 구현이다. 내부 패키지명은 기존 호환성 때문에 유지한다.
 
 ### 백엔드 테스트 위치
 
@@ -347,7 +347,7 @@
 * `frontend/src/api/client.ts`
 * `frontend/src/App.tsx`
 
-### Secret / Vault 흐름 변경
+### Secret / IIV 흐름 변경
 
 아래 파일을 같이 본다.
 

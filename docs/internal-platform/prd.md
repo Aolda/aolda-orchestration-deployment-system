@@ -201,7 +201,7 @@ Phase 2, 3, 4의 상세 로드맵과 handoff guardrail 은 `docs/future-phases-r
 
 ### 10.4 Secret 처리
 
-* Secret 값은 백엔드가 Vault KV v2에 먼저 임시 저장해야 한다.
+* Secret 값은 백엔드가 IIV KV v2 호환 API에 먼저 임시 저장해야 한다.
 * Git에는 Secret 평문이 절대 기록되면 안 된다.
 * Git 커밋 성공 후 Secret은 최종 경로로 확정된다.
 * Git 커밋 실패 시 Secret은 임시 경로에 남겨두고 TTL 또는 정리 작업으로 제거해야 한다.

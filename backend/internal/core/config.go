@@ -142,17 +142,17 @@ func LoadConfig() (Config, error) {
 		return Config{}, err
 	}
 
-	vaultRequestTimeout, err := envDuration("AODS_VAULT_REQUEST_TIMEOUT", 5*time.Second)
+	vaultRequestTimeout, err := envDurationAny([]string{"AODS_IIV_REQUEST_TIMEOUT", "AODS_VAULT_REQUEST_TIMEOUT"}, 5*time.Second)
 	if err != nil {
 		return Config{}, err
 	}
 
-	vaultStagingCleanupInterval, err := envDuration("AODS_VAULT_STAGING_CLEANUP_INTERVAL", time.Hour)
+	vaultStagingCleanupInterval, err := envDurationAny([]string{"AODS_IIV_STAGING_CLEANUP_INTERVAL", "AODS_VAULT_STAGING_CLEANUP_INTERVAL"}, time.Hour)
 	if err != nil {
 		return Config{}, err
 	}
 
-	vaultStagingMaxAge, err := envDuration("AODS_VAULT_STAGING_MAX_AGE", 24*time.Hour)
+	vaultStagingMaxAge, err := envDurationAny([]string{"AODS_IIV_STAGING_MAX_AGE", "AODS_VAULT_STAGING_MAX_AGE"}, 24*time.Hour)
 	if err != nil {
 		return Config{}, err
 	}
@@ -228,10 +228,10 @@ func LoadConfig() (Config, error) {
 		PrometheusRequestTimeout:       prometheusRequestTimeout,
 		PrometheusRange:                prometheusRange,
 		PrometheusStep:                 prometheusStep,
-		VaultMode:                      envOrDefault("AODS_VAULT_MODE", "local"),
-		VaultAddress:                   envOrDefault("AODS_VAULT_ADDR", ""),
-		VaultToken:                     envOrDefault("AODS_VAULT_TOKEN", ""),
-		VaultNamespace:                 envOrDefault("AODS_VAULT_NAMESPACE", ""),
+		VaultMode:                      secretStoreModeFromEnv(),
+		VaultAddress:                   normalizeSecretStoreAddress(envOrDefaultAny([]string{"AODS_IIV_ADDR", "AODS_VAULT_ADDR"}, "")),
+		VaultToken:                     envOrDefaultAny([]string{"AODS_IIV_TOKEN", "AODS_VAULT_TOKEN"}, ""),
+		VaultNamespace:                 envOrDefaultAny([]string{"AODS_IIV_NAMESPACE", "AODS_VAULT_NAMESPACE"}, ""),
 		VaultRequestTimeout:            vaultRequestTimeout,
 		VaultStagingCleanupInterval:    vaultStagingCleanupInterval,
 		VaultStagingMaxAge:             vaultStagingMaxAge,
@@ -254,7 +254,7 @@ func LoadConfig() (Config, error) {
 				envOrDefault("AODS_DEV_GROUPS", "aods:shared:deploy"),
 			),
 		},
-		LocalVaultDir: envOrDefault("AODS_LOCAL_VAULT_DIR", filepath.Join(os.TempDir(), "aods-local-vault")),
+		LocalVaultDir: envOrDefaultAny([]string{"AODS_LOCAL_SECRET_STORE_DIR", "AODS_LOCAL_VAULT_DIR"}, filepath.Join(os.TempDir(), "aods-local-secret-store")),
 	}, nil
 }
 
@@ -334,6 +334,15 @@ func envOrDefault(key string, fallback string) string {
 	return fallback
 }
 
+func envOrDefaultAny(keys []string, fallback string) string {
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok && value != "" {
+			return value
+		}
+	}
+	return fallback
+}
+
 func envBool(key string, fallback bool) (bool, error) {
 	value, ok := os.LookupEnv(key)
 	if !ok || value == "" {
@@ -373,6 +382,44 @@ func envDuration(key string, fallback time.Duration) (time.Duration, error) {
 	}
 
 	return parsed, nil
+}
+
+func envDurationAny(keys []string, fallback time.Duration) (time.Duration, error) {
+	for _, key := range keys {
+		value, ok := os.LookupEnv(key)
+		if !ok || value == "" {
+			continue
+		}
+
+		parsed, err := time.ParseDuration(value)
+		if err != nil {
+			return 0, fmt.Errorf("parse %s: %w", key, err)
+		}
+		return parsed, nil
+	}
+
+	return fallback, nil
+}
+
+func secretStoreModeFromEnv() string {
+	if mode := envOrDefaultAny([]string{"AODS_SECRET_STORE_MODE", "AODS_IIV_MODE", "AODS_VAULT_MODE"}, ""); mode != "" {
+		return mode
+	}
+	if envOrDefaultAny([]string{"AODS_IIV_ADDR", "AODS_IIV_TOKEN"}, "") != "" {
+		return "iiv"
+	}
+	return "local"
+}
+
+func normalizeSecretStoreAddress(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.Contains(value, "://") {
+		return value
+	}
+	if strings.Contains(value, ":") {
+		return "http://" + value
+	}
+	return "http://" + value + ":8200"
 }
 
 func resolveRepoRoot(explicit string) (string, error) {

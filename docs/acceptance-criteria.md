@@ -51,7 +51,7 @@
 - **And** 생성 파일셋에는 `kustomization.yaml`, `deployment.yaml`, `service.yaml`, `virtualservice.yaml`, `destinationrule.yaml`, `externalsecret.yaml` 이 포함되어야 한다.
 - **And** 백엔드는 GitOps 저장소의 `platform/flux/clusters/{clusterId}/applications/` 아래에 해당 앱을 가리키는 Flux child `Kustomization` manifest 를 생성해야 한다.
 - **And** Secret 평문 값은 Git 커밋이나 생성된 매니페스트에 포함되면 안 된다.
-- **And** Secret 값은 먼저 Vault 임시 경로에 저장되고, Git 커밋 성공 후 최종 경로로 확정되어야 한다.
+- **And** Secret 값은 먼저 IIV 임시 경로에 저장되고, Git 커밋 성공 후 최종 경로로 확정되어야 한다.
 
 ### Scenario: viewer 권한 사용자가 앱 생성을 시도한다
 - **Given** 사용자가 `project-a` 에 대해 `viewer` 권한만 가지고 있다.

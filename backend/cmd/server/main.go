@@ -83,11 +83,11 @@ func main() {
 		"fluxKustomizationNamespace", cfg.FluxKustomizationNamespace,
 		"prometheusMode", cfg.PrometheusMode,
 		"prometheusURL", cfg.PrometheusURL,
-		"vaultMode", cfg.VaultMode,
-		"vaultAddress", cfg.VaultAddress,
-		"vaultNamespace", cfg.VaultNamespace,
-		"vaultStagingCleanupInterval", cfg.VaultStagingCleanupInterval,
-		"vaultStagingMaxAge", cfg.VaultStagingMaxAge,
+		"secretStoreMode", cfg.VaultMode,
+		"iivAddress", cfg.VaultAddress,
+		"iivNamespace", cfg.VaultNamespace,
+		"iivStagingCleanupInterval", cfg.VaultStagingCleanupInterval,
+		"iivStagingMaxAge", cfg.VaultStagingMaxAge,
 		"orphanFluxCleanupInterval", cfg.OrphanFluxCleanupInterval,
 		"mariadbOperationsEnabled", cfg.UseMariaDBOperations(),
 		"applicationCatalogCacheEnabled", cfg.UseApplicationCatalogCache(),
@@ -98,7 +98,7 @@ func main() {
 		"deploymentOperationLease", cfg.DeploymentOperationLease,
 		"deploymentOperationMaxAttempts", cfg.DeploymentOperationMaxAttempts,
 		"devAuthFallback", cfg.AllowDevFallback,
-		"localVaultDir", cfg.LocalVaultDir,
+		"localSecretStoreDir", cfg.LocalVaultDir,
 	)
 
 	poller := &application.AutoUpdatePoller{

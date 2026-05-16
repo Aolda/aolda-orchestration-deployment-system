@@ -255,7 +255,10 @@ func (s LocalManifestStore) loadRecord(projectID string, appName string) (Record
 		if err := yaml.Unmarshal(externalSecretData, &externalSecret); err != nil {
 			return Record{}, fmt.Errorf("decode externalsecret manifest: %w", err)
 		}
-		secretPath = externalSecret.Metadata.Annotations["aods.io/vault-path"]
+		secretPath = externalSecret.Metadata.Annotations["aods.io/iiv-path"]
+		if secretPath == "" {
+			secretPath = externalSecret.Metadata.Annotations["aods.io/vault-path"]
+		}
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return Record{}, fmt.Errorf("read externalsecret manifest: %w", err)
 	}
@@ -1374,11 +1377,11 @@ metadata:
   name: %s
   namespace: %s
   annotations:
-    aods.io/vault-path: %s
+    aods.io/iiv-path: %s
 spec:
   refreshInterval: 1h
   secretStoreRef:
-    name: aods-vault
+    name: aods-iiv
     kind: ClusterSecretStore
   target:
     name: %s-secrets
@@ -1402,11 +1405,11 @@ metadata:
   name: %s-registry
   namespace: %s
   annotations:
-    aods.io/vault-path: %s
+    aods.io/iiv-path: %s
 spec:
   refreshInterval: 1h
   secretStoreRef:
-    name: aods-vault
+    name: aods-iiv
     kind: ClusterSecretStore
   target:
     name: %s-registry

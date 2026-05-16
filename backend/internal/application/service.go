@@ -708,7 +708,7 @@ func (s Service) GetApplicationSecrets(ctx context.Context, user core.User, appl
 	}
 	if s.Secrets == nil {
 		return ApplicationSecretsResponse{}, ValidationError{
-			Message: "vault secret store is not configured",
+			Message: "IIV secret store is not configured",
 			Details: map[string]any{"applicationId": applicationID},
 		}
 	}
@@ -748,7 +748,7 @@ func (s Service) UpdateApplicationSecrets(
 	}
 	if s.Secrets == nil {
 		return ApplicationSecretsResponse{}, ValidationError{
-			Message: "vault secret store is not configured",
+			Message: "IIV secret store is not configured",
 			Details: map[string]any{"applicationId": applicationID},
 		}
 	}
@@ -896,7 +896,7 @@ func (s Service) RestoreApplicationSecretVersion(
 	versioned, ok := s.Secrets.(VersionedSecretStore)
 	if !ok {
 		return ApplicationSecretsResponse{}, ValidationError{
-			Message: "vault version history is not available",
+			Message: "secret version history is not available",
 			Details: map[string]any{"applicationId": applicationID},
 		}
 	}
@@ -934,7 +934,7 @@ func (s Service) RestoreApplicationSecretVersion(
 		return ApplicationSecretsResponse{}, err
 	}
 
-	_ = s.appendEvent(ctx, record.ID, "ApplicationSecretsRestored", fmt.Sprintf("환경 변수를 Vault version %d 기준으로 복원했습니다.", version), map[string]any{
+	_ = s.appendEvent(ctx, record.ID, "ApplicationSecretsRestored", fmt.Sprintf("환경 변수를 secret version %d 기준으로 복원했습니다.", version), map[string]any{
 		"secretPath":       secretPath,
 		"restoredVersion":  version,
 		"restoredKeyCount": len(values),

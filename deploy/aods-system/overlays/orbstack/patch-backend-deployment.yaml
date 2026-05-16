@@ -56,10 +56,10 @@ spec:
               value: 1h
             - name: AODS_PROMETHEUS_STEP
               value: 5m
-            - name: AODS_VAULT_MODE
+            - name: AODS_SECRET_STORE_MODE
               value: local
-            - name: AODS_LOCAL_VAULT_DIR
-              value: /data/local-vault
+            - name: AODS_LOCAL_SECRET_STORE_DIR
+              value: /data/local-secret-store
             - name: AODS_IMAGE_CHECK_MODE
               value: local
             - name: AODS_IMAGE_CHECK_TIMEOUT

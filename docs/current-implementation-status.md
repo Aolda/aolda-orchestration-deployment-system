@@ -56,11 +56,13 @@
 * root app: [deploy/argocd/aods-root.yaml](/Users/ichanju/Desktop/aolda/AODS/deploy/argocd/aods-root.yaml:1)
 * child app: [deploy/argocd/apps/aods-system.yaml](/Users/ichanju/Desktop/aolda/AODS/deploy/argocd/apps/aods-system.yaml:1)
 * Argo CD overlay: [deploy/aods-system/overlays/argocd/kustomization.yaml](/Users/ichanju/Desktop/aolda/AODS/deploy/aods-system/overlays/argocd/kustomization.yaml:1)
+* prod runtime overlay: [deploy/aods-system/overlays/prod/kustomization.yaml](/Users/ichanju/Desktop/aolda/AODS/deploy/aods-system/overlays/prod/kustomization.yaml:1)
 * 운영 안내: [deploy/argocd/README.md](/Users/ichanju/Desktop/aolda/AODS/deploy/argocd/README.md:1)
 
 주의:
 
-* `AODS_GIT_REMOTE`, `AODS_VAULT_TOKEN`, 선택 `AODS_MARIADB_DSN`, 선택 `AODS_APPLICATION_CATALOG_DSN` 은 Secret 평문이므로 Git에 저장하지 않는다.
+* `AODS_GIT_REMOTE`, `AODS_IIV_TOKEN`, 선택 `AODS_MARIADB_DSN`, 선택 `AODS_APPLICATION_CATALOG_DSN` 은 Secret 평문이므로 Git에 저장하지 않는다.
+* prod overlay 는 backend IIV endpoint 와 `aods-iiv` ClusterSecretStore server 를 `http://10.16.254.243:8200` 으로 고정하고, dev/testbed 는 `aods-backend-secrets.AODS_IIV_ADDR` 로 환경별 endpoint 를 주입한다.
 * app-of-apps 는 DB 를 새로 띄우지 않으므로, 이미 운영 중인 PostgreSQL/MariaDB 와 포트/서비스 충돌을 만들지 않는다.
 
 ### 2026-05-12 - MariaDB 기반 배포 operation queue 기준선 추가

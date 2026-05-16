@@ -25,7 +25,7 @@
 * 앱 ID 는 `{projectId}__{appName}` 규칙을 유지한다.
 * Secret 평문을 Git에 저장하지 않는다.
 * Kubernetes 기본 `Secret` 리소스로 우회하지 않는다.
-* Vault 는 `staging -> git commit -> final -> cleanup` 흐름을 유지한다.
+* IIV 는 `staging -> git commit -> final -> cleanup` 흐름을 유지한다. 운영 환경은 Vault endpoint 대신 IIV endpoint 를 사용한다.
 * Flux 상태는 `Unknown`, `Syncing`, `Synced`, `Degraded` 네 개만 외부에 노출한다.
 * 실제 연동이 없으면 fabricated sync, rollout, metrics 값을 만들어내지 않는다.
 * 최소 계약 문서는 여전히 Phase 1 문서군이지만, 회귀 기준선은 `docs/current-implementation-status.md` 의 current implementation baseline 이다.
@@ -43,7 +43,7 @@
 * 클러스터 카탈로그: `backend/internal/cluster/`
 * Git 어댑터: `backend/internal/gitops/repository.go`
 * Kubernetes 연동: `backend/internal/kubernetes/`
-* Vault 연동: `backend/internal/vault/`
+* IIV 연동: `backend/internal/vault/` (KV v2 호환 구현체의 내부 패키지명은 기존 호환성 때문에 유지)
 
 ## Editing Rules
 
@@ -72,7 +72,7 @@
 
 * 라우트나 응답 shape 변경: `backend/internal/server/server_test.go`
 * Git mode 변경: `backend/internal/server/server_git_test.go`
-* Vault/Kubernetes/Git 어댑터 변경: 해당 패키지 테스트
+* IIV/Kubernetes/Git 어댑터 변경: 해당 패키지 테스트
 
 현재 남은 백엔드 backlog 는 `docs/backend-worklist.md` 를 먼저 본다.
 

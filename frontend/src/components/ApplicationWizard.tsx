@@ -129,7 +129,7 @@ export function ApplicationWizard({
   const previewAppName = effectiveAppNameIsValid ? normalizedEffectiveAppName : ''
   const manifestPathPreview = buildManifestPath(projectId, previewAppName)
   const applicationIdPreview = buildApplicationID(projectId, previewAppName)
-  const vaultPathPreview = buildVaultPath(projectId, previewAppName)
+  const iivPathPreview = buildIIVPath(projectId, previewAppName)
   const repositoryTokenPathPreview = buildRepositoryTokenPath(projectId, previewAppName)
   const registrySecretPathPreview = buildRegistrySecretPath(projectId, previewAppName)
   const repositoryTarget = useMemo(
@@ -1066,10 +1066,10 @@ export function ApplicationWizard({
           </Stack>
         </Stepper.Step>
 
-        <Stepper.Step label="비밀값" description="Vault 저장 정보">
+        <Stepper.Step label="비밀값" description="IIV 저장 정보">
           <Stack gap="md" mt="md">
             <Text size="sm" c="dimmed">
-              입력한 값은 생성 시 Vault에 저장됩니다. 지금 없어도 생성은 가능하며, 필요한 경우 나중에 다시 연결할 수 있습니다.
+              입력한 값은 생성 시 IIV에 저장됩니다. 지금 없어도 생성은 가능하며, 필요한 경우 나중에 다시 연결할 수 있습니다.
             </Text>
             <div
               aria-hidden="true"
@@ -1206,8 +1206,8 @@ export function ApplicationWizard({
                   <Code>{manifestPathPreview}</Code>
                   {filledSecretCount > 0 ? (
                     <>
-                      <Text size="sm">Vault 경로</Text>
-                      <Code>{vaultPathPreview}</Code>
+                      <Text size="sm">IIV 경로</Text>
+                      <Code>{iivPathPreview}</Code>
                     </>
                   ) : null}
                   {form.sourceMode === 'github' && form.repositoryToken.trim() ? (
@@ -1247,13 +1247,13 @@ export function ApplicationWizard({
                 <List.Item>GitHub 기본 브랜치에 앱 디렉터리와 Flux child manifest를 생성합니다.</List.Item>
                 <List.Item>애플리케이션 식별자는 <Code>{applicationIdPreview}</Code> 규칙으로 저장됩니다.</List.Item>
                 <List.Item>
-                  비밀값 {filledSecretCount}개{filledSecretCount > 0 ? `를 ${vaultPathPreview} 경로로 저장합니다.` : '은 이번 생성에서 저장하지 않습니다.'}
+                  비밀값 {filledSecretCount}개{filledSecretCount > 0 ? `를 ${iivPathPreview} 경로로 저장합니다.` : '은 이번 생성에서 저장하지 않습니다.'}
                 </List.Item>
                 {form.sourceMode === 'github' && form.repositoryToken.trim() ? (
                   <List.Item>GitHub 저장소 토큰은 앱 환경변수와 분리해서 <Code>{repositoryTokenPathPreview}</Code> 경로에 저장합니다.</List.Item>
                 ) : null}
                 {form.sourceMode === 'github' && !form.repositoryToken.trim() ? (
-                  <List.Item>GitHub 저장소 토큰은 입력하지 않았으므로 별도 Vault 경로를 만들지 않습니다.</List.Item>
+                  <List.Item>GitHub 저장소 토큰은 입력하지 않았으므로 별도 IIV 경로를 만들지 않습니다.</List.Item>
                 ) : null}
                 {form.registryToken.trim() ? (
                   <List.Item>레지스트리 토큰은 Kubernetes image pull credential 용도로 <Code>{registrySecretPathPreview}</Code> 경로에 저장합니다.</List.Item>
@@ -1517,7 +1517,7 @@ function buildApplicationID(projectId: string | undefined, appName: string) {
   return `${normalizedProjectId}__${normalizedAppName}`
 }
 
-function buildVaultPath(projectId: string | undefined, appName: string) {
+function buildIIVPath(projectId: string | undefined, appName: string) {
   const normalizedProjectId = projectId || '{projectId}'
   const normalizedAppName = appName.trim() || '{appName}'
   return `secret/aods/apps/${normalizedProjectId}/${normalizedAppName}/prod`
