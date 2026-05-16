@@ -7,7 +7,7 @@ DEFAULT_SELF_HOSTED_KUBECONFIG="${HOME}/.kube/aods-self-hosted.yaml"
 ENV_AODS_K8S_KUBECONFIG="${AODS_K8S_KUBECONFIG:-}"
 ENV_AODS_K8S_CONTEXT="${AODS_K8S_CONTEXT:-}"
 
-if [[ -f "${ROOT_DIR}/.envrc" ]]; then
+if [[ "${AODS_DEPLOY_TESTBED_SKIP_ENVRC:-}" != "1" && -f "${ROOT_DIR}/.envrc" ]]; then
   set -a
   # shellcheck disable=SC1091
   source "${ROOT_DIR}/.envrc"
