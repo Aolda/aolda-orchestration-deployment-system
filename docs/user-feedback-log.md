@@ -229,7 +229,7 @@
 * Area: Frontend / Auth / Local QA
 * User signal: `keycloak 오류 시에도 들어갈 수 있게 일반적으로 치고 들어가는 것도 넣어줬으면 좋겠음`
 * Interpreted intent: Keycloak 연동을 기본으로 유지하되, 로컬 QA나 장애 상황에서는 사용자가 브라우저에서 완전히 막히지 않도록 보조 진입 경로가 필요하다.
-* Action: OIDC 로그인 화면에 로컬 비상 로그인 폼을 추가했고, 비상 세션일 때는 frontend가 Bearer 토큰 주입을 멈추고 backend dev fallback 계정으로 진입하도록 연결했다. 현재 로컬 실행 환경에서는 `admin/admin` 비상 로그인으로 접근 가능하다.
+* Action: OIDC 로그인 화면에 로컬 비상 로그인 폼을 추가했고, 비상 세션일 때는 frontend가 Bearer 토큰 주입을 멈추고 backend dev fallback 계정으로 진입하도록 연결했다. 이후 로컬 기본 자격 증명은 `admin / qwe1356@` 로 정리됐다.
 * References: `frontend/src/auth/oidc.ts`, `frontend/src/api/client.ts`, `frontend/src/App.tsx`, `.envrc`, `frontend/.env.local`
 * Status: applied
 
@@ -654,6 +654,24 @@
 * Interpreted intent: 앱 sync 실패 원인이 registry ExternalSecret의 ESO 동기화 대기 상태로만 보이면 운영자는 실제 workload 문제가 무엇인지 파악하기 어렵다. Flux child Kustomization은 모든 리소스 wait가 아니라 실제 앱 workload readiness 중심으로 health를 판단해야 한다.
 * Action: 표준 배포 앱의 Flux child Kustomization을 `wait: false` + 명시적 `Deployment` health check로 렌더링하도록 바꿔 `ExternalSecret` 자체 health가 앱 sync를 직접 타임아웃시키지 않게 했다. Secret이 실제로 없어서 앱이 뜨지 못하면 Deployment readiness와 Pod event 쪽에서 원인이 드러난다.
 * References: `backend/internal/application/flux_support.go`, `backend/internal/server/server_test.go`, `backend/internal/server/server_git_test.go`
+* Status: applied
+
+### 2026-05-15 - FB-065 - 생성/싱크가 느릴 때 단계별 진행 상태가 보여야 함
+
+* Area: Frontend / Application Catalog / Creation DX
+* User signal: `그냥 계속 로딩으로 도는게 아니라 ... 싱크 중에도 어떻게 돌아가는지 단계별로 ... 단순히 만들어진 프로젝트에 대해 싱크할때도 그렇고 프로젝트 자체를 만들었을 때도 동일하게`
+* Interpreted intent: Kubernetes API 또는 Flux 상태 조회가 느리면 사용자는 전체가 멈춘 것처럼 느낀다. 앱 카드와 생성 drawer는 Git desired state, Flux reconcile, Kubernetes runtime, observability, 화면 refresh 같은 현재 단계와 막힌 지점을 분리해 보여줘야 한다.
+* Action: 애플리케이션 목록 카드에 `반영 단계` 진행 리스트를 추가하고, 새 애플리케이션/새 프로젝트 생성 중에도 요청 처리, GitOps/Vault 처리, 카탈로그 갱신, 후속 Flux 추적 단계를 표시하도록 수정했다.
+* References: `frontend/src/App.tsx`, `frontend/src/App.module.css`
+* Status: applied
+
+### 2026-05-16 - FB-066 - 애플리케이션 목록 Git fetch 대기 시간이 느림
+
+* Area: Backend / GitOps Read Path / Application Catalog
+* User signal: `애플리케이션 목록을 불러오는 중 ... git에서 주기적으로 db로 가져와서 처리는 못하나? 너무 느림`
+* Interpreted intent: 앱 목록 조회는 화면 진입마다 원격 Git fetch를 직접 기다리면 안 된다. GitHub 기본 브랜치 source of truth는 유지하되, 운영 UI는 cache 또는 read-model projection에서 빠르게 응답해야 한다.
+* Action: 프론트 15초 폴링이 매번 GitHub fetch를 타지 않도록 `AODS_GIT_SYNC_TTL` 기본값과 dev env 예시를 60초로 늘렸다. UI는 앱 목록 응답이 오면 먼저 카드를 렌더링하고, health/metrics/policy 조회는 뒤이어 보강하도록 로딩 상태를 분리했다. PostgreSQL/MariaDB 기반 application catalog read-model을 추가해 GitHub 기본 브랜치 source of truth는 유지하면서 앱 목록 API가 DB projection을 먼저 읽고 background projector가 Git 내용을 주기적으로 반영하도록 했다.
+* References: `backend/internal/core/config.go`, `backend/internal/application/catalog_cache.go`, `backend/internal/application/catalog_cache_mariadb.go`, `backend/internal/application/catalog_cache_postgres.go`, `backend/internal/application/catalog_projector.go`, `frontend/src/App.tsx`, `.envrc.example`, `docs/current-baseline-runbook.md`
 * Status: applied
 
 ## 운영 메모

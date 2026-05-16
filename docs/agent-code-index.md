@@ -5,7 +5,7 @@
 목표는 두 가지다.
 
 1. 기능별 진입점과 수정 경로를 빠르게 찾게 한다.
-2. 앞으로의 기능 개발에서도 Phase 1 계약과 아키텍처 규칙을 계속 적용하게 한다.
+2. 앞으로의 기능 개발에서도 historical minimum contract 와 아키텍처 규칙을 계속 적용하게 한다.
 
 ## 필수 작업 순서
 
@@ -22,10 +22,10 @@
 
 판단 원칙:
 
-* 최소 계약 문서는 여전히 **Phase 1 문서군**이다.
+* 최소 계약 문서는 historical **Phase 1 문서군**을 포함한다.
 * 하지만 회귀와 QA 기준선은 `docs/current-implementation-status.md` 에 정리된 **current implementation baseline** 이다.
-* 사용자가 명시적으로 요청하지 않으면 완전히 새로운 future-scope 기능을 임의로 열지 않는다.
-* 이미 코드와 UI에 노출된 later-phase 기능은 `아직 future scope` 라는 이유로 축소하거나 숨기지 않는다.
+* 사용자가 명시적으로 요청하지 않으면 baseline 밖의 완전히 새로운 기능을 임의로 열지 않는다.
+* 이미 코드와 UI에 노출된 기능은 오래된 phase 가정 때문에 축소하거나 숨기지 않는다.
 * 실제 수정 위치는 `docs/current-implementation-status.md` 와 이 문서를 같이 본다.
 
 ## 항상 적용되는 규칙
@@ -104,7 +104,7 @@
 * `deploy/argocd/`
   - Argo CD app-of-apps 진입점이다.
   - `aods-root.yaml` 이 child `Application` 들을 관리하고, `apps/aods-system.yaml` 이 AODS 런타임 overlay 를 배포한다.
-  - MariaDB 는 기본 app-of-apps 에 포함하지 않고 `aods-backend-secrets.AODS_MARIADB_DSN` 으로 기존 DB 를 참조한다.
+  - DB 는 기본 app-of-apps 에 포함하지 않고 `aods-backend-secrets.AODS_MARIADB_DSN` 또는 `AODS_APPLICATION_CATALOG_DSN` 으로 기존 PostgreSQL/MariaDB 를 참조한다.
 * `deploy/aods-system/overlays/argocd/`
   - Argo CD 배포용 AODS overlay 다.
   - backend/frontend service 는 `ClusterIP` 로 고정해 NodePort/LoadBalancer 포트 충돌을 만들지 않는다.
@@ -178,6 +178,12 @@
 * `backend/internal/application/deployment_operations_mariadb.go`
   - MariaDB 기반 durable deployment operation queue 와 worker/lease lock 구현이다.
   - GitHub 기본 브랜치 source of truth 는 유지하고, DB 는 재시도 가능한 command log 와 repo/branch 단위 Git write 직렬화 coordinator 로만 사용한다.
+* `backend/internal/application/catalog_cache.go`
+* `backend/internal/application/catalog_cache_postgres.go`
+* `backend/internal/application/catalog_cache_mariadb.go`
+* `backend/internal/application/catalog_projector.go`
+  - 앱 목록 UI read model projection 이다.
+  - GitHub 기본 브랜치 source of truth 는 유지하고, PostgreSQL/MariaDB 는 빠른 목록 조회용 cache/projection 으로만 사용한다.
 * `backend/internal/application/image_verifier.go`
   - 이미지 검증 경로다.
 
@@ -368,7 +374,7 @@
 
 * `openapi.yaml` 과 실제 응답 shape 가 일치하는가
 * 최소 계약을 깨는 임의의 미래 기능을 무단으로 열지 않았는가
-* 이미 노출된 later-phase 동작을 잘못된 baseline 가정 때문에 축소하거나 제거하지 않았는가
+* 이미 노출된 동작을 잘못된 phase 가정 때문에 축소하거나 제거하지 않았는가
 * `platform/projects.yaml` 또는 GitOps 경로 규칙을 깨지 않았는가
 * Secret 이 Git 에 들어가거나 K8s `Secret` 으로 우회되지 않았는가
 * 프론트 타입과 API client 가 백엔드 응답과 같이 갱신됐는가

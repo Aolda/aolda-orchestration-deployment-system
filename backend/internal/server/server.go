@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -20,6 +21,7 @@ import (
 	"github.com/aolda/aods-backend/internal/project"
 	"github.com/aolda/aods-backend/internal/vault"
 	_ "github.com/go-sql-driver/mysql"
+	_ "github.com/lib/pq"
 )
 
 func New(cfg core.Config) (http.Handler, *application.Service, *project.Service) {
@@ -164,18 +166,13 @@ func NewWithResources(cfg core.Config) (http.Handler, *application.Service, *pro
 		Images:                imageVerifier,
 		PollTracker:           application.NewRepositoryPollTracker(cfg.RepositoryPollInterval),
 	}
+	var operationDB *sql.DB
 	if cfg.UseMariaDBOperations() {
-		db, err := sql.Open("mysql", mariaDBDSN(cfg.MariaDBDSN))
+		db, err := openAODSSQLDB("mysql", cfg.MariaDBDSN)
 		if err != nil {
 			return nil, nil, nil, nil, err
 		}
-		db.SetMaxOpenConns(10)
-		db.SetMaxIdleConns(5)
-		db.SetConnMaxLifetime(30 * time.Minute)
-		if err := db.Ping(); err != nil {
-			_ = db.Close()
-			return nil, nil, nil, nil, err
-		}
+		operationDB = db
 		operationStore := application.MariaDBDeploymentOperationStore{DB: db}
 		ensureCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		if err := operationStore.Ensure(ensureCtx); err != nil {
@@ -190,6 +187,51 @@ func NewWithResources(cfg core.Config) (http.Handler, *application.Service, *pro
 		cleanup = func() {
 			_ = db.Close()
 		}
+	}
+	if cfg.UseApplicationCatalogCache() {
+		driverName := cfg.ResolvedApplicationCatalogDBDriver()
+		catalogDSN := cfg.ResolvedApplicationCatalogDSN()
+		catalogDB := operationDB
+		shouldCloseCatalogDB := false
+		if catalogDB == nil || driverName != "mysql" || strings.TrimSpace(catalogDSN) != strings.TrimSpace(cfg.MariaDBDSN) {
+			db, err := openAODSSQLDB(driverName, catalogDSN)
+			if err != nil {
+				cleanup()
+				return nil, nil, nil, nil, err
+			}
+			catalogDB = db
+			shouldCloseCatalogDB = true
+		}
+		catalogCache, err := applicationCatalogCacheForDriver(driverName, catalogDB)
+		if err != nil {
+			if shouldCloseCatalogDB {
+				_ = catalogDB.Close()
+			}
+			cleanup()
+			return nil, nil, nil, nil, err
+		}
+		ensureCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		if err := catalogCache.Ensure(ensureCtx); err != nil {
+			cancel()
+			if shouldCloseCatalogDB {
+				_ = catalogDB.Close()
+			}
+			cleanup()
+			return nil, nil, nil, nil, err
+		}
+		cancel()
+		if shouldCloseCatalogDB {
+			cleanup = chainCleanup(cleanup, func() {
+				_ = catalogDB.Close()
+			})
+		}
+		cachedStore := application.CachedManifestStore{
+			Source:    applicationStore,
+			Cache:     catalogCache,
+			Freshness: cfg.ApplicationCatalogCacheTTL,
+		}
+		applicationStore = cachedStore
+		applicationService.Store = cachedStore
 	}
 	resourceOverviewReader := admin.ResourceOverviewReader(admin.LocalResourceOverviewReader{})
 	if cfg.UseKubernetesAPI() {
@@ -320,6 +362,54 @@ func mariaDBDSN(value string) string {
 		separator = "&"
 	}
 	return value + separator + "parseTime=true&loc=UTC"
+}
+
+func openAODSSQLDB(driverName string, dsn string) (*sql.DB, error) {
+	driverName = strings.TrimSpace(driverName)
+	if driverName == "" {
+		return nil, fmt.Errorf("database driver is required")
+	}
+	switch driverName {
+	case "mysql":
+		dsn = mariaDBDSN(dsn)
+	case "postgres":
+	default:
+		return nil, fmt.Errorf("unsupported database driver %q", driverName)
+	}
+	db, err := sql.Open(driverName, dsn)
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(10)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	if err := db.Ping(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return db, nil
+}
+
+func applicationCatalogCacheForDriver(driverName string, db *sql.DB) (application.ApplicationCatalogCache, error) {
+	switch driverName {
+	case "mysql":
+		return application.MariaDBApplicationCatalogCache{DB: db}, nil
+	case "postgres":
+		return application.PostgresApplicationCatalogCache{DB: db}, nil
+	default:
+		return nil, fmt.Errorf("unsupported application catalog database driver %q", driverName)
+	}
+}
+
+func chainCleanup(first func(), second func()) func() {
+	return func() {
+		if first != nil {
+			first()
+		}
+		if second != nil {
+			second()
+		}
+	}
 }
 
 func maxDuration(value time.Duration, fallback time.Duration) time.Duration {

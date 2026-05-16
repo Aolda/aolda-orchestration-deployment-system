@@ -89,6 +89,18 @@ backend_secret_args=(
 if [[ -n "${AODS_MARIADB_DSN:-}" ]]; then
   backend_secret_args+=(--from-literal=AODS_MARIADB_DSN="${AODS_MARIADB_DSN}")
 fi
+if [[ -n "${AODS_APPLICATION_CATALOG_DSN:-}" ]]; then
+  backend_secret_args+=(--from-literal=AODS_APPLICATION_CATALOG_DSN="${AODS_APPLICATION_CATALOG_DSN}")
+fi
+if [[ -n "${AODS_APPLICATION_CATALOG_DB_DRIVER:-}" ]]; then
+  backend_secret_args+=(--from-literal=AODS_APPLICATION_CATALOG_DB_DRIVER="${AODS_APPLICATION_CATALOG_DB_DRIVER}")
+fi
+if [[ -n "${AODS_APPLICATION_CATALOG_CACHE_TTL:-}" ]]; then
+  backend_secret_args+=(--from-literal=AODS_APPLICATION_CATALOG_CACHE_TTL="${AODS_APPLICATION_CATALOG_CACHE_TTL}")
+fi
+if [[ -n "${AODS_APPLICATION_CATALOG_SYNC_INTERVAL:-}" ]]; then
+  backend_secret_args+=(--from-literal=AODS_APPLICATION_CATALOG_SYNC_INTERVAL="${AODS_APPLICATION_CATALOG_SYNC_INTERVAL}")
+fi
 kubectl "${kubectl_args[@]}" -n aods-system create secret generic aods-backend-secrets \
   "${backend_secret_args[@]}" \
   --dry-run=client -o yaml | kubectl "${kubectl_args[@]}" apply -f -

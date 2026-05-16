@@ -3,7 +3,7 @@ export GCAL_CALENDAR_ID="your-calendar-id@group.calendar.google.com"
 # AODS backend runtime
 export AODS_GIT_MODE=git
 export AODS_GIT_REPO_DIR=/tmp/aods-managed-gitops
-export AODS_GIT_SYNC_TTL=3s
+export AODS_GIT_SYNC_TTL=60s
 export AODS_REPOSITORY_POLL_INTERVAL=5m
 export AODS_GIT_BRANCH=main
 export AODS_GIT_AUTHOR_NAME="AODS Bot"
@@ -22,6 +22,7 @@ export AODS_K8S_KUBECONFIG="${HOME}/.kube/aods-self-hosted.yaml"
 export AODS_K8S_CONTEXT="default"
 export AODS_FLUX_KUSTOMIZATION_NAMESPACE="flux-system"
 export AODS_FLUX_SOURCE_NAME="aods-manifest"
+export AODS_FLUX_STATUS_CACHE_TTL="10s"
 export AODS_K8S_REQUEST_TIMEOUT="5s"
 
 export AODS_PROMETHEUS_MODE=prometheus
@@ -40,10 +41,27 @@ export AODS_VAULT_ADDR="http://127.0.0.1:18200"
 export AODS_VAULT_TOKEN="replace-with-dev-vault-token"
 export AODS_VAULT_NAMESPACE=""
 export AODS_VAULT_REQUEST_TIMEOUT="5s"
+# OpenBao is supported through the same Vault-compatible KV v2 API.
+# For a direct local OpenBao endpoint, use:
+# export AODS_VAULT_ADDR="http://172.16.10.244:8200"
+# If /v1/sys/health is blocked by administrative rules but KV paths are allowed:
+# export AODS_VAULT_SKIP_HEALTH_CHECK=true
+# If metadata listing is blocked for local OpenBao dogfooding, disable cleanup:
+# export AODS_VAULT_STAGING_CLEANUP_INTERVAL=0
 export AODS_VAULT_PORT_FORWARD_NAMESPACE="vault"
 export AODS_VAULT_PORT_FORWARD_SERVICE="vault"
 export AODS_VAULT_PORT_FORWARD_LOCAL_PORT="18200"
 export AODS_VAULT_PORT_FORWARD_REMOTE_PORT="8200"
+
+# Optional: SQL-backed operation queue and UI read model.
+# GitHub remains the desired-state source of truth; PostgreSQL/MariaDB stores cached catalog projection.
+# For local PostgreSQL:
+# export AODS_APPLICATION_CATALOG_DSN="postgres://aods:password@127.0.0.1:5432/aolda?sslmode=disable"
+# export AODS_APPLICATION_CATALOG_DB_DRIVER="postgres"
+# For MariaDB deployment operation queue:
+# export AODS_MARIADB_DSN='aods_user:password@tcp(mariadb.aods-system.svc.cluster.local:3306)/aods'
+export AODS_APPLICATION_CATALOG_CACHE_TTL="10m"
+export AODS_APPLICATION_CATALOG_SYNC_INTERVAL="60s"
 
 # Optional: real Keycloak / OIDC auth
 # export AODS_AUTH_MODE=oidc

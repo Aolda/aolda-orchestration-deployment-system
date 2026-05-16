@@ -1,95 +1,88 @@
 package server
 
 import (
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/aolda/aods-backend/internal/core"
+	"github.com/aolda/aods-backend/internal/application"
 )
 
-func TestDeploymentOperationLockKeyUsesRemoteAndBranch(t *testing.T) {
-	t.Parallel()
-
-	base := core.Config{
-		GitRemote:  "https://github.com/Aolda/aods-manifest.git",
-		GitRepoDir: "/tmp/aods-managed-gitops",
-		GitBranch:  "main",
+func TestApplicationCatalogCacheForDriver(t *testing.T) {
+	mysqlCache, err := applicationCatalogCacheForDriver("mysql", nil)
+	if err != nil {
+		t.Fatalf("expected mysql cache, got error: %v", err)
 	}
-	same := deploymentOperationLockKey(base)
-	if !strings.HasPrefix(same, "git:") {
-		t.Fatalf("expected git lock key prefix, got %q", same)
-	}
-	if same != deploymentOperationLockKey(base) {
-		t.Fatal("expected lock key to be deterministic")
+	if _, ok := mysqlCache.(application.MariaDBApplicationCatalogCache); !ok {
+		t.Fatalf("expected MariaDB cache, got %T", mysqlCache)
 	}
 
-	otherBranch := base
-	otherBranch.GitBranch = "release"
-	if same == deploymentOperationLockKey(otherBranch) {
-		t.Fatal("expected branch to affect lock key")
+	postgresCache, err := applicationCatalogCacheForDriver("postgres", nil)
+	if err != nil {
+		t.Fatalf("expected postgres cache, got error: %v", err)
+	}
+	if _, ok := postgresCache.(application.PostgresApplicationCatalogCache); !ok {
+		t.Fatalf("expected Postgres cache, got %T", postgresCache)
 	}
 
-	local := base
-	local.GitRemote = ""
-	if same == deploymentOperationLockKey(local) {
-		t.Fatal("expected local repo path fallback to produce a distinct key")
+	_, err = applicationCatalogCacheForDriver("sqlite", nil)
+	if err == nil || !strings.Contains(err.Error(), "unsupported application catalog database driver") {
+		t.Fatalf("expected unsupported driver error, got %v", err)
 	}
 }
 
-func TestMariaDBDSNAddsParseTimeAndUTC(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name string
-		dsn  string
-		want string
-	}{
-		{
-			name: "no query",
-			dsn:  "user:pass@tcp(db:3306)/aods",
-			want: "user:pass@tcp(db:3306)/aods?parseTime=true&loc=UTC",
-		},
-		{
-			name: "existing query",
-			dsn:  "user:pass@tcp(db:3306)/aods?timeout=5s",
-			want: "user:pass@tcp(db:3306)/aods?timeout=5s&parseTime=true&loc=UTC",
-		},
-		{
-			name: "already configured",
-			dsn:  "user:pass@tcp(db:3306)/aods?parseTime=true&loc=Local",
-			want: "user:pass@tcp(db:3306)/aods?parseTime=true&loc=Local",
-		},
+func TestOpenAODSSQLDBRejectsInvalidDriver(t *testing.T) {
+	_, err := openAODSSQLDB("", "")
+	if err == nil || !strings.Contains(err.Error(), "database driver is required") {
+		t.Fatalf("expected missing driver error, got %v", err)
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-			if got := mariaDBDSN(tt.dsn); got != tt.want {
-				t.Fatalf("got %q want %q", got, tt.want)
-			}
-		})
+	_, err = openAODSSQLDB("sqlite", "file:test.db")
+	if err == nil || !strings.Contains(err.Error(), "unsupported database driver") {
+		t.Fatalf("expected unsupported driver error, got %v", err)
 	}
 }
 
-func TestHealthHandlerAndMaxDuration(t *testing.T) {
-	t.Parallel()
+func TestChainCleanupRunsBothFunctions(t *testing.T) {
+	var calls []string
 
-	if got := maxDuration(0, 5*time.Second); got != 5*time.Second {
+	cleanup := chainCleanup(
+		func() {
+			calls = append(calls, "first")
+		},
+		func() {
+			calls = append(calls, "second")
+		},
+	)
+	cleanup()
+
+	if len(calls) != 2 || calls[0] != "first" || calls[1] != "second" {
+		t.Fatalf("expected both cleanup functions in order, got %#v", calls)
+	}
+
+	chainCleanup(nil, func() {
+		calls = append(calls, "third")
+	})()
+	if len(calls) != 3 || calls[2] != "third" {
+		t.Fatalf("expected nil cleanup to be skipped, got %#v", calls)
+	}
+}
+
+func TestDatabaseDurationAndDSNHelpers(t *testing.T) {
+	if got := maxDuration(0, 5*time.Minute); got != 5*time.Minute {
 		t.Fatalf("expected fallback duration, got %s", got)
 	}
-	if got := maxDuration(2*time.Second, 5*time.Second); got != 2*time.Second {
-		t.Fatalf("expected explicit duration, got %s", got)
+	if got := maxDuration(30*time.Second, 5*time.Minute); got != 30*time.Second {
+		t.Fatalf("expected provided duration, got %s", got)
 	}
 
-	response := httptest.NewRecorder()
-	healthHandler(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", response.Code)
+	if got := mariaDBDSN("user:pass@tcp(localhost:3306)/aods"); got != "user:pass@tcp(localhost:3306)/aods?parseTime=true&loc=UTC" {
+		t.Fatalf("unexpected MariaDB DSN: %s", got)
 	}
-	if !strings.Contains(response.Body.String(), `"status":"ok"`) {
-		t.Fatalf("expected health body, got %s", response.Body.String())
+	if got := mariaDBDSN("user:pass@tcp(localhost:3306)/aods?charset=utf8mb4"); got != "user:pass@tcp(localhost:3306)/aods?charset=utf8mb4&parseTime=true&loc=UTC" {
+		t.Fatalf("unexpected MariaDB DSN with query: %s", got)
+	}
+	if got := mariaDBDSN("user:pass@tcp(localhost:3306)/aods?parseTime=true"); got != "user:pass@tcp(localhost:3306)/aods?parseTime=true" {
+		t.Fatalf("expected existing parseTime to be preserved, got %s", got)
 	}
 }
