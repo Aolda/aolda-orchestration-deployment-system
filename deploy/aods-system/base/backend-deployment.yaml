@@ -103,7 +103,7 @@ spec:
             - name: AODS_VAULT_MODE
               value: token
             - name: AODS_VAULT_ADDR
-              value: http://vault-active.shared.svc.cluster.local:8200
+              value: http://vault.vault.svc.cluster.local:8200
             - name: AODS_VAULT_TOKEN
               valueFrom:
                 secretKeyRef:
