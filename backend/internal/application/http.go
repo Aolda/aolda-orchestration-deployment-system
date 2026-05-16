@@ -30,7 +30,7 @@ func (h Handler) ListApplications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	core.WriteJSON(w, http.StatusOK, struct {
+	core.WriteConditionalJSON(w, r, http.StatusOK, struct {
 		Items []Summary `json:"items"`
 	}{
 		Items: items,
@@ -230,7 +230,7 @@ func (h Handler) GetApplicationSecrets(w http.ResponseWriter, r *http.Request) {
 		h.writeDomainError(w, r, err)
 		return
 	}
-	core.WriteJSON(w, http.StatusOK, response)
+	core.WriteConditionalJSON(w, r, http.StatusOK, response)
 }
 
 func (h Handler) UpdateApplicationSecrets(w http.ResponseWriter, r *http.Request) {
@@ -278,7 +278,7 @@ func (h Handler) ListApplicationSecretVersions(w http.ResponseWriter, r *http.Re
 		h.writeDomainError(w, r, err)
 		return
 	}
-	core.WriteJSON(w, http.StatusOK, response)
+	core.WriteConditionalJSON(w, r, http.StatusOK, response)
 }
 
 func (h Handler) RestoreApplicationSecretVersion(w http.ResponseWriter, r *http.Request) {
@@ -568,7 +568,7 @@ func (h Handler) ListDeployments(w http.ResponseWriter, r *http.Request) {
 		h.writeDomainError(w, r, err)
 		return
 	}
-	core.WriteJSON(w, http.StatusOK, response)
+	core.WriteConditionalJSON(w, r, http.StatusOK, response)
 }
 
 func (h Handler) GetDeployment(w http.ResponseWriter, r *http.Request) {
@@ -582,7 +582,7 @@ func (h Handler) GetDeployment(w http.ResponseWriter, r *http.Request) {
 		h.writeDomainError(w, r, err)
 		return
 	}
-	core.WriteJSON(w, http.StatusOK, response)
+	core.WriteConditionalJSON(w, r, http.StatusOK, response)
 }
 
 func (h Handler) PromoteDeployment(w http.ResponseWriter, r *http.Request) {
@@ -624,7 +624,7 @@ func (h Handler) GetRollbackPolicy(w http.ResponseWriter, r *http.Request) {
 		h.writeDomainError(w, r, err)
 		return
 	}
-	core.WriteJSON(w, http.StatusOK, response)
+	core.WriteConditionalJSON(w, r, http.StatusOK, response)
 }
 
 func (h Handler) SaveRollbackPolicy(w http.ResponseWriter, r *http.Request) {
@@ -666,7 +666,7 @@ func (h Handler) GetEvents(w http.ResponseWriter, r *http.Request) {
 		h.writeDomainError(w, r, err)
 		return
 	}
-	core.WriteJSON(w, http.StatusOK, response)
+	core.WriteConditionalJSON(w, r, http.StatusOK, response)
 }
 
 func (h Handler) currentUser(w http.ResponseWriter, r *http.Request) (core.User, bool) {

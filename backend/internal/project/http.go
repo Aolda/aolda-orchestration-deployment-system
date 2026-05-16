@@ -65,7 +65,7 @@ func (h Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	core.WriteJSON(w, http.StatusOK, struct {
+	core.WriteConditionalJSON(w, r, http.StatusOK, struct {
 		Items []Summary `json:"items"`
 	}{
 		Items: projects,
@@ -145,7 +145,7 @@ func (h Handler) ListEnvironments(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	core.WriteJSON(w, http.StatusOK, struct {
+	core.WriteConditionalJSON(w, r, http.StatusOK, struct {
 		Items []EnvironmentSummary `json:"items"`
 	}{Items: items})
 }
@@ -167,7 +167,7 @@ func (h Handler) ListRepositories(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	core.WriteJSON(w, http.StatusOK, struct {
+	core.WriteConditionalJSON(w, r, http.StatusOK, struct {
 		Items []RepositorySummary `json:"items"`
 	}{Items: items})
 }
@@ -189,7 +189,7 @@ func (h Handler) GetPolicies(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	core.WriteJSON(w, http.StatusOK, policies)
+	core.WriteConditionalJSON(w, r, http.StatusOK, policies)
 }
 
 func (h Handler) UpdatePolicies(w http.ResponseWriter, r *http.Request) {

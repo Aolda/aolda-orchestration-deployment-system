@@ -27,7 +27,7 @@ func (h Handler) ListClusters(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	core.WriteJSON(w, http.StatusOK, struct {
+	core.WriteConditionalJSON(w, r, http.StatusOK, struct {
 		Items []Summary `json:"items"`
 	}{Items: items})
 }
