@@ -66,10 +66,10 @@ Phase 1에서는 direct push가 기본이다. PR 기반 흐름은 Phase 2 이상
 
 ---
 
-## 4. 보안 관련 제약 (Secret 금지, Vault 직접 통신)
+## 4. 보안 관련 제약 (Secret 금지, IIV 직접 통신)
 
 * **금지 조항**: 백엔드는 Kubernetes 기본 `Secret` 리소스를 생성하면 안 된다.
-* **Vault 통신 모델**: UI에서 입력한 Secret 값은 백엔드가 즉시 Vault KV v2에 저장한다.
+* **IIV 통신 모델**: UI에서 입력한 Secret 값은 백엔드가 즉시 IIV KV v2 호환 API에 저장한다.
 * **Git 커밋 실패 허용 모델**: Secret 은 먼저 임시 경로에 저장하고, Git 커밋 성공 후 최종 경로로 확정한다.
 * **Git 실패 후 정리**: Git 커밋이 실패하면 Secret 은 임시 경로에 남겨둘 수 있지만, TTL 또는 정리 잡으로 삭제 가능해야 한다.
 
@@ -80,7 +80,7 @@ Phase 1에서는 direct push가 기본이다. PR 기반 흐름은 Phase 2 이상
 
 주의:
 
-* Vault KV v2 는 API 경로에서 `/data/` 와 `/metadata/` 를 구분한다.
+* IIV KV v2 호환 API 는 경로에서 `/data/` 와 `/metadata/` 를 구분한다.
 * 키 이름은 `/metadata/` 경로 listing 에 노출될 수 있으므로, 경로 세그먼트에는 민감한 정보를 넣지 않는다.
 * Secret key/value 쌍은 개별 경로로 쪼개지 말고 앱 단위 문서 한 건으로 저장하는 것을 권장한다.
 

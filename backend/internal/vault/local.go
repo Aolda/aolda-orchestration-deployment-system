@@ -173,7 +173,7 @@ func (s LocalStore) GetVersion(ctx context.Context, logicalPath string, version 
 		return nil, application.SecretVersionSummary{}, err
 	}
 	if version <= 0 {
-		return nil, application.SecretVersionSummary{}, fmt.Errorf("local vault version must be positive")
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("local secret store version must be positive")
 	}
 
 	document, err := readLocalDocument(pathToFile(s.RootDir, logicalPath))
@@ -191,7 +191,7 @@ func (s LocalStore) GetVersion(ctx context.Context, logicalPath string, version 
 	}
 	item, ok := document.Versions[strconv.Itoa(version)]
 	if !ok {
-		return nil, application.SecretVersionSummary{}, fmt.Errorf("local vault version %d was not found", version)
+		return nil, application.SecretVersionSummary{}, fmt.Errorf("local secret store version %d was not found", version)
 	}
 	summary := localVersionSummary(version, item, localCurrentVersion(document))
 	summary.KeyCount = len(item.Data)

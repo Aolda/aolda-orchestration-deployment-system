@@ -209,10 +209,10 @@ function translateRepositoryPollControlError(error: unknown, fallback: string) {
     if (error.code === 'INTEGRATION_ERROR' && cause) {
       const lowerCause = cause.toLowerCase()
       if (lowerCause.includes('repository token was empty')) {
-        return '저장소 토큰이 비어 있습니다. Vault의 repository token 값을 확인하세요.'
+        return '저장소 토큰이 비어 있습니다. IIV의 repository token 값을 확인하세요.'
       }
       if (lowerCause.includes('read repository secret') || lowerCause.includes('send vault request') || lowerCause.includes('vault')) {
-        return `저장소 토큰을 읽지 못했습니다. Vault 연결 상태를 확인하세요. (${cause})`
+        return `저장소 토큰을 읽지 못했습니다. IIV 연결 상태를 확인하세요. (${cause})`
       }
       return `저장소 연동 실패: ${cause}`
     }
@@ -2316,7 +2316,7 @@ export default function App() {
       await refreshApplicationSecrets(selectedAppId)
       notifications.show({
         title: '환경 변수 저장 완료',
-        message: 'Vault 값과 GitOps Secret 연결 상태를 갱신했습니다. 실행 중인 Pod에는 다음 rollout부터 반영됩니다.',
+        message: 'IIV 값과 GitOps Secret 연결 상태를 갱신했습니다. 실행 중인 Pod에는 다음 rollout부터 반영됩니다.',
         color: 'green',
       })
       await fetchAppDetails(selectedAppId)
@@ -2349,7 +2349,7 @@ export default function App() {
       await refreshApplicationSecrets(selectedAppId)
       notifications.show({
         title: '환경 변수 버전 복원 완료',
-        message: `Vault version ${version} 값으로 새 버전을 만들었습니다. 실행 중인 Pod에는 다음 rollout부터 반영됩니다.`,
+        message: `Secret version ${version} 값으로 새 버전을 만들었습니다. 실행 중인 Pod에는 다음 rollout부터 반영됩니다.`,
         color: 'green',
       })
       await fetchAppDetails(selectedAppId)
@@ -3711,13 +3711,13 @@ export default function App() {
                   <StatePanel
                     kind="forbidden"
                     title="deployer 이상 권한에서만 환경 변수를 수정할 수 있습니다"
-                    description="Vault 환경 변수 키 목록과 값 교체는 배포 권한이 있는 사용자에게만 열립니다."
+                    description="IIV 환경 변수 키 목록과 값 교체는 배포 권한이 있는 사용자에게만 열립니다."
                   />
                 ) : !applicationSecretsLoaded ? (
                   <StatePanel
                     kind="loading"
                     title="환경 변수 정보를 불러오는 중"
-                    description="Vault Secret 경로와 등록된 키 목록을 확인하고 있습니다."
+                    description="IIV Secret 경로와 등록된 키 목록을 확인하고 있습니다."
                   />
                 ) : applicationSecretsError ? (
                   <StatePanel
@@ -3729,7 +3729,7 @@ export default function App() {
                   <>
                     <SimpleGrid cols={{ base: 1, md: 5 }} spacing="md">
                       <div className={classes.statBadge}>
-                        <Text className={classes.statLabel}>Vault 경로</Text>
+                        <Text className={classes.statLabel}>IIV 경로</Text>
                         <Text className={classes.statValueSmall} style={{ wordBreak: 'break-all' }}>
                           {applicationSecrets?.secretPath || '-'}
                         </Text>
@@ -3759,17 +3759,17 @@ export default function App() {
                     </SimpleGrid>
 
                     <Alert color="yellow" variant="light" icon={<IconAlertTriangle size={16} />}>
-                      Vault 값은 버전으로 남지만, Kubernetes envFrom 값은 실행 중인 Pod에 즉시 주입되지 않습니다. 저장하거나 복원한 값은 다음 rollout 또는 Pod 재시작부터 적용됩니다.
+                      IIV 값은 버전으로 남지만, Kubernetes envFrom 값은 실행 중인 Pod에 즉시 주입되지 않습니다. 저장하거나 복원한 값은 다음 rollout 또는 Pod 재시작부터 적용됩니다.
                     </Alert>
 
                     <Alert color="blue" variant="light" icon={<IconLock size={16} />}>
-                      새 환경 변수는 아래 새 환경 변수 영역에서 키와 값을 입력한 뒤 <b>Vault 환경 변수 저장</b>을 누르면 반영됩니다. 값은 저장 후 다시 표시하지 않습니다.
+                      새 환경 변수는 아래 새 환경 변수 영역에서 키와 값을 입력한 뒤 <b>IIV 환경 변수 저장</b>을 누르면 반영됩니다. 값은 저장 후 다시 표시하지 않습니다.
                     </Alert>
 
                     <div className={classes.surfaceCard}>
                       <Group justify="space-between" align="flex-start" mb="md">
                         <Stack gap={2}>
-                          <Text fw={800}>Vault 버전 히스토리</Text>
+                          <Text fw={800}>IIV 버전 히스토리</Text>
                           <Text size="sm" c="dimmed">KV v2 metadata 기준으로 버전만 표시하고 값은 노출하지 않습니다.</Text>
                         </Stack>
                         <Badge color={applicationSecrets?.versioningEnabled ? 'teal' : 'gray'} variant="light">
@@ -3821,7 +3821,7 @@ export default function App() {
                           ) : (
                             <Table.Tr>
                               <Table.Td colSpan={6}>
-                                <Text size="sm" c="dimmed">아직 표시할 Vault 버전 히스토리가 없습니다.</Text>
+                                <Text size="sm" c="dimmed">아직 표시할 IIV 버전 히스토리가 없습니다.</Text>
                               </Table.Td>
                             </Table.Tr>
                           )}
@@ -3968,7 +3968,7 @@ export default function App() {
                           loading={savingApplicationSecrets}
                           onClick={handleSaveApplicationSecrets}
                         >
-                          Vault 환경 변수 저장
+                          IIV 환경 변수 저장
                         </Button>
                       </Stack>
                     </div>
@@ -5256,7 +5256,7 @@ function buildApplicationCreationWorkflow(stage: ApplicationCreationStage): Oper
     {
       title: 'Secret / GitOps 처리',
       owner: 'Backend',
-      detail: 'Vault staging/finalize와 GitOps manifest 커밋을 같은 생성 요청 안에서 처리합니다.',
+      detail: 'IIV staging/finalize와 GitOps manifest 커밋을 같은 생성 요청 안에서 처리합니다.',
       state: errored ? 'error' : backendDone ? 'complete' : 'active',
       icon: <IconGitBranch size={16} />,
     },

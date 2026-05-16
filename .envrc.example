@@ -35,23 +35,22 @@ export AODS_PROMETHEUS_REQUEST_TIMEOUT="5s"
 export AODS_PROMETHEUS_RANGE="1h"
 export AODS_PROMETHEUS_STEP="5m"
 
-export AODS_VAULT_MODE=token
-export AODS_VAULT_ADDR="http://127.0.0.1:18200"
-# Set this to the actual dev Vault token for the self-hosted cluster.
-export AODS_VAULT_TOKEN="replace-with-dev-vault-token"
-export AODS_VAULT_NAMESPACE=""
-export AODS_VAULT_REQUEST_TIMEOUT="5s"
-# OpenBao is supported through the same Vault-compatible KV v2 API.
-# For a direct local OpenBao endpoint, use:
-# export AODS_VAULT_ADDR="http://172.16.10.244:8200"
-# If /v1/sys/health is blocked by administrative rules but KV paths are allowed:
-# export AODS_VAULT_SKIP_HEALTH_CHECK=true
-# If metadata listing is blocked for local OpenBao dogfooding, disable cleanup:
-# export AODS_VAULT_STAGING_CLEANUP_INTERVAL=0
-export AODS_VAULT_PORT_FORWARD_NAMESPACE="vault"
-export AODS_VAULT_PORT_FORWARD_SERVICE="vault"
-export AODS_VAULT_PORT_FORWARD_LOCAL_PORT="18200"
-export AODS_VAULT_PORT_FORWARD_REMOTE_PORT="8200"
+export AODS_SECRET_STORE_MODE=iiv
+export AODS_IIV_ADDR="http://127.0.0.1:18200"
+# Set this to the actual dev IIV token for the self-hosted cluster.
+export AODS_IIV_TOKEN="replace-with-dev-iiv-token"
+export AODS_IIV_NAMESPACE=""
+export AODS_IIV_REQUEST_TIMEOUT="5s"
+# Prod IIV endpoint is wired by deploy/aods-system/overlays/prod:
+# AODS_IIV_ADDR="http://10.16.254.243:8200"
+# For a direct dev IIV endpoint, use:
+# export AODS_IIV_ADDR="http://172.16.10.244:8200"
+# If metadata listing is blocked for local IIV dogfooding, disable cleanup:
+# export AODS_IIV_STAGING_CLEANUP_INTERVAL=0
+export AODS_IIV_PORT_FORWARD_NAMESPACE="vault"
+export AODS_IIV_PORT_FORWARD_SERVICE="vault"
+export AODS_IIV_PORT_FORWARD_LOCAL_PORT="18200"
+export AODS_IIV_PORT_FORWARD_REMOTE_PORT="8200"
 
 # Optional: SQL-backed operation queue and UI read model.
 # GitHub remains the desired-state source of truth; PostgreSQL/MariaDB stores cached catalog projection.
@@ -90,7 +89,7 @@ export AODS_APPLICATION_CATALOG_SYNC_INTERVAL="60s"
 # export VITE_AODS_PLATFORM_ADMIN_AUTHORITIES="/Ajou_Univ/Aolda_Admin,account:manage-account,aods:platform:admin"
 
 # Note:
-# - `make backend-run` auto-starts Prometheus/Vault port-forwards when the URLs above point to localhost.
+# - `make backend-run` auto-starts Prometheus/IIV port-forwards when the URLs above point to localhost.
 # - CPU/Memory are backfilled from Kubernetes metrics-server when Prometheus container metrics are empty.
 # - New applications automatically generate a ServiceMonitor that scrapes `http` on `/metrics`.
 # - Request/Error/Latency still require the workload or mesh to expose Prometheus-compatible metrics.

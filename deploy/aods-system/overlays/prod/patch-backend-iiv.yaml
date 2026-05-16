@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aods-backend
+spec:
+  template:
+    spec:
+      containers:
+        - name: backend
+          env:
+            - name: AODS_SECRET_STORE_MODE
+              value: iiv
+            - name: AODS_IIV_ADDR
+              value: http://10.16.254.243:8200
+            - name: AODS_IIV_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_IIV_TOKEN
+            - name: AODS_IIV_NAMESPACE
+              valueFrom:
+                secretKeyRef:
+                  name: aods-backend-secrets
+                  key: AODS_IIV_NAMESPACE
+                  optional: true

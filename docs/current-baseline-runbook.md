@@ -16,8 +16,8 @@
 * 프로젝트 목록: `platform/projects.yaml`
 * 앱 ID 규칙: `{projectId}__{appName}`
 * Git write 모델: direct push + review-gated change flow
-* Secret 처리: Vault KV v2, `staging -> git commit -> final -> cleanup`
-* 개발 실연동 순서: GitHub, Vault, Kubernetes, Prometheus real adapter 기준으로 검증한다.
+* Secret 처리: IIV KV v2 compatible API, `staging -> git commit -> final -> cleanup`
+* 개발 실연동 순서: GitHub, IIV, Kubernetes, Prometheus real adapter 기준으로 검증한다.
 
 현재 구현 범위를 코드 기준으로 확인하려면 아래 문서를 먼저 본다.
 
@@ -105,7 +105,7 @@ AODS post-phase current implementation baseline을 사용자 개입 최소화로
 5. handoff 문서와 현재 구현 상태 문서를 함께 갱신한다.
 
 운영 규칙:
-- GitHub, Vault, Kubernetes, Prometheus credential이 없으면 interface 와 unavailable/empty-state 처리까지는 먼저 구현하되, fabricated runtime data 는 만들지 않는다.
+- GitHub, IIV, Kubernetes, Prometheus credential이 없으면 interface 와 unavailable/empty-state 처리까지는 먼저 구현하되, fabricated runtime data 는 만들지 않는다.
 - 실제 외부 연동이 없더라도 작업을 멈추지 말고, `Unknown`, 명시적 오류, empty response 로 현재 한계를 정직하게 드러낸다.
 - Phase 문서를 active delivery gate 로 오판해서 이미 코드에 있는 기능을 제거하거나 숨기지 않는다.
 - `pull_request` write mode 는 현재 review-gated change flow 로 이해한다.
@@ -177,21 +177,22 @@ export AODS_IMAGE_CHECK_MODE=anonymous
 export AODS_IMAGE_CHECK_TIMEOUT="5s"
 ```
 
-배포 manifest 기준 AODS backend 는 real Vault token adapter 를 사용한다.
-로컬 단독 실행에서만 `AODS_VAULT_MODE=local` 을 명시적으로 사용한다.
-real Vault 검증 단계에서는 아래 env 를 사용한다.
+배포 manifest 기준 AODS backend 는 real IIV adapter 를 사용한다.
+로컬 단독 실행에서만 `AODS_SECRET_STORE_MODE=local` 을 명시적으로 사용한다.
+real IIV 검증 단계에서는 아래 env 를 사용한다.
 
 ```bash
-export AODS_VAULT_MODE=token
-export AODS_VAULT_ADDR="http://127.0.0.1:18200"
-export AODS_VAULT_TOKEN="root"
-export AODS_VAULT_NAMESPACE=""
-export AODS_VAULT_REQUEST_TIMEOUT="5s"
+export AODS_SECRET_STORE_MODE=iiv
+export AODS_IIV_ADDR="http://127.0.0.1:18200"
+export AODS_IIV_TOKEN="root"
+export AODS_IIV_NAMESPACE=""
+export AODS_IIV_REQUEST_TIMEOUT="5s"
 ```
 
 주의:
 
-* local backend 가 in-cluster Vault service 를 직접 볼 수 없다면 `kubectl port-forward -n vault svc/vault 18200:8200` 같은 터널이 필요하다.
+* local backend 가 in-cluster IIV service 를 직접 볼 수 없다면 `kubectl port-forward -n vault svc/vault 18200:8200` 같은 터널이 필요하다.
+* prod overlay 는 backend IIV endpoint 와 `aods-iiv` ClusterSecretStore server 를 `http://10.16.254.243:8200` 로 고정한다. prod Secret 에는 `AODS_IIV_TOKEN` 을 넣고, 토큰 평문은 Git에 저장하지 않는다.
 * 현재 self-hosted dev cluster 의 External Secrets Operator 는 `external-secrets.io/v1` 만 served 이므로, generated `ExternalSecret` manifest 도 `v1` 여야 한다.
 
 주의:
@@ -273,27 +274,26 @@ make check-observability
 
 이 명령은 PrometheusRule 생성, project health snapshot, metrics diagnostics, generated manifest schema, frontend API 타입 연결을 순서대로 확인한다.
 
-실제 Vault/OpenBao compatible KV v2 adapter 를 붙일 때는 아래 env 를 추가한다.
+실제 IIV compatible KV v2 adapter 를 붙일 때는 아래 env 를 추가한다.
 
 ```bash
-export AODS_VAULT_MODE=token
-export AODS_VAULT_ADDR="http://127.0.0.1:18200"
-export AODS_VAULT_TOKEN="root"
-export AODS_VAULT_NAMESPACE=""
-export AODS_VAULT_REQUEST_TIMEOUT="5s"
-export AODS_VAULT_PORT_FORWARD_NAMESPACE="vault"
-export AODS_VAULT_PORT_FORWARD_SERVICE="vault"
-export AODS_VAULT_PORT_FORWARD_LOCAL_PORT="18200"
-export AODS_VAULT_PORT_FORWARD_REMOTE_PORT="8200"
+export AODS_SECRET_STORE_MODE=iiv
+export AODS_IIV_ADDR="http://127.0.0.1:18200"
+export AODS_IIV_TOKEN="root"
+export AODS_IIV_NAMESPACE=""
+export AODS_IIV_REQUEST_TIMEOUT="5s"
+export AODS_IIV_PORT_FORWARD_NAMESPACE="vault"
+export AODS_IIV_PORT_FORWARD_SERVICE="vault"
+export AODS_IIV_PORT_FORWARD_LOCAL_PORT="18200"
+export AODS_IIV_PORT_FORWARD_REMOTE_PORT="8200"
 ```
 
 주의:
 
-* `scripts/backend-run.sh` 는 `AODS_K8S_KUBECONFIG` 가 설정돼 있고 `AODS_VAULT_ADDR` 가 localhost 라면 Vault port-forward 를 자동으로 연다.
-* OpenBao API root 도 같은 `AODS_VAULT_ADDR` 를 사용한다. `http://172.16.10.244:8200` 처럼 base endpoint 를 넣으면 backend 가 `/v1/<api-path>` 를 붙인다. 이미 `/v1` 로 끝나는 주소를 넣어도 중복으로 붙이지 않는다.
-* `/v1/sys/health` 가 administrative rule 로 막혀 있지만 KV v2 API path 는 허용되는 로컬 OpenBao endpoint 는 `AODS_VAULT_SKIP_HEALTH_CHECK=true` 로 backend-run 사전 health check 만 건너뛸 수 있다.
-* OpenBao local endpoint 에서 metadata listing 도 막혀 있으면 로컬 dogfooding 동안 `AODS_VAULT_STAGING_CLEANUP_INTERVAL=0` 으로 staging cleanup worker 를 끌 수 있다.
-* self-hosted dev cluster 에서 `AODS_VAULT_TOKEN=root` 로 `/v1/sys/health` 응답이 확인돼야 real Vault 검증 기준을 만족한다.
+* `scripts/backend-run.sh` 는 `AODS_K8S_KUBECONFIG` 가 설정돼 있고 `AODS_IIV_ADDR` 가 localhost 라면 IIV port-forward 를 자동으로 연다.
+* IIV API root 는 `AODS_IIV_ADDR` 를 사용한다. `http://172.16.10.244:8200` 처럼 base endpoint 를 넣으면 backend 가 `/v1/<api-path>` 를 붙인다. `10.16.254.243` 처럼 bare IP 를 넣으면 backend 가 `http://10.16.254.243:8200` 으로 정규화한다.
+* `/v1/sys/health` 가 administrative rule 로 막혀 있지만 KV v2 API path 는 허용되는 로컬 IIV endpoint 는 `AODS_IIV_SKIP_HEALTH_CHECK=true` 로 backend-run 사전 health check 만 건너뛸 수 있다.
+* IIV local endpoint 에서 metadata listing 도 막혀 있으면 로컬 dogfooding 동안 `AODS_IIV_STAGING_CLEANUP_INTERVAL=0` 으로 staging cleanup worker 를 끌 수 있다.
 
 ## 7. Implementation Order
 
@@ -314,7 +314,7 @@ export AODS_VAULT_PORT_FORWARD_REMOTE_PORT="8200"
 
 1. GitHub-backed project/app reader + writer
 2. local secret adapter 유지 상태로 create/redeploy 검증
-3. Vault KV v2 adapter 추가
+3. IIV KV v2 compatible adapter 추가
 4. Kubernetes/Prometheus real adapter 추가
 5. Keycloak real auth 연결
 

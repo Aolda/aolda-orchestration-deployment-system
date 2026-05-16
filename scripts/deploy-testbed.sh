@@ -42,8 +42,29 @@ if [[ -z "${AODS_GIT_REMOTE:-}" ]]; then
   exit 1
 fi
 
-if [[ -z "${AODS_VAULT_TOKEN:-}" ]]; then
-  echo "AODS_VAULT_TOKEN must be set before deploying with the real Vault adapter." >&2
+AODS_IIV_ADDR="${AODS_IIV_ADDR:-${AODS_VAULT_ADDR:-}}"
+AODS_IIV_TOKEN="${AODS_IIV_TOKEN:-${AODS_VAULT_TOKEN:-}}"
+AODS_IIV_NAMESPACE="${AODS_IIV_NAMESPACE:-${AODS_VAULT_NAMESPACE:-}}"
+
+normalize_iiv_addr() {
+  local value="$1"
+  if [[ "${value}" == *://* ]]; then
+    printf '%s' "${value}"
+  elif [[ "${value}" == *:* ]]; then
+    printf 'http://%s' "${value}"
+  else
+    printf 'http://%s:8200' "${value}"
+  fi
+}
+
+if [[ -z "${AODS_IIV_ADDR:-}" ]]; then
+  echo "AODS_IIV_ADDR must be set before deploying with the real IIV adapter." >&2
+  exit 1
+fi
+AODS_IIV_ADDR="$(normalize_iiv_addr "${AODS_IIV_ADDR}")"
+
+if [[ -z "${AODS_IIV_TOKEN:-}" ]]; then
+  echo "AODS_IIV_TOKEN must be set before deploying with the real IIV adapter." >&2
   exit 1
 fi
 
@@ -84,8 +105,13 @@ kubectl "${kubectl_args[@]}" create namespace aods-system --dry-run=client -o ya
 
 backend_secret_args=(
   --from-literal=AODS_GIT_REMOTE="${AODS_GIT_REMOTE}"
-  --from-literal=AODS_VAULT_TOKEN="${AODS_VAULT_TOKEN}"
+  --from-literal=AODS_SECRET_STORE_MODE="${AODS_SECRET_STORE_MODE:-iiv}"
+  --from-literal=AODS_IIV_ADDR="${AODS_IIV_ADDR}"
+  --from-literal=AODS_IIV_TOKEN="${AODS_IIV_TOKEN}"
 )
+if [[ -n "${AODS_IIV_NAMESPACE:-}" ]]; then
+  backend_secret_args+=(--from-literal=AODS_IIV_NAMESPACE="${AODS_IIV_NAMESPACE}")
+fi
 if [[ -n "${AODS_MARIADB_DSN:-}" ]]; then
   backend_secret_args+=(--from-literal=AODS_MARIADB_DSN="${AODS_MARIADB_DSN}")
 fi
@@ -104,6 +130,28 @@ fi
 kubectl "${kubectl_args[@]}" -n aods-system create secret generic aods-backend-secrets \
   "${backend_secret_args[@]}" \
   --dry-run=client -o yaml | kubectl "${kubectl_args[@]}" apply -f -
+
+if kubectl "${kubectl_args[@]}" get crd clustersecretstores.external-secrets.io >/dev/null 2>&1; then
+  cat <<YAML | kubectl "${kubectl_args[@]}" apply -f -
+apiVersion: external-secrets.io/v1
+kind: ClusterSecretStore
+metadata:
+  name: aods-iiv
+spec:
+  provider:
+    vault:
+      server: ${AODS_IIV_ADDR}
+      path: secret
+      version: v2
+      auth:
+        tokenSecretRef:
+          name: aods-backend-secrets
+          namespace: aods-system
+          key: AODS_IIV_TOKEN
+YAML
+else
+  echo "External Secrets ClusterSecretStore CRD is not installed; skipping aods-iiv ClusterSecretStore."
+fi
 
 if [[ "${REQUIRES_GHCR_AUTH}" == "true" ]]; then
   kubectl "${kubectl_args[@]}" -n aods-system create secret docker-registry aods-registry-creds \

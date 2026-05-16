@@ -24,6 +24,11 @@ func TestLoadConfigReadsDeploymentOperationSettings(t *testing.T) {
 	t.Setenv("AODS_FLUX_STATUS_CACHE_TTL", "17s")
 	t.Setenv("AODS_APPLICATION_CATALOG_CACHE_TTL", "13m")
 	t.Setenv("AODS_APPLICATION_CATALOG_SYNC_INTERVAL", "19s")
+	t.Setenv("AODS_SECRET_STORE_MODE", "iiv")
+	t.Setenv("AODS_IIV_ADDR", "10.16.254.243")
+	t.Setenv("AODS_IIV_TOKEN", "iiv-token")
+	t.Setenv("AODS_IIV_REQUEST_TIMEOUT", "23s")
+	t.Setenv("AODS_LOCAL_SECRET_STORE_DIR", "/tmp/aods-local-secret-store-test")
 	t.Setenv("AODS_DEV_GROUPS", "aods:shared:deploy,aods:platform:admin")
 
 	cfg, err := LoadConfig()
@@ -69,6 +74,21 @@ func TestLoadConfigReadsDeploymentOperationSettings(t *testing.T) {
 	if cfg.ApplicationCatalogSyncInterval != 19*time.Second {
 		t.Fatalf("unexpected application catalog sync interval: %s", cfg.ApplicationCatalogSyncInterval)
 	}
+	if cfg.VaultMode != "iiv" {
+		t.Fatalf("expected iiv secret store mode, got %q", cfg.VaultMode)
+	}
+	if cfg.VaultAddress != "http://10.16.254.243:8200" {
+		t.Fatalf("expected normalized IIV address, got %q", cfg.VaultAddress)
+	}
+	if cfg.VaultToken != "iiv-token" {
+		t.Fatalf("expected IIV token to be preferred, got %q", cfg.VaultToken)
+	}
+	if cfg.VaultRequestTimeout != 23*time.Second {
+		t.Fatalf("unexpected IIV request timeout: %s", cfg.VaultRequestTimeout)
+	}
+	if cfg.LocalVaultDir != "/tmp/aods-local-secret-store-test" {
+		t.Fatalf("expected local secret store dir to be preferred, got %q", cfg.LocalVaultDir)
+	}
 	if got := strings.Join(cfg.PlatformAdminAuthorities, ","); got != "aods:platform:admin,aods:ops:admin" {
 		t.Fatalf("expected deduped admin authorities, got %q", got)
 	}
@@ -89,6 +109,7 @@ func TestLoadConfigRejectsInvalidDeploymentOperationSettings(t *testing.T) {
 		{name: "flux status cache TTL", key: "AODS_FLUX_STATUS_CACHE_TTL", val: "not-a-duration"},
 		{name: "application catalog cache TTL", key: "AODS_APPLICATION_CATALOG_CACHE_TTL", val: "not-a-duration"},
 		{name: "application catalog sync interval", key: "AODS_APPLICATION_CATALOG_SYNC_INTERVAL", val: "not-a-duration"},
+		{name: "iiv request timeout", key: "AODS_IIV_REQUEST_TIMEOUT", val: "not-a-duration"},
 		{name: "dev fallback", key: "AODS_ALLOW_DEV_FALLBACK", val: "maybe"},
 	}
 
@@ -168,6 +189,19 @@ func TestConfigModeHelpersAndEnvParsing(t *testing.T) {
 	}
 	if got, err := envDuration("AODS_MISSING_DURATION", 4*time.Second); err != nil || got != 4*time.Second {
 		t.Fatalf("expected duration fallback 4s, got %s err=%v", got, err)
+	}
+	if got := envOrDefaultAny([]string{"AODS_MISSING_ONE", "AODS_TEST_STRING"}, "fallback"); got != "fallback" {
+		t.Fatalf("expected fallback from empty env list, got %q", got)
+	}
+	t.Setenv("AODS_IIV_ADDR", "10.16.254.243")
+	if got := secretStoreModeFromEnv(); got != "iiv" {
+		t.Fatalf("expected IIV mode when IIV address is set, got %q", got)
+	}
+	if got := normalizeSecretStoreAddress("https://iiv.example"); got != "https://iiv.example" {
+		t.Fatalf("expected URL address to be preserved, got %q", got)
+	}
+	if got := normalizeSecretStoreAddress("10.16.254.243:8200"); got != "http://10.16.254.243:8200" {
+		t.Fatalf("expected bare host:port to be normalized without adding a second port, got %q", got)
 	}
 }
 

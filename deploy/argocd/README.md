@@ -25,11 +25,13 @@ kubectl create namespace aods-system --dry-run=client -o yaml | kubectl apply -f
 
 kubectl -n aods-system create secret generic aods-backend-secrets \
   --from-literal=AODS_GIT_REMOTE='https://<user>:<token>@github.com/Aolda/aods-manifest.git' \
-  --from-literal=AODS_VAULT_TOKEN='<vault-token>' \
+  --from-literal=AODS_SECRET_STORE_MODE='iiv' \
+  --from-literal=AODS_IIV_TOKEN='<iiv-token>' \
   --from-literal=AODS_MARIADB_DSN='<user>:<password>@tcp(<mariadb-service>.<namespace>.svc.cluster.local:3306)/aods?parseTime=true'
 ```
 
 `AODS_MARIADB_DSN`은 선택 값이다. 없으면 deployment operation queue 없이 기존 동기 배포 경로로 동작한다.
+prod overlay 는 backend `AODS_IIV_ADDR` 와 `aods-iiv` ClusterSecretStore server 를 `http://10.16.254.243:8200` 으로 고정한다. dev/testbed 에서는 같은 secret에 `AODS_IIV_ADDR` 를 별도로 넣어 환경별 IIV endpoint 를 바꿀 수 있다.
 
 GHCR 이미지가 private 이면 image pull secret 도 별도로 만든다.
 

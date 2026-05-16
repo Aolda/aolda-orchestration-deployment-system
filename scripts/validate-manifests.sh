@@ -125,6 +125,7 @@ prepare_server_validation() {
   kubectl wait --for=condition=Established --timeout=60s \
     crd/kustomizations.kustomize.toolkit.fluxcd.io \
     crd/externalsecrets.external-secrets.io \
+    crd/clustersecretstores.external-secrets.io \
     crd/servicemonitors.monitoring.coreos.com \
     crd/prometheusrules.monitoring.coreos.com \
     crd/rollouts.argoproj.io \

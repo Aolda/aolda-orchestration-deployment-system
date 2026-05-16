@@ -115,9 +115,9 @@ check_env_equals AODS_K8S_MODE kubeconfig
 check_env AODS_K8S_KUBECONFIG
 check_env_equals AODS_PROMETHEUS_MODE prometheus
 check_env AODS_PROMETHEUS_URL
-check_env_equals AODS_VAULT_MODE token
-check_env AODS_VAULT_ADDR
-check_env AODS_VAULT_TOKEN
+check_env_equals AODS_SECRET_STORE_MODE iiv
+check_env AODS_IIV_ADDR
+check_env AODS_IIV_TOKEN
 check_kube_access
 
 check_optional_file config/mcporter.json
