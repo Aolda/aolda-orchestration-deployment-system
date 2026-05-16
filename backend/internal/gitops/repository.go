@@ -24,7 +24,11 @@ type Repository struct {
 	Timeout     time.Duration
 	SyncTTL     time.Duration
 
-	mu sync.Mutex
+	mu sync.RWMutex
+
+	syncMu       sync.Mutex
+	syncInFlight chan struct{}
+	lastSyncErr  error
 
 	lastSyncAt  time.Time
 	lastSyncKey string
@@ -43,16 +47,14 @@ func (r *Repository) WithRead(ctx context.Context, fn func(repoDir string) error
 		return err
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
+	if err := r.ensureReadSnapshot(ctx); err != nil {
+		return err
+	}
 
-	return r.withProcessLock(ctx, func() error {
-		if err := r.sync(ctx, false); err != nil {
-			return err
-		}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
 
-		return fn(r.Dir)
-	})
+	return fn(r.Dir)
 }
 
 func (r *Repository) WithWrite(
@@ -64,11 +66,11 @@ func (r *Repository) WithWrite(
 		return err
 	}
 
-	r.mu.Lock()
-	defer r.mu.Unlock()
-
 	return r.withProcessLock(ctx, func() error {
-		if err := r.sync(ctx, true); err != nil {
+		r.mu.Lock()
+		defer r.mu.Unlock()
+
+		if err := r.syncLocked(ctx, true); err != nil {
 			return err
 		}
 
@@ -101,12 +103,20 @@ func (r *Repository) WithWrite(
 			return err
 		}
 
+		r.markSynced()
 		return nil
 	})
 }
 
 func (r *Repository) EnsureFile(ctx context.Context, relativePath string) error {
-	return r.WithRead(ctx, func(repoDir string) error {
+	if err := r.syncOnce(ctx, false); err != nil {
+		return err
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return func(repoDir string) error {
 		path := filepath.Join(repoDir, filepath.Clean(relativePath))
 		info, err := os.Stat(path)
 		if errors.Is(err, os.ErrNotExist) {
@@ -119,10 +129,124 @@ func (r *Repository) EnsureFile(ctx context.Context, relativePath string) error 
 			return MissingFileError{Path: relativePath}
 		}
 		return nil
-	})
+	}(r.Dir)
 }
 
 func (r *Repository) sync(ctx context.Context, force bool) error {
+	return r.syncOnce(ctx, force)
+}
+
+func (r *Repository) ensureReadSnapshot(ctx context.Context) error {
+	if err := r.validateSettings(); err != nil {
+		return err
+	}
+
+	gitDir := filepath.Join(r.Dir, ".git")
+	if r.isSyncCacheFresh(gitDir) {
+		return nil
+	}
+	if !r.hasLocalSnapshot(gitDir) {
+		return r.syncOnce(ctx, false)
+	}
+
+	r.startBackgroundSync()
+	return nil
+}
+
+func (r *Repository) syncOnce(ctx context.Context, force bool) error {
+	if err := r.validateSettings(); err != nil {
+		return err
+	}
+
+	gitDir := filepath.Join(r.Dir, ".git")
+	for {
+		r.syncMu.Lock()
+		if !force && r.isSyncCacheFreshLocked(gitDir) {
+			r.syncMu.Unlock()
+			return nil
+		}
+		if r.syncInFlight != nil {
+			inFlight := r.syncInFlight
+			r.syncMu.Unlock()
+
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-inFlight:
+			}
+
+			if err := r.lastSyncError(); err != nil && !r.hasLocalSnapshot(gitDir) {
+				return err
+			}
+			continue
+		}
+
+		inFlight := make(chan struct{})
+		r.syncInFlight = inFlight
+		r.syncMu.Unlock()
+
+		err := r.withProcessLock(ctx, func() error {
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.syncLocked(ctx, force)
+		})
+		r.finishSync(inFlight, err)
+		return err
+	}
+}
+
+func (r *Repository) startBackgroundSync() {
+	gitDir := filepath.Join(r.Dir, ".git")
+
+	r.syncMu.Lock()
+	if r.syncInFlight != nil || r.isSyncCacheFreshLocked(gitDir) {
+		r.syncMu.Unlock()
+		return
+	}
+	inFlight := make(chan struct{})
+	r.syncInFlight = inFlight
+	r.syncMu.Unlock()
+
+	go func() {
+		ctx, cancel := r.backgroundSyncContext()
+		defer cancel()
+
+		err := r.withProcessLock(ctx, func() error {
+			if !r.hasLocalSnapshot(gitDir) {
+				r.mu.Lock()
+				defer r.mu.Unlock()
+				return r.syncLocked(ctx, false)
+			}
+
+			if err := r.syncRemote(ctx); err != nil {
+				return err
+			}
+
+			r.mu.Lock()
+			defer r.mu.Unlock()
+			return r.refreshWorktree(ctx)
+		})
+		r.finishSync(inFlight, err)
+	}()
+}
+
+func (r *Repository) finishSync(inFlight chan struct{}, err error) {
+	r.syncMu.Lock()
+	r.lastSyncErr = err
+	if r.syncInFlight == inFlight {
+		r.syncInFlight = nil
+	}
+	close(inFlight)
+	r.syncMu.Unlock()
+}
+
+func (r *Repository) lastSyncError() error {
+	r.syncMu.Lock()
+	defer r.syncMu.Unlock()
+	return r.lastSyncErr
+}
+
+func (r *Repository) validateSettings() error {
 	if strings.TrimSpace(r.Dir) == "" {
 		return fmt.Errorf("managed git directory is required when git mode is enabled")
 	}
@@ -132,7 +256,10 @@ func (r *Repository) sync(ctx context.Context, force bool) error {
 	if strings.TrimSpace(r.Branch) == "" {
 		return fmt.Errorf("git branch is required when git mode is enabled")
 	}
+	return nil
+}
 
+func (r *Repository) syncLocked(ctx context.Context, force bool) error {
 	gitDir := filepath.Join(r.Dir, ".git")
 	if !force && r.isSyncCacheFresh(gitDir) {
 		return nil
@@ -149,12 +276,27 @@ func (r *Repository) sync(ctx context.Context, force bool) error {
 		}
 	}
 
+	if err := r.syncRemote(ctx); err != nil {
+		return err
+	}
+	if err := r.refreshWorktree(ctx); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (r *Repository) syncRemote(ctx context.Context) error {
 	if err := r.run(ctx, "-C", r.Dir, "remote", "set-url", "origin", r.Remote); err != nil {
 		return err
 	}
 	if err := r.run(ctx, "-C", r.Dir, "fetch", "origin", r.Branch, "--prune"); err != nil {
 		return err
 	}
+	return nil
+}
+
+func (r *Repository) refreshWorktree(ctx context.Context) error {
 	if err := r.run(ctx, "-C", r.Dir, "checkout", "-B", r.Branch, "origin/"+r.Branch); err != nil {
 		return err
 	}
@@ -165,8 +307,7 @@ func (r *Repository) sync(ctx context.Context, force bool) error {
 		return err
 	}
 
-	r.lastSyncAt = time.Now()
-	r.lastSyncKey = r.syncCacheKey()
+	r.markSynced()
 	return nil
 }
 
@@ -241,6 +382,14 @@ func (r *Repository) commandContext(ctx context.Context) (context.Context, conte
 	return context.WithTimeout(ctx, r.effectiveTimeout())
 }
 
+func (r *Repository) backgroundSyncContext() (context.Context, context.CancelFunc) {
+	timeout := r.effectiveTimeout()
+	if timeout <= 0 {
+		return context.Background(), func() {}
+	}
+	return context.WithTimeout(context.Background(), timeout)
+}
+
 func (r *Repository) withProcessLock(ctx context.Context, fn func() error) error {
 	lockFile, err := r.acquireProcessLock(ctx)
 	if err != nil {
@@ -301,6 +450,12 @@ func (r *Repository) effectiveTimeout() time.Duration {
 }
 
 func (r *Repository) isSyncCacheFresh(gitDir string) bool {
+	r.syncMu.Lock()
+	defer r.syncMu.Unlock()
+	return r.isSyncCacheFreshLocked(gitDir)
+}
+
+func (r *Repository) isSyncCacheFreshLocked(gitDir string) bool {
 	if r.SyncTTL <= 0 {
 		return false
 	}
@@ -314,6 +469,19 @@ func (r *Repository) isSyncCacheFresh(gitDir string) bool {
 		return false
 	}
 	return time.Since(r.lastSyncAt) < r.SyncTTL
+}
+
+func (r *Repository) hasLocalSnapshot(gitDir string) bool {
+	_, err := os.Stat(gitDir)
+	return err == nil
+}
+
+func (r *Repository) markSynced() {
+	r.syncMu.Lock()
+	r.lastSyncAt = time.Now()
+	r.lastSyncKey = r.syncCacheKey()
+	r.lastSyncErr = nil
+	r.syncMu.Unlock()
 }
 
 func (r *Repository) syncCacheKey() string {
