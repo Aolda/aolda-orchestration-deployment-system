@@ -15,6 +15,14 @@ import (
 	"time"
 )
 
+var ErrRepositoryLockBusy = errors.New("managed git repository lock is busy")
+
+type nonBlockingLockContextKey struct{}
+
+func WithNonBlockingLock(ctx context.Context) context.Context {
+	return context.WithValue(ctx, nonBlockingLockContextKey{}, true)
+}
+
 type Repository struct {
 	Dir         string
 	Remote      string
@@ -39,14 +47,25 @@ func (e MissingFileError) Error() string {
 }
 
 func (r *Repository) WithRead(ctx context.Context, fn func(repoDir string) error) error {
+	return r.withRead(ctx, true, fn)
+}
+
+func (r *Repository) WithReadIfAvailable(ctx context.Context, fn func(repoDir string) error) error {
+	return r.withRead(ctx, false, fn)
+}
+
+func (r *Repository) withRead(ctx context.Context, waitForLock bool, fn func(repoDir string) error) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	waitForLock = shouldWaitForLock(ctx, waitForLock)
 
-	r.mu.Lock()
+	if err := r.acquireInProcessLock(ctx, waitForLock); err != nil {
+		return err
+	}
 	defer r.mu.Unlock()
 
-	return r.withProcessLock(ctx, func() error {
+	return r.withProcessLock(ctx, waitForLock, func() error {
 		if err := r.sync(ctx, false); err != nil {
 			return err
 		}
@@ -60,14 +79,34 @@ func (r *Repository) WithWrite(
 	commitMessage string,
 	fn func(repoDir string) error,
 ) error {
+	return r.withWrite(ctx, commitMessage, true, fn)
+}
+
+func (r *Repository) WithWriteIfAvailable(
+	ctx context.Context,
+	commitMessage string,
+	fn func(repoDir string) error,
+) error {
+	return r.withWrite(ctx, commitMessage, false, fn)
+}
+
+func (r *Repository) withWrite(
+	ctx context.Context,
+	commitMessage string,
+	waitForLock bool,
+	fn func(repoDir string) error,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	waitForLock = shouldWaitForLock(ctx, waitForLock)
 
-	r.mu.Lock()
+	if err := r.acquireInProcessLock(ctx, waitForLock); err != nil {
+		return err
+	}
 	defer r.mu.Unlock()
 
-	return r.withProcessLock(ctx, func() error {
+	return r.withProcessLock(ctx, waitForLock, func() error {
 		if err := r.sync(ctx, true); err != nil {
 			return err
 		}
@@ -241,8 +280,42 @@ func (r *Repository) commandContext(ctx context.Context) (context.Context, conte
 	return context.WithTimeout(ctx, r.effectiveTimeout())
 }
 
-func (r *Repository) withProcessLock(ctx context.Context, fn func() error) error {
-	lockFile, err := r.acquireProcessLock(ctx)
+func shouldWaitForLock(ctx context.Context, waitForLock bool) bool {
+	if !waitForLock {
+		return false
+	}
+	nonBlocking, _ := ctx.Value(nonBlockingLockContextKey{}).(bool)
+	return !nonBlocking
+}
+
+func (r *Repository) acquireInProcessLock(ctx context.Context, waitForLock bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if r.mu.TryLock() {
+		return nil
+	}
+	if !waitForLock {
+		return fmt.Errorf("%w: in-process lock", ErrRepositoryLockBusy)
+	}
+
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			if r.mu.TryLock() {
+				return nil
+			}
+		}
+	}
+}
+
+func (r *Repository) withProcessLock(ctx context.Context, waitForLock bool, fn func() error) error {
+	lockFile, err := r.acquireProcessLockWithPolicy(ctx, waitForLock)
 	if err != nil {
 		return err
 	}
@@ -255,6 +328,18 @@ func (r *Repository) withProcessLock(ctx context.Context, fn func() error) error
 }
 
 func (r *Repository) acquireProcessLock(ctx context.Context) (*os.File, error) {
+	return r.acquireProcessLockWithPolicy(ctx, true)
+}
+
+func (r *Repository) tryAcquireProcessLock(ctx context.Context) (*os.File, error) {
+	return r.acquireProcessLockWithPolicy(ctx, false)
+}
+
+func (r *Repository) acquireProcessLockWithPolicy(ctx context.Context, waitForLock bool) (*os.File, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
 	lockPath := r.lockFilePath()
 	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
 		return nil, fmt.Errorf("create git lock directory: %w", err)
@@ -274,6 +359,9 @@ func (r *Repository) acquireProcessLock(ctx context.Context) (*os.File, error) {
 		} else if !errors.Is(err, syscall.EWOULDBLOCK) {
 			_ = lockFile.Close()
 			return nil, fmt.Errorf("acquire git lock: %w", err)
+		} else if !waitForLock {
+			_ = lockFile.Close()
+			return nil, fmt.Errorf("%w: process lock", ErrRepositoryLockBusy)
 		}
 
 		select {

@@ -789,6 +789,35 @@ func TestPollerHelpersCoverIntervalsAndRepositorySelection(t *testing.T) {
 	}
 }
 
+func TestAutoUpdatePollerStartDisablesZeroInterval(t *testing.T) {
+	t.Parallel()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		(&AutoUpdatePoller{Interval: 0}).Start(context.Background())
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(250 * time.Millisecond):
+		t.Fatal("expected zero interval poller to return without starting")
+	}
+}
+
+func TestBackgroundWorkerContextUsesConfiguredTimeout(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel, timeout := backgroundWorkerContext(context.Background(), 25*time.Millisecond, time.Second)
+	defer cancel()
+	if timeout != 25*time.Millisecond {
+		t.Fatalf("expected configured timeout, got %s", timeout)
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatal("expected worker context deadline")
+	}
+}
+
 func rollbackMetrics(requestRate float64, errorRate float64, latencyP95 float64) []MetricSeries {
 	now := timeNowUTC()
 	return []MetricSeries{

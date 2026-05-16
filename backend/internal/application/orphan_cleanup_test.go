@@ -2,11 +2,15 @@ package application
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
+
+	"github.com/aolda/aods-backend/internal/gitops"
 )
 
 func TestLocalManifestStoreCleanupOrphanFluxManifestsRemovesManagedOrphans(t *testing.T) {
@@ -186,5 +190,55 @@ spec:
 	}
 	if !strings.Contains(defaultRootContent, "applications/manual.yaml") {
 		t.Fatalf("expected default root to keep unmanaged manifest: %s", defaultRootContent)
+	}
+}
+
+type blockingOrphanCleaner struct {
+	err error
+}
+
+func (c blockingOrphanCleaner) CleanupOrphanFluxManifests(ctx context.Context) (int, error) {
+	if c.err != nil {
+		return 0, c.err
+	}
+	<-ctx.Done()
+	return 0, ctx.Err()
+}
+
+func TestOrphanFluxManifestCleanupWorkerRunOnceTimesOut(t *testing.T) {
+	worker := OrphanFluxManifestCleanupWorker{
+		Cleaner: blockingOrphanCleaner{},
+		Timeout: 20 * time.Millisecond,
+	}
+
+	start := time.Now()
+	worker.runOnce(context.Background())
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("expected cleanup worker to stop at its timeout, took %s", elapsed)
+	}
+}
+
+func TestGitManifestStoreCleanupOrphanFluxManifestsSkipsBusyGitLock(t *testing.T) {
+	repoDir := filepath.Join(t.TempDir(), "managed-repo")
+	lockPath := filepath.Join(filepath.Dir(repoDir), "."+filepath.Base(repoDir)+".lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open lock file: %v", err)
+	}
+	defer func() {
+		_ = syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+		_ = lockFile.Close()
+	}()
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("acquire lock: %v", err)
+	}
+
+	start := time.Now()
+	_, err = (GitManifestStore{Repository: &gitops.Repository{Dir: repoDir}}).CleanupOrphanFluxManifests(context.Background())
+	if !errors.Is(err, gitops.ErrRepositoryLockBusy) {
+		t.Fatalf("expected lock busy error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Fatalf("expected cleanup to skip busy lock quickly, took %s", elapsed)
 	}
 }

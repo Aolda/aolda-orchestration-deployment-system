@@ -2,6 +2,7 @@ package gitops
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -102,6 +103,93 @@ func TestRepositoryAcquireProcessLockBlocksConcurrentAccess(t *testing.T) {
 	}
 	if err != context.DeadlineExceeded {
 		t.Fatalf("expected context deadline exceeded, got %v", err)
+	}
+}
+
+func TestRepositoryWithReadIfAvailableSkipsBusyInProcessLock(t *testing.T) {
+	t.Parallel()
+
+	repo := Repository{Dir: filepath.Join(t.TempDir(), "managed-repo")}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	start := time.Now()
+	err := repo.WithReadIfAvailable(context.Background(), func(repoDir string) error {
+		t.Fatal("expected read callback not to run when lock is busy")
+		return nil
+	})
+	if !errors.Is(err, ErrRepositoryLockBusy) {
+		t.Fatalf("expected lock busy error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Fatalf("expected non-blocking lock attempt, took %s", elapsed)
+	}
+}
+
+func TestRepositoryWithReadUsesNonBlockingContext(t *testing.T) {
+	t.Parallel()
+
+	repo := Repository{Dir: filepath.Join(t.TempDir(), "managed-repo")}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	start := time.Now()
+	err := repo.WithRead(WithNonBlockingLock(context.Background()), func(repoDir string) error {
+		t.Fatal("expected read callback not to run when non-blocking context sees busy lock")
+		return nil
+	})
+	if !errors.Is(err, ErrRepositoryLockBusy) {
+		t.Fatalf("expected lock busy error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Fatalf("expected non-blocking context lock attempt, took %s", elapsed)
+	}
+}
+
+func TestRepositoryWithReadHonorsContextWhileWaitingForInProcessLock(t *testing.T) {
+	t.Parallel()
+
+	repo := Repository{Dir: filepath.Join(t.TempDir(), "managed-repo")}
+	repo.mu.Lock()
+	defer repo.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+
+	start := time.Now()
+	err := repo.WithRead(ctx, func(repoDir string) error {
+		t.Fatal("expected read callback not to run when context expires")
+		return nil
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("expected context deadline, got %v", err)
+	}
+	if time.Since(start) < 75*time.Millisecond {
+		t.Fatalf("expected lock attempt to wait for context deadline, got %s", time.Since(start))
+	}
+}
+
+func TestRepositoryTryAcquireProcessLockSkipsBusyLock(t *testing.T) {
+	t.Parallel()
+
+	repoA := Repository{Dir: filepath.Join(t.TempDir(), "managed-repo")}
+	repoB := Repository{Dir: repoA.Dir}
+
+	lockFile, err := repoA.acquireProcessLock(context.Background())
+	if err != nil {
+		t.Fatalf("acquire initial lock: %v", err)
+	}
+	defer func() {
+		_ = lockFile.Close()
+	}()
+
+	start := time.Now()
+	_, err = repoB.tryAcquireProcessLock(context.Background())
+	if !errors.Is(err, ErrRepositoryLockBusy) {
+		t.Fatalf("expected lock busy error, got %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Fatalf("expected non-blocking process lock attempt, took %s", elapsed)
 	}
 }
 

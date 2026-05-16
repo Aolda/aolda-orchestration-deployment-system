@@ -32,11 +32,17 @@ if [[ -z "${AODS_SECRET_STORE_MODE:-}" && -n "${AODS_IIV_ADDR:-}${AODS_IIV_TOKEN
   export AODS_SECRET_STORE_MODE=iiv
 fi
 
-# The orphan Flux cleanup worker can monopolize the managed Git repo lock during
-# local dogfooding and block the initial /projects bootstrap. Keep it opt-in for
-# local runs; deployed environments can still enable it explicitly via env.
+# Background workers share the managed Git repo lock with user-facing catalog and
+# application API paths. Keep heavy maintenance/sync loops opt-in for local runs
+# so login bootstrap stays responsive while dogfooding.
 if [[ -z "${AODS_ORPHAN_FLUX_CLEANUP_INTERVAL:-}" ]]; then
   export AODS_ORPHAN_FLUX_CLEANUP_INTERVAL=0
+fi
+if [[ -z "${AODS_REPOSITORY_POLL_INTERVAL:-}" ]]; then
+  export AODS_REPOSITORY_POLL_INTERVAL=0
+fi
+if [[ -z "${AODS_APPLICATION_CATALOG_SYNC_INTERVAL:-}" ]]; then
+  export AODS_APPLICATION_CATALOG_SYNC_INTERVAL=0
 fi
 
 if [[ -z "${AODS_K8S_KUBECONFIG:-}" && -f "${DEFAULT_SELF_HOSTED_KUBECONFIG}" ]]; then

@@ -105,6 +105,7 @@ func main() {
 		Service:  applicationService,
 		Projects: projectService,
 		Interval: cfg.RepositoryPollInterval,
+		Timeout:  cfg.GitCommandTimeout,
 	}
 	go poller.Start(context.Background())
 
@@ -113,6 +114,7 @@ func main() {
 			Store:    refresher,
 			Projects: projectService.Source,
 			Interval: cfg.ApplicationCatalogSyncInterval,
+			Timeout:  cfg.GitCommandTimeout,
 		}
 		go projector.Start(context.Background())
 	}
@@ -145,6 +147,7 @@ func main() {
 		cleanupWorker := &application.OrphanFluxManifestCleanupWorker{
 			Cleaner:  cleaner,
 			Interval: cfg.OrphanFluxCleanupInterval,
+			Timeout:  cfg.GitCommandTimeout,
 		}
 		go cleanupWorker.Start(context.Background())
 	}

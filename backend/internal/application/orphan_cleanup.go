@@ -21,6 +21,7 @@ type OrphanFluxManifestCleaner interface {
 type OrphanFluxManifestCleanupWorker struct {
 	Cleaner  OrphanFluxManifestCleaner
 	Interval time.Duration
+	Timeout  time.Duration
 }
 
 type fluxChildManifestMetadata struct {
@@ -36,7 +37,7 @@ func (w *OrphanFluxManifestCleanupWorker) Start(ctx context.Context) {
 		return
 	}
 
-	slog.Info("starting orphan Flux manifest cleanup worker", "interval", w.Interval)
+	slog.Info("starting orphan Flux manifest cleanup worker", "interval", w.Interval, "timeout", w.effectiveTimeout())
 
 	w.runOnce(ctx)
 
@@ -54,14 +55,32 @@ func (w *OrphanFluxManifestCleanupWorker) Start(ctx context.Context) {
 }
 
 func (w *OrphanFluxManifestCleanupWorker) runOnce(ctx context.Context) {
-	count, err := w.Cleaner.CleanupOrphanFluxManifests(ctx)
+	startedAt := time.Now()
+	runCtx, cancel, timeout := backgroundWorkerContext(ctx, w.Timeout, defaultOrphanFluxCleanupTimeout)
+	defer cancel()
+
+	count, err := w.Cleaner.CleanupOrphanFluxManifests(runCtx)
+	duration := time.Since(startedAt)
 	if err != nil {
-		slog.Error("orphan Flux manifest cleanup failed", "error", err)
+		if reason := backgroundWorkerSkipReason(err); reason != "" {
+			slog.Info("orphan Flux manifest cleanup skipped", "reason", reason, "timeout", timeout, "duration", duration)
+			return
+		}
+		slog.Error("orphan Flux manifest cleanup failed", "duration", duration, "error", err)
 		return
 	}
 	if count > 0 {
-		slog.Info("orphan Flux manifests cleaned up", "count", count)
+		slog.Info("orphan Flux manifests cleaned up", "count", count, "duration", duration)
+		return
 	}
+	slog.Debug("orphan Flux manifest cleanup completed", "count", count, "duration", duration)
+}
+
+func (w *OrphanFluxManifestCleanupWorker) effectiveTimeout() time.Duration {
+	if w == nil || w.Timeout <= 0 {
+		return defaultOrphanFluxCleanupTimeout
+	}
+	return w.Timeout
 }
 
 func (s LocalManifestStore) CleanupOrphanFluxManifests(ctx context.Context) (int, error) {
@@ -149,7 +168,7 @@ func (s GitManifestStore) CleanupOrphanFluxManifests(ctx context.Context) (int, 
 	}
 
 	removedCount := 0
-	err := s.Repository.WithWrite(ctx, "chore: cleanup orphan flux manifests", func(repoDir string) error {
+	err := s.Repository.WithWriteIfAvailable(ctx, "chore: cleanup orphan flux manifests", func(repoDir string) error {
 		count, err := s.localStore(repoDir).CleanupOrphanFluxManifests(ctx)
 		if err != nil {
 			return err

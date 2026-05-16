@@ -3,6 +3,7 @@ package application
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -12,14 +13,22 @@ import (
 	"time"
 
 	"github.com/aolda/aods-backend/internal/core"
+	"github.com/aolda/aods-backend/internal/gitops"
 	"github.com/aolda/aods-backend/internal/project"
 	"gopkg.in/yaml.v3"
+)
+
+const (
+	defaultApplicationCatalogProjectorTimeout = 10 * time.Second
+	defaultAutoUpdatePollerTimeout            = 30 * time.Second
+	defaultOrphanFluxCleanupTimeout           = 10 * time.Second
 )
 
 type AutoUpdatePoller struct {
 	Service                 *Service
 	Projects                *project.Service
 	Interval                time.Duration
+	Timeout                 time.Duration
 	Client                  *http.Client
 	RollbackEvaluationDelay time.Duration
 	RollbackMetricsRange    time.Duration
@@ -62,7 +71,8 @@ type autoRollbackDecision struct {
 
 func (p *AutoUpdatePoller) Start(ctx context.Context) {
 	if p.Interval <= 0 {
-		p.Interval = 5 * time.Minute
+		slog.Info("auto-update poller disabled", "reason", "interval_disabled")
+		return
 	}
 	if p.Client == nil {
 		if p.Service != nil {
@@ -73,7 +83,7 @@ func (p *AutoUpdatePoller) Start(ctx context.Context) {
 	}
 
 	tickInterval := p.tickInterval()
-	slog.Info("starting auto-update poller", "interval", p.Interval, "tickInterval", tickInterval)
+	slog.Info("starting auto-update poller", "interval", p.Interval, "tickInterval", tickInterval, "timeout", p.effectiveTimeout())
 	ticker := time.NewTicker(tickInterval)
 	defer ticker.Stop()
 
@@ -88,6 +98,10 @@ func (p *AutoUpdatePoller) Start(ctx context.Context) {
 }
 
 func (p *AutoUpdatePoller) pollAll(ctx context.Context) {
+	startedAt := time.Now()
+	runCtx, cancel, timeout := backgroundWorkerContext(ctx, p.Timeout, defaultAutoUpdatePollerTimeout)
+	defer cancel()
+
 	if p.Service != nil && p.Service.PollTracker != nil {
 		p.Service.PollTracker.BeginCycle(timeNowUTC())
 	}
@@ -103,16 +117,40 @@ func (p *AutoUpdatePoller) pollAll(ctx context.Context) {
 		Groups:      systemGroups,
 	}
 
-	projects, err := p.Projects.Source.ListProjects(ctx)
-	if err != nil {
-		slog.Error("poller failed to list projects", "error", err)
+	if p.Projects == nil || p.Projects.Source == nil || p.Service == nil || p.Service.Store == nil {
+		slog.Debug("auto-update poller skipped", "reason", "not_configured", "duration", time.Since(startedAt))
 		return
 	}
 
+	projects, err := p.Projects.Source.ListProjects(runCtx)
+	if err != nil {
+		if reason := backgroundWorkerSkipReason(err); reason != "" {
+			slog.Info("auto-update poller skipped", "reason", reason, "timeout", timeout, "duration", time.Since(startedAt))
+			return
+		}
+		slog.Error("poller failed to list projects", "duration", time.Since(startedAt), "error", err)
+		return
+	}
+
+	checkedProjects := 0
+	checkedApps := 0
+	skipped := 0
+	failed := 0
 	for _, proj := range projects {
-		apps, err := p.Service.Store.ListApplications(ctx, proj.ID)
+		if err := runCtx.Err(); err != nil {
+			slog.Info("auto-update poller skipped", "reason", backgroundWorkerSkipReason(err), "timeout", timeout, "duration", time.Since(startedAt))
+			return
+		}
+		checkedProjects++
+		apps, err := p.Service.Store.ListApplications(runCtx, proj.ID)
 		if err != nil {
-			slog.Error("poller failed to list applications", "project", proj.ID, "error", err)
+			if reason := backgroundWorkerSkipReason(err); reason != "" {
+				skipped++
+				slog.Info("auto-update poller project skipped", "project", proj.ID, "reason", reason, "timeout", timeout, "duration", time.Since(startedAt))
+				continue
+			}
+			failed++
+			slog.Error("poller failed to list applications", "project", proj.ID, "duration", time.Since(startedAt), "error", err)
 			continue
 		}
 
@@ -123,33 +161,50 @@ func (p *AutoUpdatePoller) pollAll(ctx context.Context) {
 
 		now := timeNowUTC()
 		for _, app := range apps {
+			if err := runCtx.Err(); err != nil {
+				slog.Info("auto-update poller skipped", "reason", backgroundWorkerSkipReason(err), "timeout", timeout, "duration", time.Since(startedAt))
+				return
+			}
+			checkedApps++
 			currentApp := app
 			repo, ok := p.repositoryForApp(app, repoMap)
 			if !ok {
-				p.pollAutoRollback(ctx, systemUser, proj, currentApp)
+				p.pollAutoRollback(runCtx, systemUser, proj, currentApp)
 				continue
 			}
 			if p.Service != nil && p.Service.PollTracker != nil && !p.Service.PollTracker.Due(app, now) {
-				p.pollAutoRollback(ctx, systemUser, proj, currentApp)
+				p.pollAutoRollback(runCtx, systemUser, proj, currentApp)
 				continue
 			}
 
-			p.pollApp(ctx, systemUser, proj, app, repo)
-			updatedApp, err := p.Service.Store.GetApplication(ctx, app.ID)
+			p.pollApp(runCtx, systemUser, proj, app, repo)
+			updatedApp, err := p.Service.Store.GetApplication(runCtx, app.ID)
 			if err != nil {
-				slog.Warn("poller failed to refresh application after repository sync", "app", app.ID, "error", err)
+				if reason := backgroundWorkerSkipReason(err); reason != "" {
+					skipped++
+					slog.Info("auto-update poller app refresh skipped", "app", app.ID, "reason", reason, "timeout", timeout, "duration", time.Since(startedAt))
+					continue
+				}
+				failed++
+				slog.Warn("poller failed to refresh application after repository sync", "app", app.ID, "duration", time.Since(startedAt), "error", err)
 			} else {
 				currentApp = updatedApp
 			}
 
-			p.pollAutoRollback(ctx, systemUser, proj, currentApp)
+			p.pollAutoRollback(runCtx, systemUser, proj, currentApp)
 		}
 	}
+	slog.Debug("auto-update poller cycle completed", "projects", checkedProjects, "applications", checkedApps, "skipped", skipped, "failed", failed, "duration", time.Since(startedAt))
 }
 
 func (p *AutoUpdatePoller) pollApp(ctx context.Context, user core.User, proj project.CatalogProject, app Record, repo project.Repository) {
+	startedAt := time.Now()
 	if _, err := p.SyncRepositoryNow(ctx, user, proj, app, repo); err != nil {
-		slog.Error("poller failed to sync repository state", "app", app.ID, "repoId", repo.ID, "error", err)
+		if reason := backgroundWorkerSkipReason(err); reason != "" {
+			slog.Info("auto-update poller app skipped", "app", app.ID, "repoId", repo.ID, "reason", reason, "duration", time.Since(startedAt))
+			return
+		}
+		slog.Error("poller failed to sync repository state", "app", app.ID, "repoId", repo.ID, "duration", time.Since(startedAt), "error", err)
 	}
 }
 
@@ -278,6 +333,40 @@ func (p *AutoUpdatePoller) tickInterval() time.Duration {
 	return time.Minute
 }
 
+func (p *AutoUpdatePoller) effectiveTimeout() time.Duration {
+	if p == nil || p.Timeout <= 0 {
+		return defaultAutoUpdatePollerTimeout
+	}
+	return p.Timeout
+}
+
+func backgroundWorkerContext(parent context.Context, configuredTimeout time.Duration, fallbackTimeout time.Duration) (context.Context, context.CancelFunc, time.Duration) {
+	timeout := configuredTimeout
+	if timeout <= 0 {
+		timeout = fallbackTimeout
+	}
+	if timeout <= 0 {
+		return gitops.WithNonBlockingLock(parent), func() {}, 0
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	return gitops.WithNonBlockingLock(ctx), cancel, timeout
+}
+
+func backgroundWorkerSkipReason(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, gitops.ErrRepositoryLockBusy):
+		return "git_lock_busy"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timeout"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	default:
+		return ""
+	}
+}
+
 func (p *AutoUpdatePoller) repositoryPollSnapshot(app Record) *RepositoryPollStatus {
 	if p == nil || p.Service == nil || p.Service.PollTracker == nil {
 		return nil
@@ -286,6 +375,7 @@ func (p *AutoUpdatePoller) repositoryPollSnapshot(app Record) *RepositoryPollSta
 }
 
 func (p *AutoUpdatePoller) pollAutoRollback(ctx context.Context, user core.User, proj project.CatalogProject, app Record) {
+	startedAt := time.Now()
 	if p.Service == nil || p.Service.Store == nil || p.Service.MetricsReader == nil {
 		return
 	}
@@ -295,7 +385,11 @@ func (p *AutoUpdatePoller) pollAutoRollback(ctx context.Context, user core.User,
 
 	policy, err := p.Service.Store.GetRollbackPolicy(ctx, app.ID)
 	if err != nil {
-		slog.Error("poller failed to read rollback policy", "app", app.ID, "error", err)
+		if reason := backgroundWorkerSkipReason(err); reason != "" {
+			slog.Info("auto rollback poll skipped", "app", app.ID, "step", "read_rollback_policy", "reason", reason, "duration", time.Since(startedAt))
+			return
+		}
+		slog.Error("poller failed to read rollback policy", "app", app.ID, "duration", time.Since(startedAt), "error", err)
 		return
 	}
 	if !policy.Enabled {
@@ -304,7 +398,11 @@ func (p *AutoUpdatePoller) pollAutoRollback(ctx context.Context, user core.User,
 
 	deployments, err := p.Service.Store.ListDeployments(ctx, app.ID)
 	if err != nil {
-		slog.Error("poller failed to read deployment history", "app", app.ID, "error", err)
+		if reason := backgroundWorkerSkipReason(err); reason != "" {
+			slog.Info("auto rollback poll skipped", "app", app.ID, "step", "read_deployments", "reason", reason, "duration", time.Since(startedAt))
+			return
+		}
+		slog.Error("poller failed to read deployment history", "app", app.ID, "duration", time.Since(startedAt), "error", err)
 		return
 	}
 
@@ -323,7 +421,11 @@ func (p *AutoUpdatePoller) pollAutoRollback(ctx context.Context, user core.User,
 
 	events, err := p.Service.Store.ListEvents(ctx, app.ID)
 	if err != nil {
-		slog.Error("poller failed to read application events", "app", app.ID, "error", err)
+		if reason := backgroundWorkerSkipReason(err); reason != "" {
+			slog.Info("auto rollback poll skipped", "app", app.ID, "step", "read_events", "reason", reason, "duration", time.Since(startedAt))
+			return
+		}
+		slog.Error("poller failed to read application events", "app", app.ID, "duration", time.Since(startedAt), "error", err)
 		return
 	}
 	if autoRollbackAlreadyTriggered(events, latest.DeploymentID) {
@@ -332,7 +434,11 @@ func (p *AutoUpdatePoller) pollAutoRollback(ctx context.Context, user core.User,
 
 	metrics, err := p.Service.MetricsReader.Read(ctx, app, p.rollbackMetricRange(), p.rollbackMetricStep())
 	if err != nil {
-		slog.Error("poller failed to read rollback metrics", "app", app.ID, "error", err)
+		if reason := backgroundWorkerSkipReason(err); reason != "" {
+			slog.Info("auto rollback poll skipped", "app", app.ID, "step", "read_metrics", "reason", reason, "duration", time.Since(startedAt))
+			return
+		}
+		slog.Error("poller failed to read rollback metrics", "app", app.ID, "duration", time.Since(startedAt), "error", err)
 		return
 	}
 
@@ -344,7 +450,11 @@ func (p *AutoUpdatePoller) pollAutoRollback(ctx context.Context, user core.User,
 	applyCtx := WithChangeGuardBypass(ctx)
 	requestID := fmt.Sprintf("req_rollback_%d", timeNowUTC().UnixNano())
 	if _, err := p.Service.CreateDeployment(applyCtx, user, app.ID, rollbackTarget.ImageTag, latest.Environment, requestID); err != nil {
-		slog.Error("poller failed to trigger auto rollback", "app", app.ID, "error", err)
+		if reason := backgroundWorkerSkipReason(err); reason != "" {
+			slog.Info("auto rollback poll skipped", "app", app.ID, "step", "create_deployment", "reason", reason, "duration", time.Since(startedAt))
+			return
+		}
+		slog.Error("poller failed to trigger auto rollback", "app", app.ID, "duration", time.Since(startedAt), "error", err)
 		_ = p.Service.appendEvent(ctx, app.ID, "AutoRollbackFailed", "자동 롤백 배포를 시작하지 못했습니다.", map[string]any{
 			"sourceDeploymentId":     latest.DeploymentID,
 			"rollbackToDeploymentId": rollbackTarget.DeploymentID,
@@ -358,7 +468,11 @@ func (p *AutoUpdatePoller) pollAutoRollback(ctx context.Context, user core.User,
 	latest.Message = decision.Message
 	latest.UpdatedAt = timeNowUTC()
 	if _, err := p.Service.Store.UpdateDeployment(ctx, app.ID, latest); err != nil {
-		slog.Error("poller failed to update deployment history after auto rollback", "app", app.ID, "deploymentId", latest.DeploymentID, "error", err)
+		if reason := backgroundWorkerSkipReason(err); reason != "" {
+			slog.Info("auto rollback deployment status update skipped", "app", app.ID, "deploymentId", latest.DeploymentID, "reason", reason, "duration", time.Since(startedAt))
+		} else {
+			slog.Error("poller failed to update deployment history after auto rollback", "app", app.ID, "deploymentId", latest.DeploymentID, "duration", time.Since(startedAt), "error", err)
+		}
 	}
 
 	metadata := copyMetadata(decision.Metadata)
