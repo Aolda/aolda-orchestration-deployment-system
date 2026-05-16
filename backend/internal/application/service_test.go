@@ -188,6 +188,54 @@ func (r serviceStaticMetricsReader) Read(ctx context.Context, record Record, dur
 	return append([]MetricSeries(nil), r.metrics...), nil
 }
 
+type serviceBatchMetricsReader struct {
+	metrics       map[string][]MetricSeries
+	readCalls     int
+	readManyCalls int
+	err           error
+}
+
+func (r *serviceBatchMetricsReader) Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error) {
+	r.readCalls++
+	if r.err != nil {
+		return nil, r.err
+	}
+	return append([]MetricSeries(nil), r.metrics[record.ID]...), nil
+}
+
+func (r *serviceBatchMetricsReader) ReadMany(ctx context.Context, records []Record, duration time.Duration, step time.Duration) (map[string][]MetricSeries, error) {
+	r.readManyCalls++
+	if r.err != nil {
+		return nil, r.err
+	}
+	items := make(map[string][]MetricSeries, len(records))
+	for _, record := range records {
+		items[record.ID] = append([]MetricSeries(nil), r.metrics[record.ID]...)
+	}
+	return items, nil
+}
+
+type servicePartialBatchMetricsReader struct {
+	metrics map[string][]MetricSeries
+	failed  map[string]struct{}
+	err     error
+}
+
+func (r servicePartialBatchMetricsReader) Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error) {
+	return append([]MetricSeries(nil), r.metrics[record.ID]...), nil
+}
+
+func (r servicePartialBatchMetricsReader) ReadMany(ctx context.Context, records []Record, duration time.Duration, step time.Duration) (map[string][]MetricSeries, error) {
+	items := make(map[string][]MetricSeries, len(records))
+	for _, record := range records {
+		items[record.ID] = append([]MetricSeries(nil), r.metrics[record.ID]...)
+	}
+	return items, BatchMetricsReadError{
+		Err:                  r.err,
+		FailedApplicationIDs: r.failed,
+	}
+}
+
 type staticNetworkExposureReader struct {
 	info NetworkExposureInfo
 	err  error
@@ -717,6 +765,94 @@ func TestGetProjectHealthAggregatesSyncMetricsAndDeploymentSignals(t *testing.T)
 	}
 	if !hasEnvoyTarget {
 		t.Fatalf("expected mesh-enabled app to include envoy scrape target in signals: %#v", item.Signals)
+	}
+}
+
+func TestGetProjectHealthUsesBatchMetricsReaderWhenAvailable(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Date(2026, 5, 13, 10, 15, 0, 0, time.UTC)
+	records := []Record{
+		{ID: "project-a__api", ProjectID: "project-a", Name: "api", Namespace: "project-a", DeploymentStrategy: DeploymentStrategyRollout},
+		{ID: "project-a__worker", ProjectID: "project-a", Name: "worker", Namespace: "project-a", DeploymentStrategy: DeploymentStrategyRollout},
+	}
+	metricsReader := &serviceBatchMetricsReader{metrics: map[string][]MetricSeries{
+		"project-a__api":    {singlePointMetric("request_rate", 12, observedAt)},
+		"project-a__worker": {singlePointMetric("request_rate", 4, observedAt)},
+	}}
+	service := Service{
+		Projects:      authorizedProjectService(),
+		Store:         deploymentStore{stubStore: stubStore{records: records}},
+		StatusReader:  &batchStatusReaderStub{},
+		MetricsReader: metricsReader,
+	}
+
+	response, err := service.GetProjectHealth(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, "project-a")
+	if err != nil {
+		t.Fatalf("get project health: %v", err)
+	}
+	if len(response.Items) != 2 {
+		t.Fatalf("expected two health snapshots, got %d", len(response.Items))
+	}
+	if metricsReader.readManyCalls != 1 {
+		t.Fatalf("expected project health to batch-read metrics once, got %d", metricsReader.readManyCalls)
+	}
+	if metricsReader.readCalls != 0 {
+		t.Fatalf("expected project health not to read metrics per application, got %d", metricsReader.readCalls)
+	}
+	if got := response.Items[0].Metrics[0].Points[0].Value; got == nil || *got != 12 {
+		t.Fatalf("expected api metric from batch response, got %#v", got)
+	}
+	if got := response.Items[1].Metrics[0].Points[0].Value; got == nil || *got != 4 {
+		t.Fatalf("expected worker metric from batch response, got %#v", got)
+	}
+}
+
+func TestGetProjectHealthKeepsPartialBatchMetricsFailuresLocal(t *testing.T) {
+	t.Parallel()
+
+	observedAt := time.Date(2026, 5, 13, 10, 15, 0, 0, time.UTC)
+	records := []Record{
+		{ID: "project-a__api", ProjectID: "project-a", Name: "api", Namespace: "project-a", DeploymentStrategy: DeploymentStrategyRollout},
+		{ID: "project-a__worker", ProjectID: "project-a", Name: "worker", Namespace: "project-a", DeploymentStrategy: DeploymentStrategyRollout},
+	}
+	service := Service{
+		Projects:     authorizedProjectService(),
+		Store:        deploymentStore{stubStore: stubStore{records: records}},
+		StatusReader: &batchStatusReaderStub{},
+		MetricsReader: servicePartialBatchMetricsReader{
+			metrics: map[string][]MetricSeries{
+				"project-a__api": {singlePointMetric("request_rate", 12, observedAt)},
+			},
+			failed: map[string]struct{}{"project-a__worker": {}},
+			err:    errors.New("prometheus namespace timeout"),
+		},
+	}
+
+	response, err := service.GetProjectHealth(context.Background(), core.User{
+		Groups: []string{"aods:project-a:deploy"},
+	}, "project-a")
+	if err != nil {
+		t.Fatalf("get project health: %v", err)
+	}
+
+	if got := response.Items[0].Metrics[0].Points[0].Value; got == nil || *got != 12 {
+		t.Fatalf("expected api metric to survive partial batch failure, got %#v", got)
+	}
+	if len(response.Items[1].Metrics) != 0 {
+		t.Fatalf("expected failed worker metrics to stay empty, got %#v", response.Items[1].Metrics)
+	}
+	var workerMetricsSignal *HealthSignal
+	for _, signal := range response.Items[1].Signals {
+		if signal.Key == "metrics" {
+			workerMetricsSignal = &signal
+			break
+		}
+	}
+	if workerMetricsSignal == nil || workerMetricsSignal.Status != HealthSignalUnavailable {
+		t.Fatalf("expected failed worker metrics signal to be unavailable, got %#v", workerMetricsSignal)
 	}
 }
 
