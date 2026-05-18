@@ -125,6 +125,13 @@ func (s *catalogDelegateStore) CleanupOrphanFluxManifests(context.Context) (int,
 	return 2, nil
 }
 
+type blockingCatalogRefreshStore struct{}
+
+func (s blockingCatalogRefreshStore) RefreshProject(ctx context.Context, projectID string) ([]Record, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
 func TestCachedManifestStoreListApplicationsUsesFreshCache(t *testing.T) {
 	cache := &catalogCacheStub{
 		listOK: true,
@@ -318,6 +325,23 @@ func TestApplicationCatalogProjectorRefreshesAllProjects(t *testing.T) {
 	}
 }
 
+func TestApplicationCatalogProjectorRefreshAllTimesOut(t *testing.T) {
+	projectSource := &catalogProjectSourceStub{
+		items: []project.CatalogProject{{ID: "shared"}},
+	}
+	projector := ApplicationCatalogProjector{
+		Store:    blockingCatalogRefreshStore{},
+		Projects: projectSource,
+		Timeout:  20 * time.Millisecond,
+	}
+
+	start := time.Now()
+	projector.refreshAll(context.Background())
+	if elapsed := time.Since(start); elapsed > 250*time.Millisecond {
+		t.Fatalf("expected projector to stop at its timeout, took %s", elapsed)
+	}
+}
+
 func TestApplicationCatalogProjectorStartNoopsWhenUnconfigured(t *testing.T) {
 	var nilProjector *ApplicationCatalogProjector
 	nilProjector.Start(context.Background())
@@ -346,8 +370,8 @@ func TestApplicationCatalogProjectorStartRefreshesAndStops(t *testing.T) {
 	}
 	projector.Start(ctx)
 
-	if source.listCalls != 1 {
-		t.Fatalf("expected startup refresh before stop, got %d", source.listCalls)
+	if source.listCalls != 0 {
+		t.Fatalf("expected canceled startup to skip refresh, got %d", source.listCalls)
 	}
 }
 
