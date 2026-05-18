@@ -343,23 +343,72 @@ func (r PodMetricsReader) Read(ctx context.Context, record application.Record, d
 		return nil, err
 	}
 
-	now := r.now().UTC()
+	return r.metricsFromPodMetricsResponse(response, record, duration, step)
+}
 
-	queryStep := step
-	if queryStep <= 0 {
-		queryStep = r.metricStep()
+func (r PodMetricsReader) ReadMany(ctx context.Context, records []application.Record, duration time.Duration, step time.Duration) (map[string][]application.MetricSeries, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	queryWindow := duration
-	if queryWindow <= 0 {
-		queryWindow = r.metricRange()
+	items := make(map[string][]application.MetricSeries, len(records))
+	if len(records) == 0 {
+		return items, nil
 	}
-
-	end := now.Truncate(queryStep)
-	start := end.Add(-queryWindow).Add(queryStep)
-	if start.After(end) {
-		start = end
+	if r.Client == nil {
+		return nil, fmt.Errorf("kubernetes api client is not configured")
 	}
 
+	failedIDs := map[string]struct{}{}
+	failures := []string{}
+	for _, group := range groupApplicationRecordsByNamespace(records) {
+		namespace := strings.TrimSpace(group[0].Namespace)
+		resourcePath := kubernetesPodMetricsResourcePath + "/namespaces/" + url.PathEscape(namespace) + "/pods"
+		var response podMetricsListResponse
+		if err := r.Client.GetJSON(ctx, resourcePath, &response); err != nil {
+			for _, record := range group {
+				failedIDs[record.ID] = struct{}{}
+			}
+			failures = append(failures, err.Error())
+			continue
+		}
+		for _, record := range group {
+			metrics, err := r.metricsFromPodMetricsResponse(response, record, duration, step)
+			if err != nil {
+				failedIDs[record.ID] = struct{}{}
+				failures = append(failures, err.Error())
+				continue
+			}
+			items[record.ID] = metrics
+		}
+	}
+
+	if len(failures) > 0 {
+		return items, application.BatchMetricsReadError{
+			Err:                  fmt.Errorf("kubernetes pod metrics batch read failed: %s", strings.Join(failures, "; ")),
+			FailedApplicationIDs: failedIDs,
+		}
+	}
+	return items, nil
+}
+
+func groupApplicationRecordsByNamespace(records []application.Record) [][]application.Record {
+	groups := [][]application.Record{}
+	indexByNamespace := map[string]int{}
+	for _, record := range records {
+		namespace := strings.TrimSpace(record.Namespace)
+		index, ok := indexByNamespace[namespace]
+		if !ok {
+			index = len(groups)
+			indexByNamespace[namespace] = index
+			groups = append(groups, []application.Record{})
+		}
+		groups[index] = append(groups[index], record)
+	}
+	return groups
+}
+
+func (r PodMetricsReader) metricsFromPodMetricsResponse(response podMetricsListResponse, record application.Record, duration time.Duration, step time.Duration) ([]application.MetricSeries, error) {
+	start, end, queryStep := r.metricWindow(duration, step)
 	cpuUsage, memoryUsage, found, err := collectPodResourceUsage(response.Items, record.Name)
 	if err != nil {
 		return nil, err
@@ -384,6 +433,26 @@ func (r PodMetricsReader) Read(ctx context.Context, record application.Record, d
 		buildKubernetesMetricSeries("memory_usage", "Memory Usage", "MiB", start, end, queryStep, nil),
 	)
 	return metrics, nil
+}
+
+func (r PodMetricsReader) metricWindow(duration time.Duration, step time.Duration) (time.Time, time.Time, time.Duration) {
+	now := r.now().UTC()
+
+	queryStep := step
+	if queryStep <= 0 {
+		queryStep = r.metricStep()
+	}
+	queryWindow := duration
+	if queryWindow <= 0 {
+		queryWindow = r.metricRange()
+	}
+
+	end := now.Truncate(queryStep)
+	start := end.Add(-queryWindow).Add(queryStep)
+	if start.After(end) {
+		start = end
+	}
+	return start, end, queryStep
 }
 
 type podMetricsListResponse struct {

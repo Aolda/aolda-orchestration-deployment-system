@@ -70,6 +70,31 @@ type MetricsReader interface {
 	Read(ctx context.Context, record Record, duration time.Duration, step time.Duration) ([]MetricSeries, error)
 }
 
+type BatchMetricsReader interface {
+	ReadMany(ctx context.Context, records []Record, duration time.Duration, step time.Duration) (map[string][]MetricSeries, error)
+}
+
+type BatchMetricsReadError struct {
+	Err                  error
+	FailedApplicationIDs map[string]struct{}
+}
+
+func (e BatchMetricsReadError) Error() string {
+	if e.Err == nil {
+		return "batch metrics read failed"
+	}
+	return e.Err.Error()
+}
+
+func (e BatchMetricsReadError) Unwrap() error {
+	return e.Err
+}
+
+func (e BatchMetricsReadError) Failed(applicationID string) bool {
+	_, ok := e.FailedApplicationIDs[applicationID]
+	return ok
+}
+
 type NetworkExposureReader interface {
 	Read(ctx context.Context, record Record) (NetworkExposureInfo, error)
 }
@@ -1070,6 +1095,7 @@ func (s Service) GetProjectHealth(ctx context.Context, user core.User, projectID
 
 	observedAt := timeNowUTC()
 	syncInfos, syncErr := s.readSyncInfoMap(ctx, records)
+	metricsByApplicationID := s.readMetricsDiagnosticsMap(ctx, records, 15*time.Minute, time.Minute)
 	items := make([]ApplicationHealthSnapshot, 0, len(records))
 	for _, record := range records {
 		signals := make([]HealthSignal, 0, 3)
@@ -1099,7 +1125,11 @@ func (s Service) GetProjectHealth(ctx context.Context, user core.User, projectID
 			signals = append(signals, syncHealthSignal(syncInfo))
 		}
 
-		diagnostics, metrics := s.readMetricsDiagnostics(ctx, record, 15*time.Minute, time.Minute)
+		metricsResult, ok := metricsByApplicationID[record.ID]
+		if !ok {
+			metricsResult = s.metricsDiagnosticsUnavailable(record, "metrics reader did not return this application")
+		}
+		diagnostics := metricsResult.Diagnostics
 		signals = append(signals, HealthSignal{
 			Key:        "metrics",
 			Status:     diagnostics.Status,
@@ -1126,7 +1156,7 @@ func (s Service) GetProjectHealth(ctx context.Context, user core.User, projectID
 			Status:             deriveHealthStatus(signals),
 			SyncStatus:         syncStatus,
 			DeploymentStrategy: string(record.DeploymentStrategy),
-			Metrics:            metrics,
+			Metrics:            metricsResult.Metrics,
 			LatestDeployment:   latestDeployment,
 			Signals:            signals,
 		})
@@ -1222,16 +1252,7 @@ func syncHealthSignal(info SyncInfo) HealthSignal {
 }
 
 func (s Service) readMetricsDiagnostics(ctx context.Context, record Record, duration time.Duration, step time.Duration) (MetricsDiagnosticsResponse, []MetricSeries) {
-	checkedAt := timeNowUTC()
-	response := MetricsDiagnosticsResponse{
-		ApplicationID: record.ID,
-		CheckedAt:     checkedAt,
-		Status:        HealthSignalUnavailable,
-		Message:       "metrics reader is not configured",
-		MeshEnabled:   record.MeshEnabled,
-		ScrapeTargets: metricsScrapeTargets(record),
-		Series:        []MetricSeriesDiagnostic{},
-	}
+	response := newMetricsDiagnosticsResponse(record)
 	if s.MetricsReader == nil {
 		return response, nil
 	}
@@ -1245,6 +1266,87 @@ func (s Service) readMetricsDiagnostics(ctx context.Context, record Record, dura
 	response.Series = diagnoseMetricSeries(metrics)
 	response.Status, response.Message = summarizeMetricDiagnostics(response.Series)
 	return response, metrics
+}
+
+type metricsDiagnosticsResult struct {
+	Diagnostics MetricsDiagnosticsResponse
+	Metrics     []MetricSeries
+}
+
+func (s Service) readMetricsDiagnosticsMap(ctx context.Context, records []Record, duration time.Duration, step time.Duration) map[string]metricsDiagnosticsResult {
+	items := make(map[string]metricsDiagnosticsResult, len(records))
+	if len(records) == 0 {
+		return items
+	}
+	if s.MetricsReader == nil {
+		for _, record := range records {
+			items[record.ID] = s.metricsDiagnosticsUnavailable(record, "metrics reader is not configured")
+		}
+		return items
+	}
+
+	if batchReader, ok := s.MetricsReader.(BatchMetricsReader); ok {
+		metricsByApplicationID, err := batchReader.ReadMany(ctx, records, duration, step)
+		if err != nil {
+			var batchErr BatchMetricsReadError
+			if errors.As(err, &batchErr) && len(batchErr.FailedApplicationIDs) > 0 {
+				for _, record := range records {
+					if batchErr.Failed(record.ID) {
+						items[record.ID] = s.metricsDiagnosticsUnavailable(record, batchErr.Error())
+						continue
+					}
+					items[record.ID] = buildMetricsDiagnosticsResult(record, metricsByApplicationID[record.ID])
+				}
+				return items
+			}
+			for _, record := range records {
+				items[record.ID] = s.metricsDiagnosticsUnavailable(record, err.Error())
+			}
+			return items
+		}
+		for _, record := range records {
+			metrics := metricsByApplicationID[record.ID]
+			items[record.ID] = buildMetricsDiagnosticsResult(record, metrics)
+		}
+		return items
+	}
+
+	for _, record := range records {
+		diagnostics, metrics := s.readMetricsDiagnostics(ctx, record, duration, step)
+		items[record.ID] = metricsDiagnosticsResult{
+			Diagnostics: diagnostics,
+			Metrics:     metrics,
+		}
+	}
+	return items
+}
+
+func (s Service) metricsDiagnosticsUnavailable(record Record, message string) metricsDiagnosticsResult {
+	response := newMetricsDiagnosticsResponse(record)
+	response.Message = message
+	return metricsDiagnosticsResult{Diagnostics: response}
+}
+
+func newMetricsDiagnosticsResponse(record Record) MetricsDiagnosticsResponse {
+	return MetricsDiagnosticsResponse{
+		ApplicationID: record.ID,
+		CheckedAt:     timeNowUTC(),
+		Status:        HealthSignalUnavailable,
+		Message:       "metrics reader is not configured",
+		MeshEnabled:   record.MeshEnabled,
+		ScrapeTargets: metricsScrapeTargets(record),
+		Series:        []MetricSeriesDiagnostic{},
+	}
+}
+
+func buildMetricsDiagnosticsResult(record Record, metrics []MetricSeries) metricsDiagnosticsResult {
+	response := newMetricsDiagnosticsResponse(record)
+	response.Series = diagnoseMetricSeries(metrics)
+	response.Status, response.Message = summarizeMetricDiagnostics(response.Series)
+	return metricsDiagnosticsResult{
+		Diagnostics: response,
+		Metrics:     metrics,
+	}
 }
 
 func (s Service) latestDeploymentHealthSignal(ctx context.Context, record Record, observedAt time.Time, syncInfo SyncInfo) (*DeploymentRecord, HealthSignal) {
