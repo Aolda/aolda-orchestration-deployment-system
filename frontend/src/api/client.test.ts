@@ -58,6 +58,41 @@ describe('api client timeouts', () => {
     })
   })
 
+  it('조건부 요청이 304를 반환하면 기존 payload를 유지한다', async () => {
+    const payload = {
+      items: [{ id: 'default', name: 'Default Cluster', default: true }],
+    }
+    let callCount = 0
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+        callCount += 1
+        const headers = init?.headers as Headers
+
+        if (callCount === 1) {
+          expect(headers.get('If-None-Match')).toBeNull()
+          return new Response(JSON.stringify(payload), {
+            status: 200,
+            headers: {
+              'Content-Type': 'application/json',
+              ETag: '"clusters-v1"',
+            },
+          })
+        }
+
+        expect(headers.get('If-None-Match')).toBe('"clusters-v1"')
+        return new Response(null, { status: 304 })
+      }),
+    )
+
+    const first = await api.getClusters()
+    const second = await api.getClusters()
+
+    expect(first).toEqual(payload)
+    expect(second).toBe(first)
+  })
+
   it('로그 스트림 API 오류의 details를 보존한다', async () => {
     vi.stubGlobal(
       'fetch',
