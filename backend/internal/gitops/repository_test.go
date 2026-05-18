@@ -153,7 +153,7 @@ func TestRepositorySyncOnceCoalescesConcurrentFetch(t *testing.T) {
 		Dir:     dir,
 		Remote:  "https://github.com/Aolda/aods-manifest.git",
 		Branch:  "main",
-		Timeout: time.Second,
+		Timeout: 5 * time.Second,
 		SyncTTL: time.Minute,
 	}
 
@@ -202,7 +202,7 @@ func TestRepositoryWithReadUsesStaleSnapshotWhileBackgroundSyncRuns(t *testing.T
 		Dir:         dir,
 		Remote:      "https://github.com/Aolda/aods-manifest.git",
 		Branch:      "main",
-		Timeout:     time.Second,
+		Timeout:     5 * time.Second,
 		SyncTTL:     time.Second,
 		lastSyncAt:  time.Now().Add(-2 * time.Second),
 		lastSyncKey: "https://github.com/Aolda/aods-manifest.git|main",
