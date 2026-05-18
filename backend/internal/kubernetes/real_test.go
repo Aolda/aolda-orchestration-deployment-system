@@ -352,6 +352,72 @@ func TestPodMetricsReaderTokenModeProvidesCPUAndMemoryFallback(t *testing.T) {
 	}
 }
 
+func TestPodMetricsReaderReadManyBatchesNamespacePodMetrics(t *testing.T) {
+	t.Parallel()
+
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if got := r.URL.Path; got != "/apis/metrics.k8s.io/v1beta1/namespaces/project-a/pods" {
+			t.Fatalf("unexpected request path %q", got)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"items": [
+				{
+					"metadata": {"name": "api-7cc4d5f789-abcde"},
+					"containers": [
+						{"usage": {"cpu": "250m", "memory": "64Mi"}}
+					]
+				},
+				{
+					"metadata": {"name": "worker-7cc4d5f789-fghij"},
+					"containers": [
+						{"usage": {"cpu": "500m", "memory": "128Mi"}}
+					]
+				}
+			]
+		}`))
+	}))
+	defer server.Close()
+
+	reader, err := NewPodMetricsReader(core.Config{
+		KubernetesMode:           "token",
+		KubernetesAPIURL:         server.URL,
+		KubernetesBearerToken:    "metrics-token",
+		KubernetesRequestTimeout: 2 * time.Second,
+		PrometheusRange:          10 * time.Minute,
+		PrometheusStep:           5 * time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("new pod metrics reader: %v", err)
+	}
+	reader.Now = func() time.Time {
+		return time.Date(2026, 4, 3, 1, 0, 0, 0, time.UTC)
+	}
+
+	metricsByID, err := reader.ReadMany(context.Background(), []application.Record{
+		{ID: "project-a__api", Name: "api", Namespace: "project-a"},
+		{ID: "project-a__worker", Name: "worker", Namespace: "project-a"},
+	}, 10*time.Minute, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("read many pod metrics: %v", err)
+	}
+
+	if requests != 1 {
+		t.Fatalf("expected one metrics API call for namespace, got %d", requests)
+	}
+	apiCPU := metricsByID["project-a__api"][3].Points[1].Value
+	if apiCPU == nil || *apiCPU != 0.25 {
+		t.Fatalf("expected api cpu_usage fallback to be 0.25, got %#v", apiCPU)
+	}
+	workerMemory := metricsByID["project-a__worker"][4].Points[1].Value
+	if workerMemory == nil || *workerMemory != 128 {
+		t.Fatalf("expected worker memory_usage fallback to be 128MiB, got %#v", workerMemory)
+	}
+}
+
 func TestServiceNetworkExposureReaderReadyWhenIngressIsAssigned(t *testing.T) {
 	t.Parallel()
 

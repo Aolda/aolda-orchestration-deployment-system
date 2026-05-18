@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -60,9 +61,10 @@ func WithCORS(next http.Handler, allowedOrigin string, allowDevFallback bool) ht
 		w.Header().Add("Vary", "Access-Control-Request-Method")
 		w.Header().Set(
 			"Access-Control-Allow-Headers",
-			"Content-Type, Authorization, X-AODS-User-Id, X-AODS-Username, X-AODS-Display-Name, X-AODS-Groups, X-Request-Id",
+			"Content-Type, Authorization, If-None-Match, X-AODS-User-Id, X-AODS-Username, X-AODS-Display-Name, X-AODS-Groups, X-Request-Id",
 		)
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
+		w.Header().Set("Access-Control-Expose-Headers", "ETag, X-Request-Id")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -166,6 +168,57 @@ func WriteJSON(w http.ResponseWriter, status int, body any) {
 	}
 
 	_ = json.NewEncoder(w).Encode(body)
+}
+
+func WriteConditionalJSON(w http.ResponseWriter, r *http.Request, status int, body any) {
+	if body == nil {
+		WriteJSON(w, status, body)
+		return
+	}
+
+	payload, err := json.Marshal(body)
+	if err != nil {
+		WriteJSON(w, status, body)
+		return
+	}
+	payload = append(payload, '\n')
+	etag := responseETag(payload)
+
+	w.Header().Set("ETag", etag)
+	w.Header().Set("Cache-Control", "private, max-age=0, must-revalidate")
+
+	if status == http.StatusOK && ifNoneMatchContains(r.Header.Values("If-None-Match"), etag) {
+		w.WriteHeader(http.StatusNotModified)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_, _ = w.Write(payload)
+}
+
+func responseETag(payload []byte) string {
+	sum := sha256.Sum256(payload)
+	return fmt.Sprintf(`"%x"`, sum)
+}
+
+func ifNoneMatchContains(values []string, etag string) bool {
+	for _, value := range values {
+		for _, candidate := range strings.Split(value, ",") {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				continue
+			}
+			if candidate == "*" || weakETagValue(candidate) == weakETagValue(etag) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func weakETagValue(etag string) string {
+	return strings.TrimPrefix(strings.TrimSpace(etag), "W/")
 }
 
 func WriteError(

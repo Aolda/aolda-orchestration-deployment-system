@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -101,6 +102,84 @@ func TestPrometheusMetricsReaderBuildsExpectedPointCount(t *testing.T) {
 	}
 }
 
+func TestPrometheusMetricsReaderReadManyBatchesByNamespace(t *testing.T) {
+	now := time.Date(2026, 4, 2, 4, 0, 0, 0, time.UTC)
+	start := now.Add(-5 * time.Minute)
+	end := now
+	requests := 0
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		query := r.URL.Query().Get("query")
+		response := map[string]any{
+			"status": "success",
+			"data": map[string]any{
+				"resultType": "matrix",
+				"result":     []any{},
+			},
+		}
+
+		switch {
+		case strings.Contains(query, "container_cpu_usage_seconds_total"):
+			response["data"] = matrixResponseWithMetric(start, end, 5*time.Minute, []map[string]any{
+				{"metric": map[string]string{"pod": "api-7cc4d5f789-abcde"}, "value": 0.25},
+				{"metric": map[string]string{"pod": "worker-7cc4d5f789-fghij"}, "value": 0.5},
+			})
+		case strings.Contains(query, "container_memory_working_set_bytes"):
+			response["data"] = matrixResponseWithMetric(start, end, 5*time.Minute, []map[string]any{
+				{"metric": map[string]string{"pod": "api-7cc4d5f789-abcde"}, "value": 64.0},
+				{"metric": map[string]string{"pod": "worker-7cc4d5f789-fghij"}, "value": 128.0},
+			})
+		}
+
+		_ = json.NewEncoder(w).Encode(response)
+	}))
+	defer server.Close()
+
+	reader := PrometheusMetricsReader{
+		BaseURL: server.URL,
+		Client:  server.Client(),
+		Range:   10 * time.Minute,
+		Step:    5 * time.Minute,
+		Now: func() time.Time {
+			return now
+		},
+	}
+
+	metricsByID, err := reader.ReadMany(context.Background(), []Record{
+		{ID: "project-a__api", Name: "api", Namespace: "project-a"},
+		{ID: "project-a__worker", Name: "worker", Namespace: "project-a"},
+	}, 10*time.Minute, 5*time.Minute)
+	if err != nil {
+		t.Fatalf("read many metrics: %v", err)
+	}
+
+	if requests != 9 {
+		t.Fatalf("expected one namespace batch query set, got %d requests", requests)
+	}
+	apiCPU := metricsByID["project-a__api"][3].Points[1].Value
+	if apiCPU == nil || *apiCPU != 0.25 {
+		t.Fatalf("expected api cpu value, got %#v", apiCPU)
+	}
+	workerMemory := metricsByID["project-a__worker"][4].Points[1].Value
+	if workerMemory == nil || *workerMemory != 128 {
+		t.Fatalf("expected worker memory value, got %#v", workerMemory)
+	}
+	if metricsByID["project-a__api"][0].Points[1].Value != nil {
+		t.Fatal("expected empty request_rate to stay nil")
+	}
+}
+
+func TestPrometheusMetricQueriesDoNotFabricateMissingSeries(t *testing.T) {
+	for _, definition := range prometheusMetricDefinitions {
+		for _, query := range definition.Queries {
+			if strings.Contains(query, "vector(0)") {
+				t.Fatalf("single query for %s fabricates empty metric values: %s", definition.Key, query)
+			}
+		}
+	}
+}
+
 func TestCompositeMetricsReaderUsesFallbackWhenPrimarySeriesIsEmpty(t *testing.T) {
 	now := time.Date(2026, 4, 3, 1, 0, 0, 0, time.UTC)
 	start := now.Add(-55 * time.Minute)
@@ -121,15 +200,15 @@ func TestCompositeMetricsReaderUsesFallbackWhenPrimarySeriesIsEmpty(t *testing.T
 	}
 	fallback := []MetricSeries{
 		{
-			Key:   "cpu_usage",
-			Label: "CPU Usage",
-			Unit:  "cores",
+			Key:    "cpu_usage",
+			Label:  "CPU Usage",
+			Unit:   "cores",
 			Points: buildFallbackPoints(start, now, 5*time.Minute, float64Pointer(0.12)),
 		},
 		{
-			Key:   "memory_usage",
-			Label: "Memory Usage",
-			Unit:  "MiB",
+			Key:    "memory_usage",
+			Label:  "Memory Usage",
+			Unit:   "MiB",
 			Points: buildFallbackPoints(start, now, 5*time.Minute, float64Pointer(18)),
 		},
 	}
@@ -199,6 +278,26 @@ func matrixResponse(start time.Time, end time.Time, step time.Duration, value fl
 				"values": values,
 			},
 		},
+	}
+}
+
+func matrixResponseWithMetric(start time.Time, end time.Time, step time.Duration, series []map[string]any) map[string]any {
+	items := make([]map[string]any, 0, len(series))
+	for _, item := range series {
+		values := make([][]any, 0, int(end.Sub(start)/step)+1)
+		value, _ := item["value"].(float64)
+		for current := start; !current.After(end); current = current.Add(step) {
+			values = append(values, []any{float64(current.Unix()), formatFloat(value)})
+		}
+		items = append(items, map[string]any{
+			"metric": item["metric"],
+			"values": values,
+		})
+	}
+
+	return map[string]any{
+		"resultType": "matrix",
+		"result":     items,
 	}
 }
 

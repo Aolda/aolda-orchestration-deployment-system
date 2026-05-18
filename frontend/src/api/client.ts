@@ -112,15 +112,41 @@ function parseApiErrorPayload(text: string) {
   }
 }
 
-async function request<T>(path: string, init?: RequestInit) {
-  const headers = await buildRequestHeaders(init?.headers)
+type ConditionalCacheEntry = {
+  etag: string
+  payload: unknown
+}
 
-  const response = await fetchWithTimeout(buildApiUrl(path), {
+const conditionalResponseCache = new Map<string, ConditionalCacheEntry>()
+
+type RequestOptions = {
+  conditionalCache?: boolean
+}
+
+async function request<T>(path: string, init?: RequestInit, options?: RequestOptions) {
+  const headers = await buildRequestHeaders(init?.headers)
+  const url = buildApiUrl(path)
+  const method = (init?.method ?? 'GET').toUpperCase()
+  const shouldUseConditionalCache = options?.conditionalCache === true && method === 'GET'
+  const cached = shouldUseConditionalCache ? conditionalResponseCache.get(url) : undefined
+
+  if (cached) {
+    headers.set('If-None-Match', cached.etag)
+  }
+
+  const response = await fetchWithTimeout(url, {
     ...init,
     headers,
   })
 
   handleUnauthorizedResponse(response)
+
+  if (response.status === 304) {
+    if (cached) {
+      return cached.payload as T
+    }
+    throw new ApiError('캐시된 AODS API 응답을 찾지 못했습니다.', 'CACHE_MISS')
+  }
 
   const text = await response.text()
   const payload = text ? (JSON.parse(text) as T | ErrorResponse) : null
@@ -132,6 +158,18 @@ async function request<T>(path: string, init?: RequestInit) {
       errorPayload?.error.code ?? 'UNKNOWN_ERROR',
       errorPayload?.error.details,
     )
+  }
+
+  if (shouldUseConditionalCache) {
+    const etag = response.headers.get('ETag')
+    if (etag && payload !== null) {
+      conditionalResponseCache.set(url, {
+        etag,
+        payload,
+      })
+    } else {
+      conditionalResponseCache.delete(url)
+    }
   }
 
   return payload as T
@@ -240,7 +278,7 @@ export const api = {
     return request<CurrentUser>('/api/v1/me')
   },
   getProjects() {
-    return request<ProjectListResponse>('/api/v1/projects')
+    return request<ProjectListResponse>('/api/v1/projects', undefined, { conditionalCache: true })
   },
   createProject(body: CreateProjectRequest) {
     return request<ProjectSummary>('/api/v1/projects', {
@@ -254,7 +292,9 @@ export const api = {
     })
   },
   getApplications(projectId: string) {
-    return request<ApplicationListResponse>(`/api/v1/projects/${projectId}/applications`)
+    return request<ApplicationListResponse>(`/api/v1/projects/${projectId}/applications`, undefined, {
+      conditionalCache: true,
+    })
   },
   getProjectHealth(projectId: string) {
     return request<ProjectHealthResponse>(`/api/v1/projects/${projectId}/health`)
@@ -278,13 +318,19 @@ export const api = {
     })
   },
   getProjectEnvironments(projectId: string) {
-    return request<EnvironmentListResponse>(`/api/v1/projects/${projectId}/environments`)
+    return request<EnvironmentListResponse>(`/api/v1/projects/${projectId}/environments`, undefined, {
+      conditionalCache: true,
+    })
   },
   getProjectRepositories(projectId: string) {
-    return request<RepositoryListResponse>(`/api/v1/projects/${projectId}/repositories`)
+    return request<RepositoryListResponse>(`/api/v1/projects/${projectId}/repositories`, undefined, {
+      conditionalCache: true,
+    })
   },
   getProjectPolicies(projectId: string) {
-    return request<ProjectPolicy>(`/api/v1/projects/${projectId}/policies`)
+    return request<ProjectPolicy>(`/api/v1/projects/${projectId}/policies`, undefined, {
+      conditionalCache: true,
+    })
   },
   updateProjectPolicies(projectId: string, body: ProjectPolicy) {
     return request<ProjectPolicy>(`/api/v1/projects/${projectId}/policies`, {
@@ -293,7 +339,7 @@ export const api = {
     })
   },
   getClusters() {
-    return request<ClusterListResponse>('/api/v1/clusters')
+    return request<ClusterListResponse>('/api/v1/clusters', undefined, { conditionalCache: true })
   },
   getAdminResourceOverview() {
     return request<FleetResourceOverviewResponse>('/api/v1/admin/resource-overview')
@@ -335,7 +381,9 @@ export const api = {
     })
   },
   getApplicationSecrets(applicationId: string) {
-    return request<ApplicationSecretsResponse>(`/api/v1/applications/${applicationId}/secrets`)
+    return request<ApplicationSecretsResponse>(`/api/v1/applications/${applicationId}/secrets`, undefined, {
+      conditionalCache: true,
+    })
   },
   updateApplicationSecrets(applicationId: string, body: UpdateApplicationSecretsRequest) {
     return request<ApplicationSecretsResponse>(`/api/v1/applications/${applicationId}/secrets`, {
@@ -344,7 +392,11 @@ export const api = {
     })
   },
   getApplicationSecretVersions(applicationId: string) {
-    return request<ApplicationSecretVersionsResponse>(`/api/v1/applications/${applicationId}/secrets/versions`)
+    return request<ApplicationSecretVersionsResponse>(
+      `/api/v1/applications/${applicationId}/secrets/versions`,
+      undefined,
+      { conditionalCache: true },
+    )
   },
   restoreApplicationSecretVersion(applicationId: string, version: number) {
     return request<ApplicationSecretsResponse>(`/api/v1/applications/${applicationId}/secrets/versions/${version}/restore`, {
@@ -369,10 +421,16 @@ export const api = {
     })
   },
   getDeployments(applicationId: string) {
-    return request<DeploymentListResponse>(`/api/v1/applications/${applicationId}/deployments`)
+    return request<DeploymentListResponse>(`/api/v1/applications/${applicationId}/deployments`, undefined, {
+      conditionalCache: true,
+    })
   },
   getDeployment(applicationId: string, deploymentId: string) {
-    return request<DeploymentRecord>(`/api/v1/applications/${applicationId}/deployments/${deploymentId}`)
+    return request<DeploymentRecord>(
+      `/api/v1/applications/${applicationId}/deployments/${deploymentId}`,
+      undefined,
+      { conditionalCache: true },
+    )
   },
   promoteDeployment(applicationId: string, deploymentId: string) {
     return request<DeploymentRecord>(
@@ -418,7 +476,9 @@ export const api = {
     )
   },
   getRollbackPolicy(applicationId: string) {
-    return request<RollbackPolicy>(`/api/v1/applications/${applicationId}/rollback-policies`)
+    return request<RollbackPolicy>(`/api/v1/applications/${applicationId}/rollback-policies`, undefined, {
+      conditionalCache: true,
+    })
   },
   saveRollbackPolicy(applicationId: string, body: RollbackPolicy) {
     return request<RollbackPolicy>(`/api/v1/applications/${applicationId}/rollback-policies`, {
@@ -427,7 +487,9 @@ export const api = {
     })
   },
   getEvents(applicationId: string) {
-    return request<EventListResponse>(`/api/v1/applications/${applicationId}/events`)
+    return request<EventListResponse>(`/api/v1/applications/${applicationId}/events`, undefined, {
+      conditionalCache: true,
+    })
   },
   getApplicationLogs(applicationId: string, tailLines = 120) {
     const params = new URLSearchParams()

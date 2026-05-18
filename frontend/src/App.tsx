@@ -117,6 +117,22 @@ import { StatePanel } from './components/ui/StatePanel'
 
 const platformAdminAuthorities = new Set(parseAuthorityList(import.meta.env.VITE_AODS_PLATFORM_ADMIN_AUTHORITIES ?? 'aods:platform:admin'))
 
+const stableProjectRefreshIntervalMs = 60000
+const projectHealthRefreshIntervalMs = 30000
+const stableApplicationDetailsRefreshIntervalMs = 45000
+const observabilityDetailsRefreshIntervalMs = 30000
+
+type ApplicationDrawerTab = 'status' | 'deploy' | 'secrets' | 'observability' | 'history' | 'rules'
+
+type ApplicationDetailRequestPlan = {
+  metrics?: boolean
+  syncStatus?: boolean
+  networkExposure?: boolean
+  deployments?: boolean
+  events?: boolean
+  rollbackPolicy?: boolean
+}
+
 function translateCreateApplicationError(message: string) {
   if (message === 'repositoryServiceId is required when the descriptor defines multiple services') {
     return '이 저장소에는 서비스가 여러 개 있습니다. 설정 파일 확인 단계에서 aolda_deploy.json 안의 serviceId 하나를 선택하세요.'
@@ -389,7 +405,7 @@ function OperationProgress({
   )
 }
 
-type ApplicationCatalogSignalState = 'available' | 'empty' | 'failed'
+type ApplicationCatalogSignalState = 'available' | 'empty' | 'failed' | 'deferred'
 type LoadBalancerExposureStepState = 'done' | 'active' | 'pending' | 'error'
 type OperationStepState = 'complete' | 'active' | 'pending' | 'error'
 type ApplicationCreationStage = 'idle' | 'submitting' | 'refreshing' | 'error'
@@ -501,6 +517,7 @@ export default function App() {
   const oidcAuthEnabled = isOIDCAuthEnabled()
   const emergencyLoginEnabled = isEmergencyLoginEnabled()
   const [isLoggedIn, setIsLoggedIn] = useState(() => (oidcAuthEnabled ? shouldResumeOIDCSession() || hasEmergencyAuthSession() : false))
+  const [isPageVisible, setIsPageVisible] = useState(() => typeof document === 'undefined' || document.visibilityState !== 'hidden')
   const [activeSection, setActiveSection] = useState<GlobalSection>('projects')
   const [projectTab, setProjectTab] = useState<ProjectTab>('applications')
   const [projectComposerOpen, setProjectComposerOpen] = useState(false)
@@ -518,11 +535,14 @@ export default function App() {
   const [projectPolicy, setProjectPolicy] = useState<ProjectPolicy | null>(null)
   const [projectDataLoaded, setProjectDataLoaded] = useState(false)
   const [applicationListLoaded, setApplicationListLoaded] = useState(false)
+  const [projectHealthLoaded, setProjectHealthLoaded] = useState(false)
+  const [projectHealthLoading, setProjectHealthLoading] = useState(false)
+  const [projectHealthWarning, setProjectHealthWarning] = useState<string | null>(null)
   const [projectDataWarnings, setProjectDataWarnings] = useState<string[]>([])
   const [trackedChanges, setTrackedChanges] = useState<ChangeRecord[]>([])
   const [selectedChangeId, setSelectedChangeId] = useState<string | null>(null)
   const [selectedAppId, setSelectedAppId] = useState<string | null>(null)
-  const [applicationDrawerTab, setApplicationDrawerTab] = useState('status')
+  const [applicationDrawerTab, setApplicationDrawerTab] = useState<ApplicationDrawerTab>('status')
   const [selectedDeploymentId, setSelectedDeploymentId] = useState<string | null>(null)
   const [selectedDeploymentDetail, setSelectedDeploymentDetail] = useState<DeploymentRecord | null>(null)
   const [loading, setLoading] = useState(true)
@@ -613,8 +633,10 @@ export default function App() {
   const [restoringSecretVersion, setRestoringSecretVersion] = useState<number | null>(null)
   const [repositoryPollIntervalDraft, setRepositoryPollIntervalDraft] = useState('300')
   const projectRefreshSeq = useRef(0)
+  const projectHealthRequestSeq = useRef(0)
   const appDetailsRequestSeq = useRef(0)
   const logTargetsRequestSeq = useRef(0)
+  const wasPageVisibleRef = useRef(isPageVisible)
   const selectedAppIdRef = useRef<string | null>(null)
   const previousSelectedAppRef = useRef<string | null>(null)
   const previousDeploymentAppRef = useRef<string | null>(null)
@@ -635,6 +657,15 @@ export default function App() {
     }
   }, [activeSection, visibleGlobalSections])
 
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      setIsPageVisible(document.visibilityState !== 'hidden')
+    }
+
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [])
+
   const resetSessionState = useCallback(() => {
     setCurrentUser(null)
     setProjects([])
@@ -649,6 +680,9 @@ export default function App() {
     setProjectPolicy(null)
     setProjectDataLoaded(false)
     setApplicationListLoaded(false)
+    setProjectHealthLoaded(false)
+    setProjectHealthLoading(false)
+    setProjectHealthWarning(null)
     setProjectDataWarnings([])
     setTrackedChanges([])
     setSelectedChangeId(null)
@@ -720,6 +754,7 @@ export default function App() {
     setPromotingDeploymentId(null)
     setLifecycleActionLoading(null)
     setLoading(true)
+    projectHealthRequestSeq.current += 1
   }, [])
 
   const handleLogin = useCallback(async () => {
@@ -842,10 +877,6 @@ export default function App() {
         (value) => ({ status: 'fulfilled' as const, value }),
         (reason) => ({ status: 'rejected' as const, reason }),
       )
-      const healthRequest = api.getProjectHealth(projectId).then(
-        (value) => ({ status: 'fulfilled' as const, value }),
-        (reason) => ({ status: 'rejected' as const, reason }),
-      )
       const envRequest = api.getProjectEnvironments(projectId).then(
         (value) => ({ status: 'fulfilled' as const, value }),
         (reason) => ({ status: 'rejected' as const, reason }),
@@ -862,6 +893,7 @@ export default function App() {
 
       if (appRes.status === 'fulfilled') {
         setApplications(appRes.value.items)
+        setApplicationCatalogSignals((current) => retainApplicationCatalogSignals(appRes.value.items, current))
         setApplicationListLoaded(true)
       } else {
         setApplicationCatalogSignals({})
@@ -871,92 +903,12 @@ export default function App() {
         console.error('Failed to refresh applications', appRes.reason)
       }
 
-      const [healthRes, envRes, policyRes] = await Promise.all([healthRequest, envRequest, policyRequest])
+      const [envRes, policyRes] = await Promise.all([envRequest, policyRequest])
       if (requestSeq !== projectRefreshSeq.current) {
         return
       }
 
-      if (appRes.status === 'fulfilled') {
-        const healthByApplication =
-          healthRes.status === 'fulfilled'
-            ? new Map(healthRes.value.items.map((item) => [item.applicationId, item]))
-            : new Map<string, ApplicationHealthSnapshot>()
-        setApplications(
-          appRes.value.items.map((application) => ({
-            ...application,
-            syncStatus: healthByApplication.get(application.id)?.syncStatus ?? application.syncStatus,
-          })),
-        )
-        if (appRes.value.items.length === 0) {
-          setProjectInsightMetrics([])
-          setApplicationCatalogSignals({})
-        } else if (healthRes.status === 'fulfilled') {
-          const aggregatedSeries: MetricSeries[] = []
-          const nextSignals: Record<string, ApplicationCatalogSignal> = {}
-          let missingHealthSnapshot = false
-
-          for (const application of appRes.value.items) {
-            const health = healthByApplication.get(application.id)
-            if (!health) {
-              missingHealthSnapshot = true
-              nextSignals[application.id] = {
-                metrics: [],
-                metricsState: 'failed',
-                latestDeployment: null,
-                deploymentState: 'failed',
-                healthSignals: [
-                  {
-                    key: 'health',
-                    status: 'Unavailable',
-                    message: '프로젝트 health snapshot에서 이 애플리케이션 항목을 찾지 못했습니다.',
-                  },
-                ],
-              }
-              continue
-            }
-
-            aggregatedSeries.push(...health.metrics)
-            nextSignals[application.id] = {
-              metrics: health.metrics,
-              metricsState: metricsStateFromHealth(health),
-              latestDeployment: health.latestDeployment ?? null,
-              deploymentState: deploymentStateFromHealth(health),
-              healthSignals: health.signals,
-            }
-          }
-
-          if (missingHealthSnapshot) {
-            warnings.push('일부 애플리케이션 health snapshot을 찾지 못했습니다.')
-          }
-
-          setProjectInsightMetrics(aggregateMetricSeries(aggregatedSeries))
-          setApplicationCatalogSignals(nextSignals)
-        } else {
-          setProjectInsightMetrics([])
-          setApplicationCatalogSignals(
-            Object.fromEntries(
-              appRes.value.items.map((application) => [
-                application.id,
-                {
-                  metrics: [],
-                  metricsState: 'failed' as const,
-                  latestDeployment: null,
-                  deploymentState: 'failed' as const,
-                  healthSignals: [
-                    {
-                      key: 'health',
-                      status: 'Unavailable',
-                      message: '프로젝트 health snapshot을 불러오지 못했습니다.',
-                    },
-                  ],
-                },
-              ]),
-            ),
-          )
-          warnings.push('프로젝트 health snapshot을 불러오지 못했습니다.')
-          console.error('Failed to refresh project health', healthRes.reason)
-        }
-      } else {
+      if (appRes.status !== 'fulfilled') {
         setApplicationCatalogSignals({})
         setProjectInsightMetrics([])
       }
@@ -990,6 +942,60 @@ export default function App() {
       setProjectDataWarnings(['프로젝트 작업 공간 데이터를 새로고침하지 못했습니다.'])
       setApplicationListLoaded(true)
       setProjectDataLoaded(true)
+    }
+  }, [])
+
+  const refreshProjectHealth = useCallback(async (projectId: string, quiet = false) => {
+    const requestSeq = ++projectHealthRequestSeq.current
+    if (!quiet) {
+      setProjectHealthLoading(true)
+    }
+    setProjectHealthWarning(null)
+
+    try {
+      const response = await api.getProjectHealth(projectId)
+      if (requestSeq !== projectHealthRequestSeq.current) {
+        return
+      }
+
+      const healthByApplication = new Map(response.items.map((item) => [item.applicationId, item]))
+      const aggregatedSeries: MetricSeries[] = []
+      const nextSignals: Record<string, ApplicationCatalogSignal> = {}
+
+      for (const health of response.items) {
+        aggregatedSeries.push(...health.metrics)
+        nextSignals[health.applicationId] = {
+          metrics: health.metrics,
+          metricsState: metricsStateFromHealth(health),
+          latestDeployment: health.latestDeployment ?? null,
+          deploymentState: deploymentStateFromHealth(health),
+          healthSignals: health.signals,
+        }
+      }
+
+      setApplications((current) =>
+        current.map((application) => ({
+          ...application,
+          syncStatus: healthByApplication.get(application.id)?.syncStatus ?? application.syncStatus,
+        })),
+      )
+      setProjectInsightMetrics(aggregateMetricSeries(aggregatedSeries))
+      setApplicationCatalogSignals((current) => ({
+        ...current,
+        ...nextSignals,
+      }))
+      setProjectHealthLoaded(true)
+    } catch (error) {
+      if (requestSeq !== projectHealthRequestSeq.current) {
+        return
+      }
+      console.error('Failed to refresh project health', error)
+      setProjectInsightMetrics([])
+      setProjectHealthWarning('프로젝트 health snapshot을 불러오지 못했습니다.')
+    } finally {
+      if (requestSeq === projectHealthRequestSeq.current) {
+        setProjectHealthLoading(false)
+      }
     }
   }, [])
 
@@ -1054,11 +1060,55 @@ export default function App() {
     if (!selectedProjectId) return
     setProjectDataLoaded(false)
     setApplicationListLoaded(false)
+    setProjectHealthLoaded(false)
+    setProjectHealthLoading(false)
+    setProjectHealthWarning(null)
     setProjectDataWarnings([])
+    setProjectInsightMetrics([])
+    setApplicationCatalogSignals({})
+    projectHealthRequestSeq.current += 1
     refreshProjectData(selectedProjectId)
-    const ival = setInterval(() => refreshProjectData(selectedProjectId), projectRefreshIntervalMs)
-    return () => clearInterval(ival)
   }, [refreshProjectData, selectedProjectId])
+
+  const projectPollingInterval = useMemo(
+    () => resolveProjectPollingInterval(applications, applicationCatalogSignals),
+    [applications, applicationCatalogSignals],
+  )
+
+  useEffect(() => {
+    if (!selectedProjectId || !isPageVisible) return
+    const ival = window.setInterval(() => refreshProjectData(selectedProjectId), projectPollingInterval)
+    return () => window.clearInterval(ival)
+  }, [isPageVisible, projectPollingInterval, refreshProjectData, selectedProjectId])
+
+  const projectHealthPollingInterval = useMemo(
+    () => resolveProjectHealthPollingInterval(applications, applicationCatalogSignals),
+    [applications, applicationCatalogSignals],
+  )
+
+  useEffect(() => {
+    if (!selectedProjectId || projectTab !== 'monitoring' || !isPageVisible) return
+    void refreshProjectHealth(selectedProjectId)
+    const ival = window.setInterval(
+      () => refreshProjectHealth(selectedProjectId, true),
+      projectHealthPollingInterval,
+    )
+    return () => window.clearInterval(ival)
+  }, [isPageVisible, projectHealthPollingInterval, projectTab, refreshProjectHealth, selectedProjectId])
+
+  useEffect(() => {
+    if (!selectedProjectId) {
+      wasPageVisibleRef.current = isPageVisible
+      return
+    }
+    if (isPageVisible && !wasPageVisibleRef.current) {
+      void refreshProjectData(selectedProjectId)
+      if (projectTab === 'monitoring') {
+        void refreshProjectHealth(selectedProjectId, true)
+      }
+    }
+    wasPageVisibleRef.current = isPageVisible
+  }, [isPageVisible, projectTab, refreshProjectData, refreshProjectHealth, selectedProjectId])
 
   useEffect(() => {
     if (!selectedProjectId) {
@@ -1074,17 +1124,24 @@ export default function App() {
   }, [selectedProjectId])
 
   // Fetch Application Details when app changes or sidebar opens
-  const fetchAppDetails = useCallback(async (appId: string) => {
+  const fetchAppDetails = useCallback(async (appId: string, tab: ApplicationDrawerTab) => {
     const requestSeq = ++appDetailsRequestSeq.current
+    const requestPlan = applicationDetailRequestPlan(tab)
+    if (!hasApplicationDetailRequests(requestPlan)) {
+      setAppDetailWarnings((current) => current.filter((warning) => warning.startsWith('로그 대상: ')))
+      setAppDetailsLoaded(true)
+      return
+    }
+
     try {
       const warnings: string[] = []
-      const [metrics, syncStatus, networkExposure, deployments, events, rollback] = await Promise.allSettled([
-        api.getMetrics(appId, metricRange),
-        api.getSyncStatus(appId),
-        api.getApplicationNetworkExposure(appId),
-        api.getDeployments(appId),
-        api.getEvents(appId),
-        api.getRollbackPolicy(appId),
+      const [metrics, syncStatus, networkExposure, deployments, events, rollback] = await Promise.all([
+        settleOptional(requestPlan.metrics, () => api.getMetrics(appId, metricRange)),
+        settleOptional(requestPlan.syncStatus, () => api.getSyncStatus(appId)),
+        settleOptional(requestPlan.networkExposure, () => api.getApplicationNetworkExposure(appId)),
+        settleOptional(requestPlan.deployments, () => api.getDeployments(appId)),
+        settleOptional(requestPlan.events, () => api.getEvents(appId)),
+        settleOptional(requestPlan.rollbackPolicy, () => api.getRollbackPolicy(appId)),
       ])
 
       if (requestSeq !== appDetailsRequestSeq.current) {
@@ -1092,35 +1149,35 @@ export default function App() {
       }
 
       setAppDetails((current) => ({
-        metrics: metrics.status === 'fulfilled' ? metrics.value : current.metrics,
-        syncStatus: syncStatus.status === 'fulfilled' ? syncStatus.value : current.syncStatus,
-        networkExposure: networkExposure.status === 'fulfilled' ? networkExposure.value : current.networkExposure,
-        deployments: deployments.status === 'fulfilled' ? deployments.value.items : current.deployments,
-        events: events.status === 'fulfilled' ? events.value.items : current.events,
-        rollbackPolicy: rollback.status === 'fulfilled' ? rollback.value : current.rollbackPolicy,
+        metrics: isOptionalFulfilled(metrics) ? metrics.value : current.metrics,
+        syncStatus: isOptionalFulfilled(syncStatus) ? syncStatus.value : current.syncStatus,
+        networkExposure: isOptionalFulfilled(networkExposure) ? networkExposure.value : current.networkExposure,
+        deployments: isOptionalFulfilled(deployments) ? deployments.value.items : current.deployments,
+        events: isOptionalFulfilled(events) ? events.value.items : current.events,
+        rollbackPolicy: isOptionalFulfilled(rollback) ? rollback.value : current.rollbackPolicy,
         logTargets: current.logTargets,
       }))
 
-      if (metrics.status === 'rejected') {
+      if (isOptionalRejected(metrics)) {
         warnings.push('metrics를 불러오지 못했습니다.')
       }
-      if (syncStatus.status === 'rejected') {
+      if (isOptionalRejected(syncStatus)) {
         warnings.push('sync 상태를 불러오지 못했습니다.')
       }
-      if (networkExposure.status === 'rejected') {
+      if (isOptionalRejected(networkExposure)) {
         warnings.push('외부 공개 상태를 불러오지 못했습니다.')
       }
-      if (deployments.status === 'rejected') {
+      if (isOptionalRejected(deployments)) {
         warnings.push('배포 이력을 불러오지 못했습니다.')
       }
-      if (events.status === 'rejected') {
+      if (isOptionalRejected(events)) {
         warnings.push('이벤트를 불러오지 못했습니다.')
       }
-      if (rollback.status === 'rejected') {
+      if (isOptionalRejected(rollback)) {
         warnings.push('롤백 정책을 불러오지 못했습니다.')
       }
 
-      if (rollback.status === 'fulfilled') {
+      if (isOptionalFulfilled(rollback)) {
         setRollbackPolicyDraft({
           enabled: rollback.value.enabled,
           maxErrorRate: rollback.value.maxErrorRate,
@@ -1128,7 +1185,10 @@ export default function App() {
           minRequestRate: rollback.value.minRequestRate,
         })
       }
-      setAppDetailWarnings(warnings)
+      setAppDetailWarnings((current) => [
+        ...current.filter((warning) => warning.startsWith('로그 대상: ')),
+        ...warnings,
+      ])
       setAppDetailsLoaded(true)
     } catch (err) {
       console.error('Failed to fetch app details', err)
@@ -1209,20 +1269,38 @@ export default function App() {
   }, [selectedAppId])
 
   useEffect(() => {
-    if (!selectedAppId || applicationDrawerTab !== 'observability') {
+    if (!selectedAppId || applicationDrawerTab !== 'observability' || !isPageVisible) {
       return
     }
     void refreshApplicationLogTargets(selectedAppId, { quiet: true })
-  }, [applicationDrawerTab, refreshApplicationLogTargets, selectedAppId])
+  }, [applicationDrawerTab, isPageVisible, refreshApplicationLogTargets, selectedAppId])
 
   useEffect(() => {
     if (!selectedAppId) return
     setAppDetailsLoaded(false)
     setAppDetailWarnings([])
-    fetchAppDetails(selectedAppId)
-    const ival = setInterval(() => fetchAppDetails(selectedAppId), applicationDetailsRefreshIntervalMs)
-    return () => clearInterval(ival)
-  }, [selectedAppId, metricRange, fetchAppDetails])
+    void fetchAppDetails(selectedAppId, applicationDrawerTab)
+  }, [applicationDrawerTab, fetchAppDetails, metricRange, selectedAppId])
+
+  const applicationDetailsPollingInterval = useMemo(
+    () => resolveApplicationDetailsPollingInterval(applicationDrawerTab, appDetails),
+    [applicationDrawerTab, appDetails],
+  )
+
+  useEffect(() => {
+    if (!selectedAppId || !isPageVisible || applicationDetailsPollingInterval === null) return
+    const ival = window.setInterval(
+      () => fetchAppDetails(selectedAppId, applicationDrawerTab),
+      applicationDetailsPollingInterval,
+    )
+    return () => window.clearInterval(ival)
+  }, [
+    applicationDetailsPollingInterval,
+    applicationDrawerTab,
+    fetchAppDetails,
+    isPageVisible,
+    selectedAppId,
+  ])
 
   useEffect(() => {
     const nextDefaultEnvironment =
@@ -1250,6 +1328,13 @@ export default function App() {
       setSelectedDeploymentLoaded(false)
       return
     }
+    if (applicationDrawerTab !== 'history') {
+      previousDeploymentAppRef.current = selectedAppId
+      setSelectedDeploymentId(null)
+      setSelectedDeploymentDetail(null)
+      setSelectedDeploymentLoaded(false)
+      return
+    }
 
     if (selectedAppId !== previousDeploymentAppRef.current) {
       previousDeploymentAppRef.current = selectedAppId
@@ -1266,7 +1351,7 @@ export default function App() {
       }
       return nextDeploymentId
     })
-  }, [appDetails.deployments, selectedAppId])
+  }, [appDetails.deployments, applicationDrawerTab, selectedAppId])
 
   const fetchSelectedDeploymentDetail = useCallback(async (applicationId: string, deploymentId: string) => {
     setSelectedDeploymentLoaded(false)
@@ -1286,13 +1371,13 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!selectedAppId || !selectedDeploymentId) {
+    if (!selectedAppId || !selectedDeploymentId || applicationDrawerTab !== 'history') {
       setSelectedDeploymentDetail(null)
       setSelectedDeploymentLoaded(false)
       return
     }
     void fetchSelectedDeploymentDetail(selectedAppId, selectedDeploymentId)
-  }, [fetchSelectedDeploymentDetail, selectedAppId, selectedDeploymentId])
+  }, [applicationDrawerTab, fetchSelectedDeploymentDetail, selectedAppId, selectedDeploymentId])
 
   useEffect(() => {
     if (!selectedAppId) {
@@ -1388,12 +1473,18 @@ export default function App() {
   }, [resetSecretEditor])
 
   useEffect(() => {
+    setApplicationSecrets(null)
+    setApplicationSecretVersions(null)
+    setApplicationSecretsLoaded(false)
+    setApplicationSecretsError(null)
+    resetSecretEditor(null)
+  }, [resetSecretEditor, selectedAppId])
+
+  useEffect(() => {
     if (!selectedAppId) {
-      setApplicationSecrets(null)
-      setApplicationSecretVersions(null)
-      setApplicationSecretsLoaded(false)
-      setApplicationSecretsError(null)
-      resetSecretEditor(null)
+      return
+    }
+    if (applicationDrawerTab !== 'secrets') {
       return
     }
     if (!canDeployInProject) {
@@ -1405,7 +1496,7 @@ export default function App() {
       return
     }
     void refreshApplicationSecrets(selectedAppId)
-  }, [canDeployInProject, refreshApplicationSecrets, resetSecretEditor, selectedAppId])
+  }, [applicationDrawerTab, canDeployInProject, refreshApplicationSecrets, resetSecretEditor, selectedAppId])
 
   const persistedLoadBalancerEnabled = selectedApp?.loadBalancerEnabled ?? false
   const networkSyncStatus = appDetails.syncStatus?.status ?? selectedApp?.syncStatus
@@ -1519,7 +1610,7 @@ export default function App() {
       if (selectedProjectId) {
         await refreshProjectData(selectedProjectId)
       }
-      await fetchAppDetails(selectedAppId)
+      await fetchAppDetails(selectedAppId, applicationDrawerTab)
       return true
     } catch (error) {
       const message = translateApplicationNetworkError(error)
@@ -1567,7 +1658,13 @@ export default function App() {
   }
 
   useEffect(() => {
-    if (!selectedAppId || !selectedLogPodName || !selectedLogContainerName) {
+    if (
+      !selectedAppId ||
+      !selectedLogPodName ||
+      !selectedLogContainerName ||
+      applicationDrawerTab !== 'observability' ||
+      !isPageVisible
+    ) {
       setLiveLogEvents([])
       setLiveLogStatus('idle')
       setLiveLogError(null)
@@ -1652,7 +1749,15 @@ export default function App() {
       window.clearTimeout(fallbackTimer)
       controller.abort()
     }
-  }, [logStreamRefreshKey, refreshApplicationLogTargets, selectedAppId, selectedLogContainerName, selectedLogPodName])
+  }, [
+    applicationDrawerTab,
+    isPageVisible,
+    logStreamRefreshKey,
+    refreshApplicationLogTargets,
+    selectedAppId,
+    selectedLogContainerName,
+    selectedLogPodName,
+  ])
 
   useEffect(() => {
     if (selectedProjectId === previousSelectedProjectRef.current) {
@@ -2130,7 +2235,7 @@ export default function App() {
         message: '선택한 카나리아 배포를 다음 단계로 승격했습니다.',
         color: 'green',
       })
-      await fetchAppDetails(selectedAppId)
+      await fetchAppDetails(selectedAppId, applicationDrawerTab)
       await fetchSelectedDeploymentDetail(selectedAppId, deploymentId)
     } catch {
       notifications.show({
@@ -2216,7 +2321,7 @@ export default function App() {
       if (selectedProjectId) {
         await refreshProjectData(selectedProjectId)
       }
-      await fetchAppDetails(selectedAppId)
+      await fetchAppDetails(selectedAppId, applicationDrawerTab)
     } catch (error) {
       const message = error instanceof ApiError ? error.message : '리소스 할당을 저장하지 못했습니다.'
       notifications.show({
@@ -2319,7 +2424,7 @@ export default function App() {
         message: 'IIV 값과 GitOps Secret 연결 상태를 갱신했습니다. 실행 중인 Pod에는 다음 rollout부터 반영됩니다.',
         color: 'green',
       })
-      await fetchAppDetails(selectedAppId)
+      await fetchAppDetails(selectedAppId, applicationDrawerTab)
     } catch (error) {
       notifications.show({
         title: '환경 변수 저장 실패',
@@ -2352,7 +2457,7 @@ export default function App() {
         message: `Secret version ${version} 값으로 새 버전을 만들었습니다. 실행 중인 Pod에는 다음 rollout부터 반영됩니다.`,
         color: 'green',
       })
-      await fetchAppDetails(selectedAppId)
+      await fetchAppDetails(selectedAppId, applicationDrawerTab)
     } catch (error) {
       notifications.show({
         title: '환경 변수 버전 복원 실패',
@@ -2411,7 +2516,7 @@ export default function App() {
         message: `저장소 확인 주기를 ${formatRepositoryPollInterval(nextIntervalSeconds)}로 변경했습니다.`,
         color: 'green',
       })
-      await fetchAppDetails(selectedAppId)
+      await fetchAppDetails(selectedAppId, applicationDrawerTab)
     } catch (error) {
       notifications.show({
         title: 'Polling 주기 저장 실패',
@@ -2453,7 +2558,7 @@ export default function App() {
       if (selectedProjectId) {
         await refreshProjectData(selectedProjectId)
       }
-      await fetchAppDetails(selectedAppId)
+      await fetchAppDetails(selectedAppId, applicationDrawerTab)
     } catch (error) {
       notifications.show({
         title: '저장소 sync 실패',
@@ -2481,7 +2586,7 @@ export default function App() {
       await api.abortDeployment(selectedAppId, latestDeployment.deploymentId)
       notifications.show({ title: '성공', message: '현재 배포를 중단했습니다.', color: 'green' })
       setPendingDangerAction(null)
-      await fetchAppDetails(selectedAppId)
+      await fetchAppDetails(selectedAppId, applicationDrawerTab)
     } catch {
       notifications.show({ title: '중단 실패', message: '현재 배포를 중단하지 못했습니다.', color: 'red' })
     } finally {
@@ -2505,7 +2610,7 @@ export default function App() {
       await api.createDeployment(selectedAppId, previousDeployment.imageTag, previousDeployment.environment)
       notifications.show({ title: '성공', message: '직전 버전으로 롤백을 요청했습니다.', color: 'green' })
       setPendingDangerAction(null)
-      await fetchAppDetails(selectedAppId)
+      await fetchAppDetails(selectedAppId, applicationDrawerTab)
     } catch {
       notifications.show({ title: '롤백 실패', message: '직전 버전 롤백을 요청하지 못했습니다.', color: 'red' })
     } finally {
@@ -2626,7 +2731,7 @@ export default function App() {
         </Badge>
       </Group>
 
-      {!projectDataLoaded ? (
+      {!projectDataLoaded || (!projectHealthLoaded && (projectHealthLoading || !projectHealthWarning)) ? (
         <StatePanel
           kind="loading"
           title="모니터링 지표를 불러오는 중"
@@ -2660,10 +2765,12 @@ export default function App() {
             </SimpleGrid>
           ) : (
             <StatePanel
-              kind={projectDataWarnings.length > 0 ? 'partial' : 'empty'}
+              kind={projectHealthWarning || projectDataWarnings.length > 0 ? 'partial' : 'empty'}
               title="프로젝트 집계 지표가 없습니다"
               description={
-                projectDataWarnings.length > 0
+                projectHealthWarning
+                  ? projectHealthWarning
+                  : projectDataWarnings.length > 0
                   ? projectDataWarnings.join(' ')
                   : '메트릭 연동이 설정되지 않았거나 아직 수집된 값이 없습니다.'
               }
@@ -3369,7 +3476,7 @@ export default function App() {
         <ScrollArea h="calc(100vh - 80px)">
           <Tabs
             value={applicationDrawerTab}
-            onChange={(value) => setApplicationDrawerTab(value ?? 'status')}
+            onChange={(value) => setApplicationDrawerTab(toApplicationDrawerTab(value))}
             keepMounted={false}
             color="lagoon.6"
             styles={{ tab: { padding: '16px 20px' } }}
@@ -5122,6 +5229,163 @@ export default function App() {
   )
 }
 
+type OptionalSettledResult<T> = PromiseSettledResult<T> | { status: 'skipped' }
+
+function settleOptional<T>(
+  enabled: boolean | undefined,
+  request: () => Promise<T>,
+): Promise<OptionalSettledResult<T>> {
+  if (!enabled) {
+    return Promise.resolve({ status: 'skipped' })
+  }
+  return request().then(
+    (value) => ({ status: 'fulfilled' as const, value }),
+    (reason) => ({ status: 'rejected' as const, reason }),
+  )
+}
+
+function isOptionalFulfilled<T>(
+  result: OptionalSettledResult<T>,
+): result is PromiseFulfilledResult<T> {
+  return result.status === 'fulfilled'
+}
+
+function isOptionalRejected<T>(
+  result: OptionalSettledResult<T>,
+): result is PromiseRejectedResult {
+  return result.status === 'rejected'
+}
+
+function toApplicationDrawerTab(value: string | null): ApplicationDrawerTab {
+  switch (value) {
+    case 'deploy':
+    case 'secrets':
+    case 'observability':
+    case 'history':
+    case 'rules':
+      return value
+    default:
+      return 'status'
+  }
+}
+
+function applicationDetailRequestPlan(tab: ApplicationDrawerTab): ApplicationDetailRequestPlan {
+  switch (tab) {
+    case 'deploy':
+      return { syncStatus: true, deployments: true }
+    case 'observability':
+      return { metrics: true, syncStatus: true, deployments: true, events: true }
+    case 'history':
+      return { deployments: true }
+    case 'rules':
+      return {
+        syncStatus: true,
+        networkExposure: true,
+        rollbackPolicy: showRollbackPolicyControls,
+      }
+    case 'secrets':
+      return {}
+    default:
+      return { syncStatus: true, deployments: true, events: true }
+  }
+}
+
+function hasApplicationDetailRequests(plan: ApplicationDetailRequestPlan) {
+  return Object.values(plan).some(Boolean)
+}
+
+function retainApplicationCatalogSignals(
+  applications: ApplicationSummary[],
+  current: Record<string, ApplicationCatalogSignal>,
+): Record<string, ApplicationCatalogSignal> {
+  return Object.fromEntries(
+    applications.map((application) => [
+      application.id,
+      current[application.id] ?? buildDeferredApplicationCatalogSignal(),
+    ]),
+  )
+}
+
+function buildDeferredApplicationCatalogSignal(): ApplicationCatalogSignal {
+  return {
+    metrics: [],
+    metricsState: 'deferred',
+    latestDeployment: null,
+    deploymentState: 'deferred',
+    healthSignals: [
+      {
+        key: 'health',
+        status: 'Unknown',
+        message: '모니터링 탭 또는 운영 센터에서 필요할 때 상세 상태를 조회합니다.',
+      },
+    ],
+  }
+}
+
+function resolveProjectPollingInterval(
+  applications: ApplicationSummary[],
+  signals: Record<string, ApplicationCatalogSignal>,
+) {
+  return hasActiveProjectWork(applications, signals)
+    ? projectRefreshIntervalMs
+    : stableProjectRefreshIntervalMs
+}
+
+function resolveProjectHealthPollingInterval(
+  applications: ApplicationSummary[],
+  signals: Record<string, ApplicationCatalogSignal>,
+) {
+  return hasActiveProjectWork(applications, signals)
+    ? projectRefreshIntervalMs
+    : projectHealthRefreshIntervalMs
+}
+
+function resolveApplicationDetailsPollingInterval(
+  tab: ApplicationDrawerTab,
+  details: {
+    syncStatus: SyncStatusResponse | null
+    deployments: DeploymentRecord[]
+  },
+) {
+  if (tab === 'secrets') {
+    return null
+  }
+  if (tab === 'observability') {
+    return hasActiveApplicationDetails(details)
+      ? applicationDetailsRefreshIntervalMs
+      : observabilityDetailsRefreshIntervalMs
+  }
+  return hasActiveApplicationDetails(details)
+    ? applicationDetailsRefreshIntervalMs
+    : stableApplicationDetailsRefreshIntervalMs
+}
+
+function hasActiveProjectWork(
+  applications: ApplicationSummary[],
+  signals: Record<string, ApplicationCatalogSignal>,
+) {
+  return applications.some((application) => {
+    const signal = signals[application.id]
+    return application.syncStatus === 'Syncing' || isActiveDeploymentStatus(signal?.latestDeployment?.status)
+  })
+}
+
+function hasActiveApplicationDetails(details: {
+  syncStatus: SyncStatusResponse | null
+  deployments: DeploymentRecord[]
+}) {
+  return details.syncStatus?.status === 'Syncing'
+    || details.deployments.some((deployment) => isActiveDeploymentStatus(deployment.status))
+}
+
+function isActiveDeploymentStatus(status?: string) {
+  return status === 'Created'
+    || status === 'Queued'
+    || status === 'Running'
+    || status === 'Retrying'
+    || status === 'Syncing'
+}
+
 function formatLatestMetric(metrics: ApplicationMetricsResponse | null, key: string): string {
   const series = metrics?.metrics?.find(m => m.key === key)
   if (!series || series.points.length === 0) return '데이터 없음'
@@ -5366,6 +5630,7 @@ function runtimeOperationState(app: ApplicationSummary, signal?: ApplicationCata
   if (syncState === 'error') return 'pending'
   if (!signal) return 'pending'
   if (deployment?.status === 'Failed' || deployment?.status === 'Aborted') return 'error'
+  if (signal.deploymentState === 'deferred') return 'pending'
   if (signal.deploymentState === 'failed' || isBlockingHealthSignal(deploymentSignal)) {
     return syncState === 'complete' ? 'error' : 'pending'
   }
@@ -5401,6 +5666,9 @@ function runtimeStageMessage(
   if (deployment?.status === 'Failed' || deployment?.status === 'Aborted') {
     return deployment.message || `${latestDeploymentLabel} 배포가 ${formatDeploymentStatusLabel(deployment.status)} 상태입니다.`
   }
+  if (signal.deploymentState === 'deferred') {
+    return '모니터링 탭 또는 운영 센터에서 필요할 때 최근 배포 이력을 조회합니다.'
+  }
   if (signal.deploymentState === 'failed' || isBlockingHealthSignal(deploymentSignal)) {
     return deploymentSignal?.message || '최근 배포 이력 또는 rollout 상태를 읽지 못했습니다.'
   }
@@ -5416,6 +5684,7 @@ function runtimeStageMessage(
 function observabilityOperationState(app: ApplicationSummary, signal?: ApplicationCatalogSignal): OperationStepState {
   const syncState = syncOperationState(app, signal)
   if (!signal || syncState !== 'complete') return 'pending'
+  if (signal.metricsState === 'deferred') return 'pending'
   if (signal.metricsState === 'failed') return 'error'
   if (signal.metricsState === 'available') return 'complete'
   return 'active'
@@ -5427,6 +5696,9 @@ function observabilityStageMessage(app: ApplicationSummary, signal?: Application
 
   if (!signal) {
     return 'Project health snapshot을 불러오면 metrics 수집 단계를 표시합니다.'
+  }
+  if (signal.metricsState === 'deferred') {
+    return '모니터링 탭을 열면 metrics 수집 단계를 조회합니다.'
   }
   if (syncState !== 'complete') {
     return 'Flux와 runtime 반영 이후 Prometheus 수집 여부를 확인합니다.'
@@ -5498,6 +5770,7 @@ function hasApplicationMetrics(signal?: ApplicationCatalogSignal) {
 
 function formatApplicationMetricSummary(signal: ApplicationCatalogSignal | undefined, key: string) {
   if (!signal) return '불러오는 중'
+  if (signal.metricsState === 'deferred') return '상세에서 확인'
   if (signal.metricsState === 'failed') return '조회 실패'
   if (signal.metricsState === 'empty') return '연동 없음'
 
@@ -5520,6 +5793,7 @@ function formatApplicationMetricSummary(signal: ApplicationCatalogSignal | undef
 
 function formatLatestDeploymentLabel(signal?: ApplicationCatalogSignal) {
   if (!signal) return '불러오는 중'
+  if (signal.deploymentState === 'deferred') return '상세에서 확인'
   if (signal.deploymentState === 'failed') return '조회 실패'
   if (!signal.latestDeployment) return '이력 없음'
   return signal.latestDeployment.imageTag
@@ -5538,6 +5812,7 @@ function compactLongToken(value: string, maxLength: number) {
 
 function formatLatestDeploymentStatus(signal?: ApplicationCatalogSignal) {
   if (!signal) return '불러오는 중'
+  if (signal.deploymentState === 'deferred') return '상세에서 확인'
   if (signal.deploymentState === 'failed') return '조회 실패'
   if (!signal.latestDeployment) return '배포 없음'
   return signal.latestDeployment.status
@@ -5547,6 +5822,7 @@ function applicationMetricBadgeColor(signal?: ApplicationCatalogSignal) {
   if (!signal) return 'gray'
   if (signal.metricsState === 'failed') return 'red'
   if (signal.metricsState === 'empty') return 'gray'
+  if (signal.metricsState === 'deferred') return 'gray'
   return 'green'
 }
 
@@ -5554,6 +5830,7 @@ function applicationMetricBadgeLabel(signal?: ApplicationCatalogSignal) {
   if (!signal) return '지표 불러오는 중'
   if (signal.metricsState === 'failed') return '지표 조회 실패'
   if (signal.metricsState === 'empty') return '메트릭 연동 없음'
+  if (signal.metricsState === 'deferred') return '필요 시 조회'
   return '실측 지표 수집 중'
 }
 
@@ -5561,6 +5838,7 @@ function applicationMetricHelperText(signal?: ApplicationCatalogSignal) {
   if (!signal) return '애플리케이션 요약 정보를 불러오는 중입니다.'
   if (signal.metricsState === 'failed') return '이 애플리케이션의 메트릭 요약을 불러오지 못했습니다.'
   if (signal.metricsState === 'empty') return '현재 수집된 실측 메트릭이 없습니다.'
+  if (signal.metricsState === 'deferred') return '모니터링 탭 또는 운영 센터에서 필요한 시점에 조회합니다.'
   return '실측 메트릭 값이 들어오면 카드에서 바로 확인할 수 있습니다.'
 }
 
@@ -5601,7 +5879,9 @@ function buildApplicationCatalogSummary(
     return parts.join(' ')
   }
 
-  if (signal.latestDeployment) {
+  if (signal.deploymentState === 'deferred') {
+    parts.push('최근 배포 요약은 운영 센터나 모니터링 탭에서 필요할 때 확인합니다.')
+  } else if (signal.latestDeployment) {
     parts.push(`최근 배포는 ${signal.latestDeployment.imageTag}이고 현재 상태는 ${signal.latestDeployment.status}입니다.`)
   } else if (signal.deploymentState === 'failed') {
     parts.push('최근 배포 요약을 불러오지 못했습니다.')

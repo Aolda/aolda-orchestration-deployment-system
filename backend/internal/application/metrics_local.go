@@ -16,6 +16,22 @@ func (LocalMetricsReader) Read(ctx context.Context, record Record, duration time
 	return []MetricSeries{}, nil
 }
 
+func (r LocalMetricsReader) ReadMany(ctx context.Context, records []Record, duration time.Duration, step time.Duration) (map[string][]MetricSeries, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+
+	items := make(map[string][]MetricSeries, len(records))
+	for _, record := range records {
+		metrics, err := r.Read(ctx, record, duration, step)
+		if err != nil {
+			return nil, err
+		}
+		items[record.ID] = metrics
+	}
+	return items, nil
+}
+
 func buildMetricSeries(
 	start time.Time,
 	seed uint32,

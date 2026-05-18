@@ -5,6 +5,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -109,7 +111,7 @@ func TestRepositoryAcquireProcessLockBlocksConcurrentAccess(t *testing.T) {
 func TestRepositoryWithReadIfAvailableSkipsBusyInProcessLock(t *testing.T) {
 	t.Parallel()
 
-	repo := Repository{Dir: filepath.Join(t.TempDir(), "managed-repo")}
+	repo := newFreshSnapshotRepository(t)
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 
@@ -129,7 +131,7 @@ func TestRepositoryWithReadIfAvailableSkipsBusyInProcessLock(t *testing.T) {
 func TestRepositoryWithReadUsesNonBlockingContext(t *testing.T) {
 	t.Parallel()
 
-	repo := Repository{Dir: filepath.Join(t.TempDir(), "managed-repo")}
+	repo := newFreshSnapshotRepository(t)
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 
@@ -149,7 +151,7 @@ func TestRepositoryWithReadUsesNonBlockingContext(t *testing.T) {
 func TestRepositoryWithReadHonorsContextWhileWaitingForInProcessLock(t *testing.T) {
 	t.Parallel()
 
-	repo := Repository{Dir: filepath.Join(t.TempDir(), "managed-repo")}
+	repo := newFreshSnapshotRepository(t)
 	repo.mu.Lock()
 	defer repo.mu.Unlock()
 
@@ -166,6 +168,25 @@ func TestRepositoryWithReadHonorsContextWhileWaitingForInProcessLock(t *testing.
 	}
 	if time.Since(start) < 75*time.Millisecond {
 		t.Fatalf("expected lock attempt to wait for context deadline, got %s", time.Since(start))
+	}
+}
+
+func newFreshSnapshotRepository(t *testing.T) Repository {
+	t.Helper()
+
+	dir := filepath.Join(t.TempDir(), "managed-repo")
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("create git dir: %v", err)
+	}
+	remote := "https://github.com/Aolda/aods-manifest.git"
+	branch := "main"
+	return Repository{
+		Dir:         dir,
+		Remote:      remote,
+		Branch:      branch,
+		SyncTTL:     time.Minute,
+		lastSyncAt:  time.Now(),
+		lastSyncKey: remote + "|" + branch,
 	}
 }
 
@@ -225,4 +246,139 @@ func TestRepositorySyncCacheFreshness(t *testing.T) {
 	if repo.isSyncCacheFresh(gitDir) {
 		t.Fatal("expected branch mismatch to invalidate sync cache")
 	}
+}
+
+func TestRepositorySyncOnceCoalescesConcurrentFetch(t *testing.T) {
+	logPath := installFakeGit(t, "if [ \"$cmd\" = \"fetch\" ]; then sleep 0.2; fi\n")
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("create git dir: %v", err)
+	}
+
+	repo := Repository{
+		Dir:     dir,
+		Remote:  "https://github.com/Aolda/aods-manifest.git",
+		Branch:  "main",
+		Timeout: 5 * time.Second,
+		SyncTTL: time.Minute,
+	}
+
+	var wg sync.WaitGroup
+	errs := make(chan error, 6)
+	start := make(chan struct{})
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			errs <- repo.syncOnce(context.Background(), false, true)
+		}()
+	}
+
+	close(start)
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("syncOnce returned error: %v", err)
+		}
+	}
+
+	logData, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read fake git log: %v", err)
+	}
+	if got := strings.Count(string(logData), "fetch origin main --prune"); got != 1 {
+		t.Fatalf("expected one coalesced fetch, got %d\nlog:\n%s", got, string(logData))
+	}
+}
+
+func TestRepositoryWithReadUsesStaleSnapshotWhileBackgroundSyncRuns(t *testing.T) {
+	logPath := installFakeGit(t, "if [ \"$cmd\" = \"fetch\" ]; then sleep 0.25; fi\n")
+
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, ".git"), 0o755); err != nil {
+		t.Fatalf("create git dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "snapshot.txt"), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("write stale snapshot: %v", err)
+	}
+
+	repo := Repository{
+		Dir:         dir,
+		Remote:      "https://github.com/Aolda/aods-manifest.git",
+		Branch:      "main",
+		Timeout:     5 * time.Second,
+		SyncTTL:     time.Second,
+		lastSyncAt:  time.Now().Add(-2 * time.Second),
+		lastSyncKey: "https://github.com/Aolda/aods-manifest.git|main",
+	}
+
+	start := time.Now()
+	err := repo.WithRead(context.Background(), func(repoDir string) error {
+		data, err := os.ReadFile(filepath.Join(repoDir, "snapshot.txt"))
+		if err != nil {
+			return err
+		}
+		if string(data) != "stale" {
+			t.Fatalf("unexpected snapshot content: %s", data)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("WithRead returned error: %v", err)
+	}
+	if elapsed := time.Since(start); elapsed > 150*time.Millisecond {
+		t.Fatalf("expected stale read not to wait for background fetch, took %s", elapsed)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if repo.isSyncCacheFresh(filepath.Join(dir, ".git")) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if !repo.isSyncCacheFresh(filepath.Join(dir, ".git")) {
+		logData, _ := os.ReadFile(logPath)
+		t.Fatalf("expected background sync to refresh cache\nlog:\n%s", string(logData))
+	}
+}
+
+func installFakeGit(t *testing.T, commandBody string) string {
+	t.Helper()
+
+	originalPath := os.Getenv("PATH")
+	originalLog, hadLog := os.LookupEnv("AODS_FAKE_GIT_LOG")
+
+	tempDir := t.TempDir()
+	logPath := filepath.Join(tempDir, "git.log")
+	scriptPath := filepath.Join(tempDir, "git")
+	script := "#!/bin/sh\n" +
+		"printf '%s\\n' \"$*\" >> \"$AODS_FAKE_GIT_LOG\"\n" +
+		"cmd=\"$1\"\n" +
+		"if [ \"$cmd\" = \"-C\" ]; then cmd=\"$3\"; fi\n" +
+		commandBody +
+		"exit 0\n"
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	if err := os.Setenv("PATH", tempDir); err != nil {
+		t.Fatalf("set PATH: %v", err)
+	}
+	if err := os.Setenv("AODS_FAKE_GIT_LOG", logPath); err != nil {
+		t.Fatalf("set fake git log path: %v", err)
+	}
+
+	t.Cleanup(func() {
+		_ = os.Setenv("PATH", originalPath)
+		if hadLog {
+			_ = os.Setenv("AODS_FAKE_GIT_LOG", originalLog)
+		} else {
+			_ = os.Unsetenv("AODS_FAKE_GIT_LOG")
+		}
+	})
+
+	return logPath
 }
